@@ -4,6 +4,7 @@ Ports spacexr R functions: get_Q, calc_Q_mat_one, solve_sq, calc_Q_all
 from prob_model.R.
 """
 
+import urllib.request
 from pathlib import Path
 
 import jax.numpy as jnp
@@ -11,16 +12,11 @@ import numpy as np
 from scipy.special import gammaln
 from scipy.stats import norm as normal_dist
 
-
-_Q_MATRICES_URL = (
-    "https://github.com/p-gueguen/rctd-py/releases/download/v0.1.0/q_matrices.npz"
-)
+_Q_MATRICES_URL = "https://github.com/p-gueguen/rctd-py/releases/download/v0.1.0/q_matrices.npz"
 
 
 def _download_q_matrices(dest: Path) -> None:
     """Download pre-computed Q-matrices from GitHub release."""
-    import urllib.request
-
     dest.parent.mkdir(parents=True, exist_ok=True)
     print(f"Downloading Q-matrices ({_Q_MATRICES_URL}) ...")
     urllib.request.urlretrieve(_Q_MATRICES_URL, dest)
