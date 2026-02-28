@@ -2,9 +2,11 @@
 
 Ports get_cell_type_info, get_norm_ref, get_de_genes from R spacexr.
 """
-import numpy as np
-import anndata
+
 from collections import Counter
+
+import anndata
+import numpy as np
 from scipy import sparse
 
 
@@ -70,8 +72,7 @@ class Reference:
         valid_types = [ct for ct in unique_types if type_counts_post.get(ct, 0) >= cell_min]
         if len(valid_types) < 2:
             raise ValueError(
-                f"After UMI filtering, fewer than 2 cell types have minimum "
-                f"{cell_min} cells."
+                f"After UMI filtering, fewer than 2 cell types have minimum {cell_min} cells."
             )
         if len(valid_types) < len(unique_types):
             # Re-filter to only valid types
@@ -152,10 +153,7 @@ class Reference:
         gene_list = list(range(self.n_genes))
 
         # Filter mitochondrial genes (case-insensitive mt- prefix)
-        gene_list = [
-            g for g in gene_list
-            if not self.gene_names[g].lower().startswith("mt-")
-        ]
+        gene_list = [g for g in gene_list if not self.gene_names[g].lower().startswith("mt-")]
 
         # Filter by spatial observation count if provided
         if spatial_bulk is not None:
@@ -231,14 +229,14 @@ class Reference:
         gene_idx = np.array([gene_to_idx[g] for g in gene_names])
         profiles_sub = self.profiles[gene_idx, :]
 
-        # weight_avg = rowSums(sweep(cell_type_means[gene_list,], 2, proportions/sum(proportions), '*'))
+        # R: rowSums(sweep(cell_type_means, 2, proportions/sum(proportions), '*'))
         prop_norm = proportions / proportions.sum()
         weight_avg = (profiles_sub * prop_norm[None, :]).sum(axis=1)
 
         # target_means = bulk_vec[gene_list] / sum(puck@nUMI)
         target_means = spatial_bulk[gene_idx] / spatial_nUMI_total
 
-        # cell_type_means_renorm = sweep(cell_type_means[gene_list,], 1, weight_avg / target_means, '/')
+        # R: sweep(cell_type_means, 1, weight_avg / target_means, '/')
         ratio = np.where(target_means > 1e-10, weight_avg / target_means, 1.0)
         renorm = profiles_sub / ratio[:, None]
         return renorm

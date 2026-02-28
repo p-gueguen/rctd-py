@@ -1,7 +1,8 @@
 """Tests for simplex projection."""
+
 import jax.numpy as jnp
 import numpy as np
-import pytest
+
 from rctd._simplex import project_simplex
 
 
@@ -44,6 +45,7 @@ class TestProjectSimplex:
 
     def test_jit_compatible(self):
         import jax
+
         f = jax.jit(project_simplex)
         v = jnp.array([0.3, 0.5, 0.2])
         result = f(v)
@@ -51,6 +53,7 @@ class TestProjectSimplex:
 
     def test_vmap_compatible(self):
         import jax
+
         batch = jnp.array([[0.3, 0.5, 0.2], [-1.0, 2.0, 0.0], [1.0, 1.0, 1.0]])
         f = jax.vmap(project_simplex)
         result = f(batch)

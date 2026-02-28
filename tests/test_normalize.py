@@ -8,7 +8,7 @@ def test_fit_bulk_runs(synthetic_data):
     """Test that fit_bulk runs without errors and produces valid outputs."""
     profiles = synthetic_data["profiles"]  # (G, K)
     spatial_adata = synthetic_data["spatial"]  # (N, G)
-    
+
     spatial_counts = spatial_adata.X
     spatial_numi = np.array(spatial_counts.sum(axis=1)).flatten()
 

@@ -1,7 +1,8 @@
 """Shared test fixtures for rctd tests."""
+
+import anndata
 import numpy as np
 import pytest
-import anndata
 
 
 def _make_synthetic_reference(n_genes=200, n_cells=500, n_types=5, seed=42):

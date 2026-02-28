@@ -3,6 +3,7 @@
 import jax.numpy as jnp
 import numpy as np
 import pytest
+
 from rctd._likelihood import (
     build_x_vals,
     calc_log_likelihood,

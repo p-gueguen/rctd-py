@@ -1,6 +1,8 @@
 import numpy as np
+
 from rctd._full import run_full_mode
-from rctd._likelihood import load_cached_q_matrices, compute_spline_coefficients
+from rctd._likelihood import compute_spline_coefficients, load_cached_q_matrices
+
 
 def test_full_mode_runs(synthetic_data):
     """Test that full mode runs without errors."""
@@ -8,7 +10,7 @@ def test_full_mode_runs(synthetic_data):
     x_vals = cache.pop("X_vals")
     q_mat = cache["Q_100"]
     sq_mat = compute_spline_coefficients(q_mat, x_vals)
-    
+
     profiles = synthetic_data["profiles"]
     spatial_adata = synthetic_data["spatial"]
     spatial_counts = spatial_adata.X
@@ -23,11 +25,11 @@ def test_full_mode_runs(synthetic_data):
         q_mat=q_mat,
         sq_mat=sq_mat,
         x_vals=x_vals,
-        batch_size=10
+        batch_size=10,
     )
 
     N, K = spatial_counts.shape[0], profiles.shape[1]
-    
+
     assert res.weights.shape == (N, K)
     assert res.weights.dtype == np.float32 or res.weights.dtype == np.float64
     assert res.converged.shape == (N,)

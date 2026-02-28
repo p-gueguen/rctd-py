@@ -1,8 +1,9 @@
 """Tests for IRWLS solver."""
-import jax
+
 import jax.numpy as jnp
 import numpy as np
 import pytest
+
 from rctd._irwls import solve_irwls, solve_irwls_batch
 from rctd._likelihood import build_x_vals, compute_q_matrix, compute_spline_coefficients
 
@@ -78,9 +79,7 @@ class TestSolveIRWLS:
         Y = jnp.array(rng.poisson(lam).astype(np.float32))
         S = jnp.array(profiles * nUMI)
 
-        weights, converged = solve_irwls(
-            S, Y, nUMI, Q_mat, SQ_mat, x_vals, constrain=False
-        )
+        weights, converged = solve_irwls(S, Y, nUMI, Q_mat, SQ_mat, x_vals, constrain=False)
         assert jnp.all(weights >= -1e-6)
 
 
@@ -101,9 +100,7 @@ class TestSolveIRWLSBatch:
             Y_batch[i] = rng.poisson(lam)
 
         # Build S_batch: (N, G, K) = profiles[None] * nUMIs[:, None, None]
-        S_batch = (
-            jnp.array(profiles)[None, :, :] * jnp.array(nUMIs)[:, None, None]
-        )
+        S_batch = jnp.array(profiles)[None, :, :] * jnp.array(nUMIs)[:, None, None]
         batch_weights, batch_conv = solve_irwls_batch(
             S_batch,
             jnp.array(Y_batch),
@@ -117,8 +114,12 @@ class TestSolveIRWLSBatch:
         # Compare with single-pixel results
         for i in range(N):
             single_w, single_c = solve_irwls(
-                S_batch[i], jnp.array(Y_batch[i]), nUMIs[i],
-                Q_mat, SQ_mat, x_vals,
+                S_batch[i],
+                jnp.array(Y_batch[i]),
+                nUMIs[i],
+                Q_mat,
+                SQ_mat,
+                x_vals,
             )
             np.testing.assert_allclose(
                 np.array(batch_weights[i]),
@@ -141,9 +142,7 @@ class TestSolveIRWLSBatch:
             lam = (profiles @ true_w) * nUMIs[i]
             Y_batch[i] = rng.poisson(lam)
 
-        S_batch = (
-            jnp.array(profiles)[None, :, :] * jnp.array(nUMIs)[:, None, None]
-        )
+        S_batch = jnp.array(profiles)[None, :, :] * jnp.array(nUMIs)[:, None, None]
         batch_weights, batch_conv = solve_irwls_batch(
             S_batch,
             jnp.array(Y_batch),
@@ -152,6 +151,4 @@ class TestSolveIRWLSBatch:
             SQ_mat,
             x_vals,
         )
-        np.testing.assert_allclose(
-            jnp.sum(batch_weights, axis=1), jnp.ones(N), atol=1e-4
-        )
+        np.testing.assert_allclose(jnp.sum(batch_weights, axis=1), jnp.ones(N), atol=1e-4)

@@ -1,10 +1,13 @@
 """Result types for RCTD."""
+
 from typing import NamedTuple
+
 import numpy as np
 
 
 class RCTDConfig(NamedTuple):
     """RCTD configuration parameters."""
+
     gene_cutoff: float = 0.000125
     fc_cutoff: float = 0.5
     gene_cutoff_reg: float = 0.0002
@@ -29,33 +32,36 @@ class RCTDConfig(NamedTuple):
 
 class FullResult(NamedTuple):
     """Result from full mode RCTD."""
-    weights: np.ndarray          # (N, K) float32
+
+    weights: np.ndarray  # (N, K) float32
     cell_type_names: list[str]
-    converged: np.ndarray        # (N,) bool
+    converged: np.ndarray  # (N,) bool
 
 
 class DoubletResult(NamedTuple):
     """Result from doublet mode RCTD."""
-    weights: np.ndarray              # (N, K) float32
-    weights_doublet: np.ndarray      # (N, 2) float32
-    spot_class: np.ndarray           # (N,) int: 0=reject, 1=singlet, 2=doublet_certain, 3=doublet_uncertain
-    first_type: np.ndarray           # (N,) int indices into cell_type_names
-    second_type: np.ndarray          # (N,) int indices into cell_type_names
-    first_class: np.ndarray          # (N,) bool
-    second_class: np.ndarray         # (N,) bool
-    min_score: np.ndarray            # (N,) float
-    singlet_score: np.ndarray        # (N,) float
+
+    weights: np.ndarray  # (N, K) float32
+    weights_doublet: np.ndarray  # (N, 2) float32
+    spot_class: np.ndarray  # (N,) int: 0=reject, 1=singlet, 2=doublet_certain, 3=doublet_uncertain
+    first_type: np.ndarray  # (N,) int indices into cell_type_names
+    second_type: np.ndarray  # (N,) int indices into cell_type_names
+    first_class: np.ndarray  # (N,) bool
+    second_class: np.ndarray  # (N,) bool
+    min_score: np.ndarray  # (N,) float
+    singlet_score: np.ndarray  # (N,) float
     cell_type_names: list[str]
 
 
 class MultiResult(NamedTuple):
     """Result from multi mode RCTD."""
-    weights: np.ndarray              # (N, K) float32
-    sub_weights: np.ndarray          # (N, MAX_MULTI_TYPES) float32, padded
-    cell_type_indices: np.ndarray    # (N, MAX_MULTI_TYPES) int, padded with -1
-    n_types: np.ndarray              # (N,) int, number of types per pixel
-    conf_list: np.ndarray            # (N, MAX_MULTI_TYPES) bool
-    min_score: np.ndarray            # (N,) float
+
+    weights: np.ndarray  # (N, K) float32
+    sub_weights: np.ndarray  # (N, MAX_MULTI_TYPES) float32, padded
+    cell_type_indices: np.ndarray  # (N, MAX_MULTI_TYPES) int, padded with -1
+    n_types: np.ndarray  # (N,) int, number of types per pixel
+    conf_list: np.ndarray  # (N, MAX_MULTI_TYPES) bool
+    min_score: np.ndarray  # (N,) float
     cell_type_names: list[str]
 
 

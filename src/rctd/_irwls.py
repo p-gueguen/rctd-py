@@ -4,11 +4,13 @@ Ports solveIRWLS.weights, solveWLS, get_der_fast, psd from R spacexr.
 Uses JAX jit + vmap for GPU acceleration.
 """
 
+from functools import partial
+
 import jax
 import jax.numpy as jnp
-from functools import partial
-from rctd._simplex import project_simplex
+
 from rctd._likelihood import calc_q_all
+from rctd._simplex import project_simplex
 
 
 def _get_derivatives(
@@ -36,11 +38,7 @@ def _get_derivatives(
     """
     if bulk_mode:
         d1_vec = -2.0 * (jnp.log(prediction) - jnp.log(Y + 1e-10)) / prediction
-        d2_vec = (
-            -2.0
-            * (1.0 - jnp.log(prediction) + jnp.log(Y + 1e-10))
-            / prediction**2
-        )
+        d2_vec = -2.0 * (1.0 - jnp.log(prediction) + jnp.log(Y + 1e-10)) / prediction**2
     else:
         _, d1_vec, d2_vec = calc_q_all(Y, prediction, Q_mat, SQ_mat, x_vals)
 
@@ -158,9 +156,7 @@ def solve_irwls(
         threshold = jnp.maximum(1e-4, nUMI * 1e-7)
         prediction = jnp.maximum(prediction, threshold)
 
-        grad, hess = _get_derivatives(
-            S, Y, prediction, Q_mat, SQ_mat, x_vals, bulk_mode
-        )
+        grad, hess = _get_derivatives(S, Y, prediction, Q_mat, SQ_mat, x_vals, bulk_mode)
         hess = _psd(hess)
 
         # R: norm_factor <- norm(D_mat, "2")
@@ -222,9 +218,7 @@ def solve_irwls_batch(
         (weights, converged): (N, K) and (N,) arrays
     """
     vmapped = jax.vmap(
-        lambda S, Y, nUMI: solve_irwls(
-            S, Y, nUMI, Q_mat, SQ_mat, x_vals, **kwargs
-        ),
+        lambda S, Y, nUMI: solve_irwls(S, Y, nUMI, Q_mat, SQ_mat, x_vals, **kwargs),
         in_axes=(0, 0, 0),
     )
     return vmapped(S_batch, Y_batch, nUMI_batch)

@@ -4,26 +4,54 @@ Ports spacexr R functions: get_Q, calc_Q_mat_one, solve_sq, calc_Q_all
 from prob_model.R.
 """
 
-import jax
+from pathlib import Path
+
 import jax.numpy as jnp
 import numpy as np
-from pathlib import Path
 from scipy.special import gammaln
 from scipy.stats import norm as normal_dist
 
 
+_Q_MATRICES_URL = (
+    "https://github.com/p-gueguen/rctd-py/releases/download/v0.1.0/q_matrices.npz"
+)
+
+
+def _download_q_matrices(dest: Path) -> None:
+    """Download pre-computed Q-matrices from GitHub release."""
+    import urllib.request
+
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    print(f"Downloading Q-matrices ({_Q_MATRICES_URL}) ...")
+    urllib.request.urlretrieve(_Q_MATRICES_URL, dest)
+    print(f"Saved to {dest}")
+
+
 def load_cached_q_matrices(data_dir: Path | str | None = None) -> dict[str, np.ndarray]:
-    """Load precomputed Q-matrices and X_vals from spacexr extraction."""
+    """Load precomputed Q-matrices and X_vals.
+
+    Lookup order:
+    1. ``data_dir`` (or package ``data/`` directory)
+    2. ``~/.cache/rctd/q_matrices.npz``
+    3. Auto-download from GitHub release and cache to (2)
+    """
     if data_dir is None:
         data_dir = Path(__file__).parent / "data"
     data_dir = Path(data_dir)
     npz_path = data_dir / "q_matrices.npz"
+
+    # Fallback: user cache directory
+    cache_path = Path.home() / ".cache" / "rctd" / "q_matrices.npz"
+
     if not npz_path.exists():
-        raise FileNotFoundError(f"Missing cached Q-matrices at {npz_path}")
-    
+        if cache_path.exists():
+            npz_path = cache_path
+        else:
+            _download_q_matrices(cache_path)
+            npz_path = cache_path
+
     with np.load(npz_path) as data:
         return {k: data[k] for k in data.files}
-
 
 
 def build_x_vals() -> np.ndarray:
@@ -44,9 +72,7 @@ def build_x_vals() -> np.ndarray:
     max_l = 40000
     m_to_first_l: dict[int, int] = {}
     for l in range(10, max_l + 1):
-        m = min(l - 9, 40) + max(
-            int(np.ceil(np.sqrt(max(l - 48.7499, 0) * 4))) - 2, 0
-        )
+        m = min(l - 9, 40) + max(int(np.ceil(np.sqrt(max(l - 48.7499, 0) * 4))) - 2, 0)
         if m not in m_to_first_l:
             m_to_first_l[m] = l
 
@@ -68,7 +94,7 @@ def _ht_pdf_norm(x: np.ndarray) -> np.ndarray:
     p = np.zeros_like(x, dtype=np.float64)
     mask_small = np.abs(x) < 3.0
     mask_large = ~mask_small
-    p[mask_small] = C / np.sqrt(2.0 * np.pi) * np.exp(-x[mask_small] ** 2 / 2.0)
+    p[mask_small] = C / np.sqrt(2.0 * np.pi) * np.exp(-(x[mask_small] ** 2) / 2.0)
     p[mask_large] = C * a / (np.abs(x[mask_large]) - c) ** 2
     return p
 
@@ -107,9 +133,7 @@ def _get_q_single(x_vals: np.ndarray, k: int, sigma: float) -> np.ndarray:
     return results
 
 
-def compute_q_matrix(
-    sigma: float, x_vals: np.ndarray, K_val: int = 100
-) -> np.ndarray:
+def compute_q_matrix(sigma: float, x_vals: np.ndarray, K_val: int = 100) -> np.ndarray:
     """Compute full Q-matrix for a given sigma.
 
     Q_mat[k, i] = log P(Y=k | lambda=x_vals[i]) for k in 0..K_val+2.
@@ -136,9 +160,7 @@ def compute_q_matrix(
     return Q_mat
 
 
-def compute_spline_coefficients(
-    Q_mat: np.ndarray, x_vals: np.ndarray
-) -> np.ndarray:
+def compute_spline_coefficients(Q_mat: np.ndarray, x_vals: np.ndarray) -> np.ndarray:
     """Compute cubic spline second-derivative coefficients.
 
     Ports solve_sq from R prob_model.R.
@@ -225,9 +247,9 @@ def calc_q_all(
     l = jnp.floor(jnp.sqrt(lam / delta)).astype(jnp.int32)
     # R: m <- pmin(l - 9, 40) + pmax(ceiling(sqrt(pmax(l - 48.7499, 0) * 4)) - 2, 0)
     m = jnp.minimum(l - 9, 40) + jnp.maximum(
-        jnp.ceil(
-            jnp.sqrt(jnp.maximum(l.astype(jnp.float32) - 48.7499, 0.0) * 4.0)
-        ).astype(jnp.int32)
+        jnp.ceil(jnp.sqrt(jnp.maximum(l.astype(jnp.float32) - 48.7499, 0.0) * 4.0)).astype(
+            jnp.int32
+        )
         - 2,
         0,
     )
@@ -253,18 +275,8 @@ def calc_q_all(
     zdi1 = zi1 / hi
 
     # Cubic spline interpolation
-    d0_vec = (
-        zdi * diff1**3 / 6.0
-        + zdi1 * diff2**3 / 6.0
-        + diff3 * diff1
-        + diff4 * diff2
-    )
-    d1_vec = (
-        zdi * diff1**2 / 2.0
-        - zdi1 * diff2**2 / 2.0
-        + diff3
-        - diff4
-    )
+    d0_vec = zdi * diff1**3 / 6.0 + zdi1 * diff2**3 / 6.0 + diff3 * diff1 + diff4 * diff2
+    d1_vec = zdi * diff1**2 / 2.0 - zdi1 * diff2**2 / 2.0 + diff3 - diff4
     d2_vec = zdi * diff1 + zdi1 * diff2
 
     return d0_vec, d1_vec, d2_vec

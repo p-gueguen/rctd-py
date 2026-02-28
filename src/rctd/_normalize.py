@@ -1,8 +1,7 @@
-import jax
-import jax.numpy as jnp
-import numpy as np
-
 from typing import Tuple
+
+import jax.numpy as jnp
+
 from rctd._irwls import solve_irwls
 
 
@@ -30,10 +29,10 @@ def fit_bulk(
     """
     # Sum counts across all pixels (N, G) -> (G,)
     bulk_Y = jnp.sum(spatial_counts, axis=0)
-    
+
     # Total UMI across all pixels
     bulk_nUMI = jnp.sum(spatial_nUMI)
-    
+
     # Scale reference profiles to bulk nUMI
     bulk_S = cell_type_profiles * bulk_nUMI
 
@@ -54,9 +53,9 @@ def fit_bulk(
         max_iter=max_iter,
         min_change=min_change,
         constrain=False,
-        bulk_mode=True
+        bulk_mode=True,
     )
-    
+
     # R's fitBulk uses constrain=False: only clip negatives, do NOT
     # normalize to sum=1.  The raw magnitude matters for get_norm_ref.
     bulk_weights = jnp.maximum(bulk_weights, 0.0)
@@ -84,5 +83,5 @@ def fit_bulk(
 
     # norm_profiles = profiles / gene_factor
     norm_profiles = cell_type_profiles / jnp.maximum(gene_factor[:, None], 1e-10)
-    
+
     return bulk_weights, norm_profiles

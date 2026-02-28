@@ -1,4 +1,5 @@
 import numpy as np
+
 from rctd._likelihood import load_cached_q_matrices
 
 
@@ -12,9 +13,7 @@ def test_q_matrices_keys():
     mats = load_cached_q_matrices()
     assert "X_vals" in mats
     # Keys Q_10 through Q_70 (every integer), Q_72 through Q_200 (every even)
-    expected_q_keys = [f"Q_{k}" for k in range(10, 71)] + [
-        f"Q_{k}" for k in range(72, 201, 2)
-    ]
+    expected_q_keys = [f"Q_{k}" for k in range(10, 71)] + [f"Q_{k}" for k in range(72, 201, 2)]
     for key in expected_q_keys:
         assert key in mats, f"Missing key: {key}"
 

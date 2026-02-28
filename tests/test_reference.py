@@ -1,6 +1,8 @@
 """Tests for reference processing."""
+
 import numpy as np
 import pytest
+
 from rctd._reference import Reference
 
 
@@ -27,6 +29,7 @@ class TestReference:
     def test_filters_low_count_types(self):
         """Cell types with < cell_min cells should be rejected."""
         import anndata
+
         rng = np.random.default_rng(42)
         n_genes, n_cells = 100, 30
         counts = rng.poisson(5, size=(n_cells, n_genes)).astype(np.float32)
@@ -63,9 +66,7 @@ class TestReference:
         spatial_nUMI_total = float(spatial_bulk.sum())
         proportions = np.ones(ref.n_types) / ref.n_types
 
-        renorm = ref.normalize_to_spatial(
-            spatial_bulk, spatial_nUMI_total, gene_names, proportions
-        )
+        renorm = ref.normalize_to_spatial(spatial_bulk, spatial_nUMI_total, gene_names, proportions)
         assert renorm.shape == (50, ref.n_types)
         # All values should be finite and non-negative
         assert np.all(np.isfinite(renorm))
@@ -74,6 +75,7 @@ class TestReference:
     def test_de_genes_filters_mt_genes(self):
         """Mitochondrial genes (mt-*) should be excluded from DE genes."""
         import anndata
+
         rng = np.random.default_rng(42)
         n_genes, n_cells = 50, 200
 
@@ -111,6 +113,7 @@ class TestReference:
     def test_min_umi_filter(self):
         """Cells below min_UMI should be filtered out."""
         import anndata
+
         rng = np.random.default_rng(42)
         n_genes, n_cells = 50, 200
         # Low UMI cells (sum ~50 per cell)
@@ -126,6 +129,7 @@ class TestReference:
     def test_downsample(self):
         """When n_max_cells < cells per type, should downsample."""
         import anndata
+
         rng = np.random.default_rng(42)
         n_genes, n_cells = 50, 200
         counts = rng.poisson(10, size=(n_cells, n_genes)).astype(np.float32)

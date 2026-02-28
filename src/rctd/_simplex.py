@@ -3,7 +3,7 @@
 Projects a vector onto the probability simplex {x | x >= 0, sum(x) = 1}.
 O(K log K) where K is the vector dimension.
 """
-import jax
+
 import jax.numpy as jnp
 
 

@@ -1,19 +1,20 @@
+from itertools import combinations
+from typing import List
+
 import jax
 import jax.numpy as jnp
 import numpy as np
-from typing import List, Dict
 
-from rctd._irwls import solve_irwls_batch
 from rctd._full import run_full_mode
+from rctd._irwls import solve_irwls_batch
 from rctd._types import (
-    DoubletResult,
-    RCTDConfig,
+    SPOT_CLASS_DOUBLET_CERTAIN,
+    SPOT_CLASS_DOUBLET_UNCERTAIN,
     SPOT_CLASS_REJECT,
     SPOT_CLASS_SINGLET,
-    SPOT_CLASS_DOUBLET_CERTAIN,
-    SPOT_CLASS_DOUBLET_UNCERTAIN
+    DoubletResult,
+    RCTDConfig,
 )
-from itertools import combinations
 
 
 def run_doublet_mode(
@@ -28,7 +29,7 @@ def run_doublet_mode(
     batch_size: int = 10000,
 ) -> DoubletResult:
     """Run doublet mode deconvolution.
-    
+
     Args:
         spatial_counts: (N, G) observed count matrix
         spatial_numi: (N,) total UMI per pixel
@@ -42,10 +43,10 @@ def run_doublet_mode(
     """
     N, G = spatial_counts.shape
     K = norm_profiles.shape[1]
-    
+
     # 1. Full fit to get candidates
-    # In R, doublet_mode="doublet" first runs doublet_mode="full" (or equivalent) in process_beads_batch
-    # Let's use run_full_mode for this
+    # In R, doublet_mode="doublet" first runs doublet_mode="full"
+    # (or equivalent) in process_beads_batch
     full_res = run_full_mode(
         spatial_counts=spatial_counts,
         spatial_numi=spatial_numi,
@@ -54,10 +55,10 @@ def run_doublet_mode(
         q_mat=q_mat,
         sq_mat=sq_mat,
         x_vals=x_vals,
-        batch_size=batch_size
+        batch_size=batch_size,
     )
     W_full = full_res.weights  # (N, K)
-    
+
     # 2. Candidate selection (CPU)
     # R: candidates <- names(which(all_weights > initial_weight_thresh))
     WEIGHT_THRESHOLD = 0.01
@@ -81,44 +82,42 @@ def run_doublet_mode(
     for n, cands in enumerate(candidates_list):
         for t1, t2 in combinations(cands, 2):
             triples.append((n, t1, t2))
-            
-    pair_log_l = {}   # (n, t1, t2) -> score
-    pair_weights = {} # (n, t1, t2) -> array([w1, w2])
-    
+
+    pair_log_l = {}  # (n, t1, t2) -> score
+    pair_weights = {}  # (n, t1, t2) -> array([w1, w2])
+
     P_gpu = jnp.array(norm_profiles)
     Q_gpu = jnp.array(q_mat)
     SQ_gpu = jnp.array(sq_mat)
     X_gpu = jnp.array(x_vals)
-    
+
     if triples:
         triples_arr = np.array(triples, dtype=np.int32)
         M_total = len(triples_arr)
-        
+
         for start in range(0, M_total, batch_size):
             end = min(start + batch_size, M_total)
             tr = triples_arr[start:end]
             bs = tr.shape[0]
-            
+
             pix_idx = tr[:, 0]
             t1_idx = tr[:, 1]
             t2_idx = tr[:, 2]
-            
+
             nUMI_tr = jnp.array(spatial_numi[pix_idx])
             B_tr = jnp.array(spatial_counts[pix_idx])
-            
-            # P_pair is (G, bs, 2) then permute -> (bs, G, 2)
-            # In numpy, indexing P[:, [t1_idx, t2_idx]] -> shape (G, 2, bs), which means we need something specific
-            # we can vmap the extraction or use advanced indexing.
+
+            # P_pair: (G, bs, 2) -> (bs, G, 2)
             # Using advanced indexing in JAX:
             # P_gpu: (G, K)
-            # We want (bs, G, 2). 
+            # We want (bs, G, 2).
             # P_gpu[:, t1_idx]: (G, bs) -> transpose: (bs, G)
             P1 = P_gpu[:, t1_idx].T
             P2 = P_gpu[:, t2_idx].T
             P_pair = jnp.stack([P1, P2], axis=-1)  # (bs, G, 2)
-            
+
             S_pair = nUMI_tr[:, None, None] * P_pair
-            
+
             weights_batch, conv_batch = solve_irwls_batch(
                 S_batch=S_pair,
                 Y_batch=B_tr,
@@ -129,24 +128,25 @@ def run_doublet_mode(
                 max_iter=25,
                 min_change=0.001,
                 constrain=False,
-                bulk_mode=False
+                bulk_mode=False,
             )
 
             from rctd._likelihood import calc_log_likelihood
+
             # Score logic: R's calc_log_l_vec returns positive NLL (lower=better)
-            expected_tr = jnp.sum(S_pair * weights_batch[:, None, :], axis=-1) # (bs, G)
-            expected_tr = jnp.maximum(expected_tr, 1e-4) # (matches RCTD R solver)
-            
+            expected_tr = jnp.sum(S_pair * weights_batch[:, None, :], axis=-1)  # (bs, G)
+            expected_tr = jnp.maximum(expected_tr, 1e-4)  # (matches RCTD R solver)
+
             # vmap of calc_log_likelihood
             batched_nll = jax.vmap(
                 lambda y, lam: calc_log_likelihood(y, lam, Q_gpu, SQ_gpu, X_gpu, config.K_val),
-                in_axes=(0, 0)
+                in_axes=(0, 0),
             )
             scores_batch = batched_nll(B_tr, expected_tr)
-            
+
             w_np = np.array(weights_batch)
             sc_np = np.array(scores_batch)
-            
+
             for i in range(bs):
                 n_idx, t1, t2 = triples[start + i]
                 pair_log_l[(n_idx, t1, t2)] = sc_np[i]
@@ -155,26 +155,26 @@ def run_doublet_mode(
     # 4. Singlet scoring
     singles = list({(n, t) for n, cands in enumerate(candidates_list) for t in cands})
     singlet_log_l = {}
-    
+
     if singles:
         singles_arr = np.array(singles, dtype=np.int32)
         S_total = len(singles_arr)
-        
+
         for start in range(0, S_total, batch_size):
             end = min(start + batch_size, S_total)
             sg = singles_arr[start:end]
             bs = sg.shape[0]
-            
+
             pix_idx = sg[:, 0]
             t_idx = sg[:, 1]
-            
+
             nUMI_sg = jnp.array(spatial_numi[pix_idx])
             B_sg = jnp.array(spatial_counts[pix_idx])
-            
+
             # P_sg: (bs, G, 1)
             P_sg = P_gpu[:, t_idx].T[..., None]
             S_sg = nUMI_sg[:, None, None] * P_sg
-            
+
             weights_batch, conv_batch = solve_irwls_batch(
                 S_batch=S_sg,
                 Y_batch=B_sg,
@@ -185,23 +185,23 @@ def run_doublet_mode(
                 max_iter=25,
                 min_change=0.001,
                 constrain=False,
-                bulk_mode=False
+                bulk_mode=False,
             )
-            
+
             expected_sg = jnp.sum(S_sg * weights_batch[:, None, :], axis=-1)
             expected_sg = jnp.maximum(expected_sg, 1e-4)
-            
+
             batched_nll = jax.vmap(
                 lambda y, lam: calc_log_likelihood(y, lam, Q_gpu, SQ_gpu, X_gpu, config.K_val),
-                in_axes=(0, 0)
+                in_axes=(0, 0),
             )
             scores_batch = batched_nll(B_sg, expected_sg)
             sc_np = np.array(scores_batch)
-            
+
             for i in range(bs):
                 n_idx, t = singles[start + i]
                 singlet_log_l[(n_idx, t)] = sc_np[i]
-                
+
     # 5. Classification — matches R's process_bead_doublet logic
     # Build score matrix per pixel for check_pairs_type
     weights_doublet = np.zeros((N, 2), dtype=np.float32)
@@ -313,7 +313,7 @@ def run_doublet_mode(
             dw = dw / s if s > 0 else np.array([0.5, 0.5])
 
         if s_class == SPOT_CLASS_SINGLET:
-            out_doublet_w = np.array([1.0, 0.0])
+            np.array([1.0, 0.0])
             # For singlet, first_type = best singlet type
             best_sing_type = min(sing_scores, key=sing_scores.get)
             first_t = best_sing_type
@@ -321,7 +321,6 @@ def run_doublet_mode(
             f_class = False
             sc_class = False
         else:
-            out_doublet_w = dw
             first_t = best_t1
             second_t = best_t2
 
@@ -363,7 +362,7 @@ def run_doublet_mode(
             max_iter=50,
             min_change=0.001,
             constrain=False,
-            bulk_mode=False
+            bulk_mode=False,
         )
 
         w_np = np.array(w_final)

@@ -22,8 +22,9 @@ data/
 # R reference validation data
 scripts/r_reference/
 
-# Package data (generated at build time)
-src/rctd/data/
+# Package data (keep q_matrices.npz, ignore everything else)
+src/rctd/data/*
+!src/rctd/data/q_matrices.npz
 
 # IDE
 .vscode/

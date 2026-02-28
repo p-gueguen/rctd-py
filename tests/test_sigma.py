@@ -1,8 +1,7 @@
-import jax.numpy as jnp
 import numpy as np
 
-from rctd._sigma import choose_sigma
 from rctd._likelihood import load_cached_q_matrices
+from rctd._sigma import choose_sigma
 
 
 def test_choose_sigma_runs(synthetic_data):
@@ -17,7 +16,7 @@ def test_choose_sigma_runs(synthetic_data):
     spatial_adata = synthetic_data["spatial"]
     spatial_counts = spatial_adata.X
     spatial_numi = np.array(spatial_counts.sum(axis=1)).flatten()
-    
+
     # Run with small n_epoch and n_fit just to check if it runs without crashing
     best_sigma = choose_sigma(
         spatial_counts=spatial_counts,

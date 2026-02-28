@@ -1,6 +1,7 @@
 import numpy as np
-from rctd._types import RCTDConfig, FullResult, DoubletResult
-from rctd._rctd import RCTD, run_rctd
+
+from rctd._rctd import run_rctd
+from rctd._types import FullResult, RCTDConfig
 
 
 def test_rctd_class_and_run(synthetic_data):
@@ -9,6 +10,7 @@ def test_rctd_class_and_run(synthetic_data):
     reference_adata = synthetic_data["reference"]
 
     from rctd._reference import Reference
+
     reference = Reference(reference_adata, cell_min=10, min_UMI=10)
 
     config = RCTDConfig()
@@ -31,6 +33,7 @@ def test_rctd_float32(synthetic_data):
     reference_adata = synthetic_data["reference"]
 
     from rctd._reference import Reference
+
     reference = Reference(reference_adata, cell_min=10, min_UMI=10)
 
     # Run with float64 (default)

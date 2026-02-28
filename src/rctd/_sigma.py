@@ -1,13 +1,14 @@
-import jax
+from typing import Dict
+
 import jax.numpy as jnp
 import numpy as np
-from typing import Tuple, Dict
 
 from rctd._irwls import solve_irwls_batch
 from rctd._likelihood import calc_log_likelihood
 
 # The sequence of sigmas evaluated in spacexr choose_sigma
 SIGMA_ALL = np.concatenate([np.arange(10, 71), np.arange(72, 201, 2)])
+
 
 def choose_sigma(
     spatial_counts: np.ndarray,
@@ -44,8 +45,7 @@ def choose_sigma(
         k_val: max count value for likelihood
         seed: random seed for sampling
     """
-    from rctd._irwls import solve_irwls_batch
-    from rctd._likelihood import compute_spline_coefficients, calc_log_likelihood
+    from rctd._likelihood import compute_spline_coefficients
 
     rng = np.random.default_rng(seed)
 
@@ -57,9 +57,9 @@ def choose_sigma(
     n_samples = min(n_fit, len(valid_idx))
     fit_idx = rng.choice(valid_idx, size=n_samples, replace=False)
 
-    fit_counts = jnp.array(spatial_counts[fit_idx])   # (n_samples, G)
-    fit_numi   = jnp.array(spatial_numi[fit_idx])      # (n_samples,)
-    P_gpu      = jnp.array(norm_profiles)               # (G, K)
+    fit_counts = jnp.array(spatial_counts[fit_idx])  # (n_samples, G)
+    fit_numi = jnp.array(spatial_numi[fit_idx])  # (n_samples,)
+    P_gpu = jnp.array(norm_profiles)  # (G, K)
 
     sigma = sigma_init
 
@@ -69,9 +69,9 @@ def choose_sigma(
             diffs = np.abs(SIGMA_ALL - sigma)
             sigma = int(SIGMA_ALL[np.argmin(diffs)])
 
-        Q_cur  = jnp.array(q_matrices[str(sigma)])
+        Q_cur = jnp.array(q_matrices[str(sigma)])
         SQ_cur = jnp.array(compute_spline_coefficients(np.array(Q_cur), np.array(x_vals)))
-        x_j    = jnp.array(x_vals)
+        x_j = jnp.array(x_vals)
 
         S_batch = fit_numi[:, None, None] * P_gpu[None, :, :]  # (n, G, K)
 
@@ -110,24 +110,24 @@ def choose_sigma(
             si_idx = int(np.argmin(np.abs(SIGMA_ALL - round(sigma))))
 
         start_idx = max(0, si_idx - 8)
-        end_idx   = min(len(SIGMA_ALL), si_idx + 8 + 1)
+        end_idx = min(len(SIGMA_ALL), si_idx + 8 + 1)
         sigma_cands = SIGMA_ALL[start_idx:end_idx]
 
         # R: mult_fac_vec = (8:12)/10
         mult_fac_vec = np.arange(8, 13) / 10.0
 
-        lowest_score = float('inf')
-        best_sigma   = sigma
+        lowest_score = float("inf")
+        best_sigma = sigma
 
         for cand_sigma in sigma_cands:
             cand_key = str(cand_sigma)
             if cand_key not in q_matrices:
                 continue
-            cand_Q  = jnp.array(q_matrices[cand_key])
+            cand_Q = jnp.array(q_matrices[cand_key])
             cand_SQ = jnp.array(compute_spline_coefficients(np.array(cand_Q), np.array(x_vals)))
 
             # R: best_val = min over mult_fac of calc_log_l_vec(X*mult_fac, Y)
-            best_fac_score = float('inf')
+            best_fac_score = float("inf")
             for fac in mult_fac_vec:
                 score = float(calc_log_likelihood(Y, X * fac, cand_Q, cand_SQ, x_j, k_val))
                 if score < best_fac_score:
@@ -135,13 +135,12 @@ def choose_sigma(
 
             if best_fac_score < lowest_score:
                 lowest_score = best_fac_score
-                best_sigma   = cand_sigma
+                best_sigma = cand_sigma
 
         sigma_prev = sigma
-        sigma      = int(best_sigma)
+        sigma = int(best_sigma)
 
         if sigma == sigma_prev:
             break
 
     return sigma
-

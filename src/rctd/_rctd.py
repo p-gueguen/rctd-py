@@ -1,21 +1,22 @@
-import anndata
-import numpy as np
-import jax.numpy as jnp
-from typing import Literal, Dict, Any, Union
+from typing import Literal, Union
 
-from rctd._types import RCTDConfig, FullResult, DoubletResult, MultiResult
-from rctd._reference import Reference
-from rctd._likelihood import load_cached_q_matrices, compute_spline_coefficients
-from rctd._normalize import fit_bulk
-from rctd._sigma import choose_sigma
-from rctd._full import run_full_mode
+import anndata
+import jax.numpy as jnp
+import numpy as np
+
 from rctd._doublet import run_doublet_mode
+from rctd._full import run_full_mode
+from rctd._likelihood import compute_spline_coefficients, load_cached_q_matrices
 from rctd._multi import run_multi_mode
+from rctd._normalize import fit_bulk
+from rctd._reference import Reference
+from rctd._sigma import choose_sigma
+from rctd._types import DoubletResult, FullResult, MultiResult, RCTDConfig
 
 
 class RCTD:
     """Robust Cell Type Decomposition (RCTD)."""
-    
+
     def __init__(
         self,
         spatial: anndata.AnnData,
@@ -23,7 +24,7 @@ class RCTD:
         config: RCTDConfig | None = None,
     ):
         """Initialize RCTD object.
-        
+
         Args:
             spatial: AnnData object containing spatial transcriptomics counts.
                      X should be the raw count matrix (N, G).
@@ -33,7 +34,7 @@ class RCTD:
         self.spatial = spatial
         self.reference = reference
         self.config = config if config is not None else RCTDConfig()
-        
+
         # Internal state
         self.is_normalized = False
         self.norm_profiles = None
@@ -41,10 +42,10 @@ class RCTD:
         self.q_mat = None
         self.sq_mat = None
         self.x_vals = None
-        
+
         # Extract common data once
         self._extract_spatial_data()
-        
+
     def _extract_spatial_data(self):
         """Extract spatial data and find intersecting genes with reference.
 
@@ -73,8 +74,10 @@ class RCTD:
         self._pixel_mask = umi_mask
         n_after = int(umi_mask.sum())
         if n_after < n_before:
-            print(f"UMI filter: kept {n_after}/{n_before} pixels "
-                  f"(UMI range [{self.config.UMI_min}, {self.config.UMI_max}])")
+            print(
+                f"UMI filter: kept {n_after}/{n_before} pixels "
+                f"(UMI range [{self.config.UMI_min}, {self.config.UMI_max}])"
+            )
 
         # ── Common genes: intersection of spatial and reference ──
         spatial_genes = set(self.spatial.var_names)
@@ -89,7 +92,7 @@ class RCTD:
 
         # Restrict reference profiles to common genes
         self.base_profiles = self.reference.get_profiles_for_genes(self.common_genes)
-        
+
     def fit_platform_effects(self, sigma_override: int | None = None):
         """Estimate platform effects and compute normalized reference profiles.
 
@@ -129,12 +132,16 @@ class RCTD:
         )
         # Fall back to all common genes if DE selection is too small
         if len(gene_list_bulk) < 10:
-            print(f"Warning: only {len(gene_list_bulk)} bulk genes selected, "
-                  f"using all {len(self.common_genes)} common genes")
+            print(
+                f"Warning: only {len(gene_list_bulk)} bulk genes selected, "
+                f"using all {len(self.common_genes)} common genes"
+            )
             gene_list_bulk = self.common_genes
         if len(gene_list_reg) < 10:
-            print(f"Warning: only {len(gene_list_reg)} reg genes selected, "
-                  f"using all bulk genes ({len(gene_list_bulk)})")
+            print(
+                f"Warning: only {len(gene_list_reg)} reg genes selected, "
+                f"using all bulk genes ({len(gene_list_bulk)})"
+            )
             gene_list_reg = gene_list_bulk
 
         # Keep only genes that are in our common gene set
@@ -142,8 +149,10 @@ class RCTD:
         reg_set = set(gene_list_reg) & set(self.common_genes)
         gene_list_bulk = sorted(bulk_set)
         gene_list_reg = sorted(reg_set)
-        print(f"Gene lists: bulk={len(gene_list_bulk)}, reg={len(gene_list_reg)} "
-              f"(from {len(self.common_genes)} common)")
+        print(
+            f"Gene lists: bulk={len(gene_list_bulk)}, reg={len(gene_list_reg)} "
+            f"(from {len(self.common_genes)} common)"
+        )
 
         # ── 2. fitBulk on gene_list_bulk ──
         # R: fitBulk uses puck@counts (restricted to gene_list_bulk) and
@@ -202,10 +211,13 @@ class RCTD:
             print(f"Chosen sigma: {self.sigma / 100.0}")
         best_q_key = str(self.sigma)
         if best_q_key not in q_matrices:
-             import re
-             available_sigmas = [int(re.sub(r'[^0-9]', '', k)) for k in q_matrices.keys() if re.sub(r'[^0-9]', '', k)]
-             nearest = min(available_sigmas, key=lambda x: abs(x - self.sigma))
-             best_q_key = str(nearest)
+            import re
+
+            available_sigmas = [
+                int(re.sub(r"[^0-9]", "", k)) for k in q_matrices.keys() if re.sub(r"[^0-9]", "", k)
+            ]
+            nearest = min(available_sigmas, key=lambda x: abs(x - self.sigma))
+            best_q_key = str(nearest)
 
         self.q_mat = q_matrices[best_q_key]
         self.sq_mat = compute_spline_coefficients(self.q_mat, self.x_vals)
@@ -230,25 +242,25 @@ def run_rctd(
     sigma_override: int | None = None,
 ) -> Union[FullResult, DoubletResult, MultiResult]:  # noqa: UP007
     """Run RCTD pipeline on spatial data.
-    
+
     Args:
         spatial: AnnData object with spatial counts
         reference: Reference object with cell type profiles
         mode: Deconvolution mode ('full', 'doublet', or 'multi')
         config: Configuration parameters
         batch_size: GPU batch size for pixel processing
-        
+
     Returns:
         Result object containing weights and predictions.
     """
     if mode not in ["full", "doublet", "multi"]:
         raise ValueError(f"Unknown mode: {mode}")
-        
+
     rctd = RCTD(spatial, reference, config)
     rctd.fit_platform_effects(sigma_override=sigma_override)
-    
+
     print(f"Running in {mode} mode...")
-    
+
     kwargs = {
         "spatial_counts": rctd.counts,
         "spatial_numi": rctd.nUMI,
@@ -259,12 +271,12 @@ def run_rctd(
         "x_vals": rctd.x_vals,
         "batch_size": batch_size,
     }
-    
+
     if mode == "full":
         res = run_full_mode(**kwargs)
     elif mode == "doublet":
         res = run_doublet_mode(**kwargs, config=rctd.config)
     elif mode == "multi":
         res = run_multi_mode(**kwargs, config=rctd.config)
-        
+
     return res
