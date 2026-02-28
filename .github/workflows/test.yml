@@ -22,10 +22,20 @@ jobs:
           python-version: ${{ matrix.python-version }}
 
       - name: Cache Q-matrices
+        id: cache-q
         uses: actions/cache@v4
         with:
           path: ~/.cache/rctd
           key: q-matrices-v0.1.0
+
+      - name: Download Q-matrices
+        if: steps.cache-q.outputs.cache-hit != 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mkdir -p ~/.cache/rctd
+          gh release download v0.1.0 --repo p-gueguen/rctd-py \
+            --pattern q_matrices.npz --dir ~/.cache/rctd
 
       - name: Install dependencies
         run: pip install ".[dev]"
