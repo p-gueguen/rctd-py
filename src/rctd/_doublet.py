@@ -1,0 +1,388 @@
+import jax
+import jax.numpy as jnp
+import numpy as np
+from typing import List, Dict
+
+from rctd._irwls import solve_irwls_batch
+from rctd._full import run_full_mode
+from rctd._types import (
+    DoubletResult,
+    RCTDConfig,
+    SPOT_CLASS_REJECT,
+    SPOT_CLASS_SINGLET,
+    SPOT_CLASS_DOUBLET_CERTAIN,
+    SPOT_CLASS_DOUBLET_UNCERTAIN
+)
+from itertools import combinations
+
+
+def run_doublet_mode(
+    spatial_counts: np.ndarray,
+    spatial_numi: np.ndarray,
+    norm_profiles: np.ndarray,
+    cell_type_names: List[str],
+    q_mat: np.ndarray,
+    sq_mat: np.ndarray,
+    x_vals: np.ndarray,
+    config: RCTDConfig,
+    batch_size: int = 10000,
+) -> DoubletResult:
+    """Run doublet mode deconvolution.
+    
+    Args:
+        spatial_counts: (N, G) observed count matrix
+        spatial_numi: (N,) total UMI per pixel
+        norm_profiles: (G, K) normalized reference profiles
+        cell_type_names: List of length K
+        q_mat: Likelihood table
+        sq_mat: Likelihood spline table
+        x_vals: Lambda grid points
+        config: RCTD configuration parameters
+        batch_size: Number of pixels to process simultaneously on GPU
+    """
+    N, G = spatial_counts.shape
+    K = norm_profiles.shape[1]
+    
+    # 1. Full fit to get candidates
+    # In R, doublet_mode="doublet" first runs doublet_mode="full" (or equivalent) in process_beads_batch
+    # Let's use run_full_mode for this
+    full_res = run_full_mode(
+        spatial_counts=spatial_counts,
+        spatial_numi=spatial_numi,
+        norm_profiles=norm_profiles,
+        cell_type_names=cell_type_names,
+        q_mat=q_mat,
+        sq_mat=sq_mat,
+        x_vals=x_vals,
+        batch_size=batch_size
+    )
+    W_full = full_res.weights  # (N, K)
+    
+    # 2. Candidate selection (CPU)
+    # R: candidates <- names(which(all_weights > initial_weight_thresh))
+    WEIGHT_THRESHOLD = 0.01
+    candidates_list = []
+    for n in range(N):
+        cands = np.where(W_full[n] > WEIGHT_THRESHOLD)[0].tolist()
+        if len(cands) == 0:
+            # R: candidates = cell_type_info[[2]][1:min(3, n_cell_types)]
+            cands = list(range(min(3, K)))
+        elif len(cands) == 1:
+            # R: if first type, add second; else add first
+            if cands[0] == 0:
+                cands.append(1)
+            else:
+                cands.append(0)
+        candidates_list.append(cands)
+
+    # 3. Pairwise scoring (GPU, batched)
+    # Collect all (pixel_idx, type1_idx, type2_idx) triples
+    triples = []
+    for n, cands in enumerate(candidates_list):
+        for t1, t2 in combinations(cands, 2):
+            triples.append((n, t1, t2))
+            
+    pair_log_l = {}   # (n, t1, t2) -> score
+    pair_weights = {} # (n, t1, t2) -> array([w1, w2])
+    
+    P_gpu = jnp.array(norm_profiles)
+    Q_gpu = jnp.array(q_mat)
+    SQ_gpu = jnp.array(sq_mat)
+    X_gpu = jnp.array(x_vals)
+    
+    if triples:
+        triples_arr = np.array(triples, dtype=np.int32)
+        M_total = len(triples_arr)
+        
+        for start in range(0, M_total, batch_size):
+            end = min(start + batch_size, M_total)
+            tr = triples_arr[start:end]
+            bs = tr.shape[0]
+            
+            pix_idx = tr[:, 0]
+            t1_idx = tr[:, 1]
+            t2_idx = tr[:, 2]
+            
+            nUMI_tr = jnp.array(spatial_numi[pix_idx])
+            B_tr = jnp.array(spatial_counts[pix_idx])
+            
+            # P_pair is (G, bs, 2) then permute -> (bs, G, 2)
+            # In numpy, indexing P[:, [t1_idx, t2_idx]] -> shape (G, 2, bs), which means we need something specific
+            # we can vmap the extraction or use advanced indexing.
+            # Using advanced indexing in JAX:
+            # P_gpu: (G, K)
+            # We want (bs, G, 2). 
+            # P_gpu[:, t1_idx]: (G, bs) -> transpose: (bs, G)
+            P1 = P_gpu[:, t1_idx].T
+            P2 = P_gpu[:, t2_idx].T
+            P_pair = jnp.stack([P1, P2], axis=-1)  # (bs, G, 2)
+            
+            S_pair = nUMI_tr[:, None, None] * P_pair
+            
+            weights_batch, conv_batch = solve_irwls_batch(
+                S_batch=S_pair,
+                Y_batch=B_tr,
+                nUMI_batch=nUMI_tr,
+                Q_mat=Q_gpu,
+                SQ_mat=SQ_gpu,
+                x_vals=X_gpu,
+                max_iter=25,
+                min_change=0.001,
+                constrain=False,
+                bulk_mode=False
+            )
+
+            from rctd._likelihood import calc_log_likelihood
+            # Score logic: R's calc_log_l_vec returns positive NLL (lower=better)
+            expected_tr = jnp.sum(S_pair * weights_batch[:, None, :], axis=-1) # (bs, G)
+            expected_tr = jnp.maximum(expected_tr, 1e-4) # (matches RCTD R solver)
+            
+            # vmap of calc_log_likelihood
+            batched_nll = jax.vmap(
+                lambda y, lam: calc_log_likelihood(y, lam, Q_gpu, SQ_gpu, X_gpu, config.K_val),
+                in_axes=(0, 0)
+            )
+            scores_batch = batched_nll(B_tr, expected_tr)
+            
+            w_np = np.array(weights_batch)
+            sc_np = np.array(scores_batch)
+            
+            for i in range(bs):
+                n_idx, t1, t2 = triples[start + i]
+                pair_log_l[(n_idx, t1, t2)] = sc_np[i]
+                pair_weights[(n_idx, t1, t2)] = w_np[i]
+
+    # 4. Singlet scoring
+    singles = list({(n, t) for n, cands in enumerate(candidates_list) for t in cands})
+    singlet_log_l = {}
+    
+    if singles:
+        singles_arr = np.array(singles, dtype=np.int32)
+        S_total = len(singles_arr)
+        
+        for start in range(0, S_total, batch_size):
+            end = min(start + batch_size, S_total)
+            sg = singles_arr[start:end]
+            bs = sg.shape[0]
+            
+            pix_idx = sg[:, 0]
+            t_idx = sg[:, 1]
+            
+            nUMI_sg = jnp.array(spatial_numi[pix_idx])
+            B_sg = jnp.array(spatial_counts[pix_idx])
+            
+            # P_sg: (bs, G, 1)
+            P_sg = P_gpu[:, t_idx].T[..., None]
+            S_sg = nUMI_sg[:, None, None] * P_sg
+            
+            weights_batch, conv_batch = solve_irwls_batch(
+                S_batch=S_sg,
+                Y_batch=B_sg,
+                nUMI_batch=nUMI_sg,
+                Q_mat=Q_gpu,
+                SQ_mat=SQ_gpu,
+                x_vals=X_gpu,
+                max_iter=25,
+                min_change=0.001,
+                constrain=False,
+                bulk_mode=False
+            )
+            
+            expected_sg = jnp.sum(S_sg * weights_batch[:, None, :], axis=-1)
+            expected_sg = jnp.maximum(expected_sg, 1e-4)
+            
+            batched_nll = jax.vmap(
+                lambda y, lam: calc_log_likelihood(y, lam, Q_gpu, SQ_gpu, X_gpu, config.K_val),
+                in_axes=(0, 0)
+            )
+            scores_batch = batched_nll(B_sg, expected_sg)
+            sc_np = np.array(scores_batch)
+            
+            for i in range(bs):
+                n_idx, t = singles[start + i]
+                singlet_log_l[(n_idx, t)] = sc_np[i]
+                
+    # 5. Classification — matches R's process_bead_doublet logic
+    # Build score matrix per pixel for check_pairs_type
+    weights_doublet = np.zeros((N, 2), dtype=np.float32)
+    spot_class = np.zeros(N, dtype=np.int32)
+    first_type = np.zeros(N, dtype=np.int32)
+    second_type = np.zeros(N, dtype=np.int32)
+    first_class = np.zeros(N, dtype=bool)
+    second_class = np.zeros(N, dtype=bool)
+    min_score = np.zeros(N, dtype=np.float32)
+    singlet_score_res = np.zeros(N, dtype=np.float32)
+    INF = 1e18
+
+    for n in range(N):
+        cands = candidates_list[n]
+        C = len(cands)
+
+        # Singlet scores per candidate type
+        sing_scores = {t: singlet_log_l.get((n, t), INF) for t in cands}
+
+        # Build score matrix (symmetric) for all pairs
+        score_mat = {}
+        min_p_score = INF
+        best_t1, best_t2 = cands[0], cands[1] if C > 1 else cands[0]
+        for i in range(C):
+            for j in range(i + 1, C):
+                t1, t2 = cands[i], cands[j]
+                sc = pair_log_l.get((n, t1, t2), INF)
+                score_mat[(t1, t2)] = sc
+                score_mat[(t2, t1)] = sc
+                if sc < min_p_score:
+                    min_p_score = sc
+                    best_t1, best_t2 = t1, t2
+
+        # R's check_pairs_type for default class_df (each type = own class):
+        # all_pairs = TRUE if no competing pair (within CONFIDENCE_THRESHOLD
+        # of min_score) exists where NEITHER type is my_type.
+        # i.e., my_type is essential in every competitive pair.
+        def check_pairs_type(my_type):
+            all_pairs = True
+            for i in range(C):
+                for j in range(C):
+                    if i != j:
+                        t1, t2 = cands[i], cands[j]
+                        sc = score_mat.get((t1, t2), INF)
+                        if sc < min_p_score + config.CONFIDENCE_THRESHOLD:
+                            if t1 != my_type and t2 != my_type:
+                                all_pairs = False
+            return all_pairs, sing_scores.get(my_type, INF)
+
+        type1_all_pairs, type1_sing = check_pairs_type(best_t1)
+        type2_all_pairs, type2_sing = check_pairs_type(best_t2)
+
+        # R classification order:
+        # 1. reject if neither type is uniquely necessary
+        # 2. doublet_uncertain if only one type is necessary
+        # 3. doublet_certain if both types are necessary
+        # 4. singlet override if singlet_score - min_score < DOUBLET_THRESHOLD
+        if not type1_all_pairs and not type2_all_pairs:
+            s_class = SPOT_CLASS_REJECT
+            s_score = min_p_score + 2 * config.DOUBLET_THRESHOLD  # arbitrary, ensures not singlet
+            f_class = False
+            sc_class = False
+        elif type1_all_pairs and not type2_all_pairs:
+            s_class = SPOT_CLASS_DOUBLET_UNCERTAIN
+            # R: first_class <- !type1_pres$all_pairs
+            # With default class_df (each type = own class), all_pairs == all_pairs_class
+            # so when all_pairs_class is True, all_pairs is also True → !True = False
+            f_class = False
+            sc_class = False
+            s_score = type1_sing
+        elif not type1_all_pairs and type2_all_pairs:
+            s_class = SPOT_CLASS_DOUBLET_UNCERTAIN
+            # Swap types so first_type is the confident one
+            best_t1, best_t2 = best_t2, best_t1
+            type1_sing, type2_sing = type2_sing, type1_sing
+            f_class = False
+            sc_class = False
+            s_score = type1_sing
+        else:
+            # Both types uniquely necessary
+            s_class = SPOT_CLASS_DOUBLET_CERTAIN
+            s_score = min(type1_sing, type2_sing)
+            # R: first_class <- !type1_pres$all_pairs (False with default class_df)
+            f_class = False
+            sc_class = False
+            # R: order by singlet score (lower = more confident)
+            if type2_sing < type1_sing:
+                best_t1, best_t2 = best_t2, best_t1
+
+        # Singlet override (R lines 132-133)
+        if s_score - min_p_score < config.DOUBLET_THRESHOLD:
+            s_class = SPOT_CLASS_SINGLET
+
+        # Doublet weights
+        pair_key = (n, best_t1, best_t2)
+        # Try both orderings since we may have swapped
+        if pair_key not in pair_weights:
+            pair_key = (n, best_t2, best_t1)
+        if pair_key in pair_weights:
+            dw = pair_weights[pair_key].copy()
+            # If we swapped the key ordering, swap weights too
+            if pair_key[1] != best_t1:
+                dw = dw[::-1]
+            s = dw.sum()
+            dw = dw / s if s > 0 else np.array([0.5, 0.5])
+        else:
+            dw = np.array([W_full[n, best_t1], W_full[n, best_t2]])
+            s = dw.sum()
+            dw = dw / s if s > 0 else np.array([0.5, 0.5])
+
+        if s_class == SPOT_CLASS_SINGLET:
+            out_doublet_w = np.array([1.0, 0.0])
+            # For singlet, first_type = best singlet type
+            best_sing_type = min(sing_scores, key=sing_scores.get)
+            first_t = best_sing_type
+            second_t = best_t2 if best_t1 == best_sing_type else best_t1
+            f_class = False
+            sc_class = False
+        else:
+            out_doublet_w = dw
+            first_t = best_t1
+            second_t = best_t2
+
+        spot_class[n] = s_class
+        first_type[n] = first_t
+        second_type[n] = second_t
+        min_score[n] = min_p_score
+        singlet_score_res[n] = s_score
+        first_class[n] = f_class
+        second_class[n] = sc_class
+
+    # 6. Final doublet decomposition — matches R's line 134 in process_bead_doublet
+    # R runs a FRESH decompose_sparse(first_type, second_type, score_mode=FALSE)
+    # with n.iter=50, constrain=FALSE, then normalizes weights to sum=1.
+    # This gives the final doublet weights for ALL pixels (including singlets/rejects).
+    final_t1 = first_type  # (N,) int
+    final_t2 = second_type  # (N,) int
+
+    for start in range(0, N, batch_size):
+        end = min(start + batch_size, N)
+        bs = end - start
+
+        pix_idx = np.arange(start, end)
+        nUMI_f = jnp.array(spatial_numi[pix_idx])
+        B_f = jnp.array(spatial_counts[pix_idx])
+
+        P1 = P_gpu[:, final_t1[pix_idx]].T
+        P2 = P_gpu[:, final_t2[pix_idx]].T
+        P_pair = jnp.stack([P1, P2], axis=-1)  # (bs, G, 2)
+        S_pair = nUMI_f[:, None, None] * P_pair
+
+        w_final, _ = solve_irwls_batch(
+            S_batch=S_pair,
+            Y_batch=B_f,
+            nUMI_batch=nUMI_f,
+            Q_mat=Q_gpu,
+            SQ_mat=SQ_gpu,
+            x_vals=X_gpu,
+            max_iter=50,
+            min_change=0.001,
+            constrain=False,
+            bulk_mode=False
+        )
+
+        w_np = np.array(w_final)
+        # R: results$weights = results$weights / sum(results$weights)
+        w_sums = w_np.sum(axis=1, keepdims=True)
+        w_sums = np.maximum(w_sums, 1e-10)
+        w_np = w_np / w_sums
+
+        weights_doublet[start:end] = w_np
+
+    return DoubletResult(
+        weights=W_full,
+        weights_doublet=weights_doublet,
+        spot_class=spot_class,
+        first_type=first_type,
+        second_type=second_type,
+        first_class=first_class,
+        second_class=second_class,
+        min_score=min_score,
+        singlet_score=singlet_score_res,
+        cell_type_names=cell_type_names,
+    )

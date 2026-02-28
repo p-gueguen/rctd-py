@@ -1,0 +1,58 @@
+[build-system]
+requires = ["hatchling", "hatch-vcs"]
+build-backend = "hatchling.build"
+
+[project]
+name = "rctd-py"
+dynamic = ["version"]
+description = "GPU-accelerated Robust Cell Type Decomposition (RCTD) for spatial transcriptomics"
+readme = "README.md"
+license = "GPL-3.0-or-later"
+requires-python = ">=3.10"
+authors = [{ name = "Paul Gueguen" }]
+keywords = ["spatial-transcriptomics", "deconvolution", "single-cell", "JAX", "GPU"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Bio-Informatics",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",
+]
+dependencies = [
+    "jax>=0.4.20",
+    "jaxlib>=0.4.20",
+    "numpy>=1.24",
+    "scipy>=1.10",
+    "anndata>=0.10",
+]
+
+[project.optional-dependencies]
+cuda = ["jax[cuda12]"]
+dev = ["pytest>=7.0", "pytest-cov", "ruff"]
+
+[project.urls]
+Homepage = "https://github.com/p-gueguen/rctd-py"
+Repository = "https://github.com/p-gueguen/rctd-py"
+Issues = "https://github.com/p-gueguen/rctd-py/issues"
+
+[tool.hatch.version]
+source = "vcs"
+
+[tool.hatch.build.hooks.vcs]
+version-file = "src/rctd/_version.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/rctd"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W"]

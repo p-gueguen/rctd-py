@@ -1,0 +1,49 @@
+# Virtual environments
+.venv/
+.env/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+
+# Testing
+.pytest_cache/
+htmlcov/
+.coverage
+coverage.xml
+
+# Data (large reference/validation files)
+data/
+
+# R reference validation data
+scripts/r_reference/
+
+# Package data (generated at build time)
+src/rctd/data/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# SLURM / HPC
+*.log
+*.err
+/scratch/
+
+# Build artifacts
+*.knit.md
+*.html
+
+# Lock files
+uv.lock
+
+# Generated version file
+src/rctd/_version.py

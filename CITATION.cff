@@ -1,0 +1,39 @@
+cff-version: 1.2.0
+title: "rctd-py: GPU-accelerated RCTD for spatial transcriptomics"
+message: >-
+  If you use this software, please cite the original
+  spacexr RCTD paper.
+type: software
+authors:
+  - given-names: Paul
+    family-names: Gueguen
+license: GPL-3.0-or-later
+repository-code: "https://github.com/p-gueguen/rctd-py"
+keywords:
+  - spatial-transcriptomics
+  - deconvolution
+  - single-cell
+  - JAX
+  - GPU
+references:
+  - type: article
+    title: "Robust decomposition of cell type mixtures in spatial transcriptomics"
+    authors:
+      - given-names: Dylan M
+        family-names: Cable
+      - given-names: Evan
+        family-names: Murray
+      - given-names: Luli S
+        family-names: Zou
+      - given-names: Aleksandrina
+        family-names: Goeva
+      - given-names: Evan Z
+        family-names: Macosko
+      - given-names: Fei
+        family-names: Chen
+    journal: "Nature Biotechnology"
+    volume: 40
+    start: 517
+    end: 526
+    year: 2022
+    doi: "10.1038/s41587-021-00830-w"
