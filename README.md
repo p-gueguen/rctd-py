@@ -65,7 +65,20 @@ RCTD supports three modes, selected via the `mode` parameter:
 
 ## Benchmarks
 
-IRWLS solver throughput measured on the spacexr vignette dataset (71 pixels, 313 genes, 19 cell types), scaled to larger pixel counts:
+### End-to-end (Xenium, 58k pixels)
+
+Full pipeline on 10x Xenium duodenum Region 3 (58,187 pixels, 380 genes, 38 cell types, doublet mode):
+
+| Backend | Time | Pixels/sec |
+|---------|------|-----------|
+| R spacexr (8 CPU cores) | 51 min | ~19 |
+| JAX GPU (L40S) | 66 min | ~15 |
+
+End-to-end runtime is dominated by sigma estimation, which runs sequentially and accounts for most of the wall-clock time. The IRWLS deconvolution step itself is much faster on GPU (see below), but sigma estimation currently limits overall speedup.
+
+### IRWLS solver only
+
+Solver throughput measured on the spacexr vignette dataset (71 pixels, 313 genes, 19 cell types), scaled to larger pixel counts:
 
 | Backend | Pixels/sec | Speedup vs R |
 |---------|-----------|--------------|
@@ -74,9 +87,7 @@ IRWLS solver throughput measured on the spacexr vignette dataset (71 pixels, 313
 | JAX GPU (L40S) | ~3,900 | 63x |
 | JAX GPU (Blackwell B200) | ~4,450 | 72x |
 
-GPU throughput measured at 7,100--71,000 pixels where throughput saturates (~3,900 pixels/sec on L40S). JAX compilation overhead dominates at small pixel counts.
-
-Real-world performance on Xenium Region 3 (58,191 pixels, 380 genes, 45 cell types): ~66 minutes end-to-end on L40S GPU including sigma estimation.
+GPU throughput saturates at ~3,900 pixels/sec on L40S at 7k+ pixels. JAX compilation overhead dominates at small pixel counts.
 
 ## Validation
 
