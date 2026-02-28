@@ -31,16 +31,19 @@ class TestBuildXVals:
         """Validate against the R spacexr X_vals.rds file."""
         import subprocess
 
-        result = subprocess.run(
-            [
-                "Rscript",
-                "-e",
-                'cat(formatC(readRDS("~/git/spacexr/inst/extdata/Qmat/X_vals.rds"), '
-                'format="e", digits=15), sep="\\n")',
-            ],
-            capture_output=True,
-            text=True,
-        )
+        try:
+            result = subprocess.run(
+                [
+                    "Rscript",
+                    "-e",
+                    'cat(formatC(readRDS("~/git/spacexr/inst/extdata/Qmat/X_vals.rds"), '
+                    'format="e", digits=15), sep="\\n")',
+                ],
+                capture_output=True,
+                text=True,
+            )
+        except FileNotFoundError:
+            pytest.skip("Rscript not found")
         if result.returncode != 0:
             pytest.skip("R/spacexr not available for cross-validation")
         r_x_vals = np.array([float(x) for x in result.stdout.strip().split("\n")])
