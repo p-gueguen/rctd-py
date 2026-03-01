@@ -77,10 +77,13 @@ def choose_sigma(
     # ── Define vmapped evaluation kernel (Step 3) ──
     def _eval_candidates(Y, X_scaled, Q_stack, SQ_stack):
         """Evaluate all sigma candidates × scale factors in one fused kernel."""
+
         def score_one_sigma(Q, SQ):
             def score_one_fac(X_fac):
                 return calc_log_likelihood(Y, X_fac, Q, SQ, x_j, k_val)
+
             return jnp.min(jax.vmap(score_one_fac)(X_scaled))
+
         return jax.vmap(score_one_sigma)(Q_stack, SQ_stack)
 
     eval_candidates_jit = jax.jit(_eval_candidates)
