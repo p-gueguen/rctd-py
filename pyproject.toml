@@ -48,6 +48,9 @@ version-file = "src/rctd/_version.py"
 packages = ["src/rctd"]
 exclude = ["src/rctd/data/q_matrices.npz"]
 
+[tool.hatch.build.targets.sdist]
+exclude = ["src/rctd/data/q_matrices.npz", "data/", "benchmarks/", "docs/", "scripts/", "examples/", ".github/", "*.log", "*.err"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 
