@@ -29,7 +29,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.cache/rctd
-          key: q-matrices-v0.1.0
+          key: q-matrices-v0.1.1
 
       - name: Download Q-matrices
         if: steps.cache-q.outputs.cache-hit != 'true'

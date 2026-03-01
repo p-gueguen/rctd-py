@@ -46,6 +46,7 @@ version-file = "src/rctd/_version.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/rctd"]
+exclude = ["src/rctd/data/q_matrices.npz"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
