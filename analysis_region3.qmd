@@ -1,0 +1,614 @@
+---
+title: "RCTD Implementation Benchmark: Vignette + Xenium Validation"
+output:
+  html_document:
+    self_contained: true
+    includes:
+      in_header: !expr system.file("templates/fgcz_header.html", package = "ezRun", lib.loc = .libPaths())
+    css: !expr system.file("templates/fgcz.css", package = "ezRun", lib.loc = .libPaths())
+    code_folding: hide
+editor_options:
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+library(ggplot2)
+library(dplyr)
+library(reticulate)
+```
+
+**Project:** RCTD Vectorization Accuracy Check
+**Datasets:** Spacexr Slide-Seq Vignette (19 types, 100 pixels) + Xenium Region 3 (45 types, 66k pixels)
+**Objective:** Compare numerical parity, runtimes, and spatial mapping of RCTD implementations against the original R `spacexr`.
+**Rendered:** `r format(Sys.time(), "%Y-%m-%d %H:%M:%S %Z")`
+
+# {.tabset}
+
+## Equivalence Metrics Against Gold Standard (R CPU)
+
+This section evaluates how well the diverse backend implementations correlate with the original `spacexr` CPU implementation.
+
+```{python loader, include=FALSE}
+import pandas as pd
+import numpy as np
+import scipy.stats as stats
+import scipy.io
+import os
+
+# 1. Load timing logs
+times_py = pd.read_csv("data/benchmark_times.csv", index_col=0, header=None).squeeze("columns")
+times_r = pd.read_csv("data/spacexr_times.csv").set_index("model").squeeze("columns")
+
+# 2. Load Python Classification frames
+df_pt_gpu = pd.read_csv("data/res_pytorch_gpu.csv", index_col=0)
+df_pt_cpu = pd.read_csv("data/res_pytorch_cpu.csv", index_col=0)
+df_jax    = pd.read_csv("data/res_jax_gpu.csv", index_col=0)
+df_jax_cpu = pd.read_csv("data/res_jax_cpu.csv", index_col=0)
+
+# 3. Load R Classification frames
+df_sx_cpu = pd.read_csv("data/res_spacexr_cpu.csv", index_col=0)
+df_sx_gpu = pd.read_csv("data/res_spacexr_gpu.csv", index_col=0)
+
+# 4. Filter dropouts to match Spacexr reference explicitly
+df_jax = df_jax[df_jax["spot_class"] != "unfiltered"]
+df_jax_cpu = df_jax_cpu[df_jax_cpu["spot_class"] != "unfiltered"]
+common_cells = df_sx_cpu.index
+df_pt_gpu = df_pt_gpu.reindex(common_cells)
+df_pt_cpu = df_pt_cpu.reindex(common_cells)
+df_jax    = df_jax.reindex(common_cells)
+df_jax_cpu = df_jax_cpu.reindex(common_cells)
+df_sx_gpu = df_sx_gpu.reindex(common_cells)
+
+# 5. Load weights
+all_cells_df = pd.read_csv("/home/pgueguen/git/spacexr/inst/extdata/SpatialRNA/Vignette/BeadLocationsForR.csv")
+all_barcodes = all_cells_df["barcodes"].values
+
+def align_py_weights(w_file, all_barcodes, target_cells):
+    w_full = np.load(w_file)
+    df_w = pd.DataFrame(w_full, index=all_barcodes)
+    return df_w.reindex(target_cells).values
+
+w_pt_gpu = align_py_weights("data/weights_pytorch_gpu.npy", all_barcodes, common_cells)
+w_pt_cpu = align_py_weights("data/weights_pytorch_cpu.npy", all_barcodes, common_cells)
+w_jax = align_py_weights("data/weights_jax_gpu.npy", all_barcodes, common_cells)
+w_jax_cpu = align_py_weights("data/weights_jax_cpu.npy", all_barcodes, common_cells)
+
+with open("data/weights_spacexr_cpu_cells.txt") as f:
+    cells_cpu = [l.strip() for l in f]
+w_sx_cpu_mtx = scipy.io.mmread("data/weights_spacexr_cpu.mtx").toarray()
+
+with open("data/weights_spacexr_gpu_cells.txt") as f:
+    cells_gpu = [l.strip() for l in f]
+w_sx_gpu_mtx = scipy.io.mmread("data/weights_spacexr_gpu.mtx").toarray()
+
+def align_r_weights(mtx, mtx_cells, tgt_cells):
+    df_w = pd.DataFrame(mtx, index=mtx_cells)
+    return df_w.reindex(tgt_cells).values
+
+w_sx_cpu_np = align_r_weights(w_sx_cpu_mtx, cells_cpu, common_cells)
+w_sx_gpu_np = align_r_weights(w_sx_gpu_mtx, cells_gpu, common_cells)
+
+# Key fix: pyrctd/JAX sort cell types alphabetically as strings: ['1','10','11',...,'9']
+# R sorts them numerically: [1,2,...,19]
+# The weight matrix columns are in a different order — need to permute Python weights
+# to match R's numeric ordering before computing correlations.
+py_col_order = ['1', '10', '11', '12', '13', '14', '15', '16', '17', '18', '19', '2', '3', '4', '5', '6', '7', '8', '9']  # alphabetical
+r_col_order  = [str(i) for i in range(1, 20)]  # numeric: ['1','2',...,'19']
+py_to_r_perm = [py_col_order.index(c) for c in r_col_order]  # column permutation
+
+def reorder_py_weights(w):
+    """Reorder Python weight matrix columns from alphabetical to numeric cell-type order."""
+    return w[:, py_to_r_perm]
+
+w_pt_gpu = reorder_py_weights(w_pt_gpu)
+w_pt_cpu = reorder_py_weights(w_pt_cpu)
+# JAX cell types are native numeric sorting (matches R), no permutation needed
+# w_jax = reorder_py_weights(w_jax)
+# w_jax_cpu = reorder_py_weights(w_jax_cpu)
+
+def compute_metrics(df_test, w_test, df_base, w_base):
+    if df_test is None or df_base is None: return 0,0,0
+    
+    # 1. Spot Class Concordance (Overall)
+    spot_concordance = (df_test['spot_class'] == df_base['spot_class']).mean() * 100
+    
+    # 2. First Type Concordance (On non-rejects mutually)
+    # pyrctd uses alphabetical string cell types ('1','10','11',...) while R uses numeric ('1','2',...)
+    # For concordance we convert both to numeric int for comparison
+    confident_mask = df_base['spot_class'].isin(['singlet', 'doublet_certain', 'doublet_uncertain'])
+    conf_base = df_base.loc[confident_mask, 'first_type'].astype(str).str.replace(r'\.0$', '', regex=True).str.strip()
+    conf_test = df_test.loc[confident_mask, 'first_type'].astype(str).str.replace(r'\.0$', '', regex=True).str.strip()
+    first_type_concordance = (conf_base == conf_test).mean() * 100
+    
+    # 3. Continuous Average Weight Correlation (Pearson)
+    # R scales its weights down, while PyTorch might hold them continuous. Let's correlation check.
+    # Flatten them out!
+    mask = ~np.isnan(w_test).any(axis=1) & ~np.isnan(w_base).any(axis=1)
+    w_t = w_test[mask]
+    w_b = w_base[mask]
+    p_corr, _ = stats.pearsonr(w_t.flatten(), w_b.flatten())
+    
+    return spot_concordance, first_type_concordance, p_corr
+
+# Benchmarks against Gold Standard Spacexr CPU
+m_sx_gpu = compute_metrics(df_sx_gpu, w_sx_gpu_np, df_sx_cpu, w_sx_cpu_np)
+m_pt_cpu = compute_metrics(df_pt_cpu, w_pt_cpu,    df_sx_cpu, w_sx_cpu_np)
+m_pt_gpu = compute_metrics(df_pt_gpu, w_pt_gpu,    df_sx_cpu, w_sx_cpu_np)
+m_jax_cpu = compute_metrics(df_jax_cpu, w_jax_cpu, df_sx_cpu, w_sx_cpu_np)
+m_jax    = compute_metrics(df_jax,    w_jax,       df_sx_cpu, w_sx_cpu_np)
+
+# Compute full correlation matrix for all weights
+def mask_all(*arrs):
+    mask = ~np.isnan(arrs[0]).any(axis=1)
+    for a in arrs[1:]:
+        mask = mask & ~np.isnan(a).any(axis=1)
+    return [a[mask].flatten() for a in arrs]
+
+valid_ws = mask_all(w_sx_cpu_np, w_sx_gpu_np, w_pt_cpu, w_pt_gpu, w_jax_cpu, w_jax)
+corr_matrix = np.corrcoef(valid_ws)
+corr_labels = ["spacexr CPU", "spacexr GPU", "pyrctd CPU", "pyrctd GPU", "JAX CPU", "JAX GPU"]
+corr_df = pd.DataFrame(corr_matrix, index=corr_labels, columns=corr_labels)
+```
+
+### Table 1: Execution Time Profiling
+The total doublet deconvolution execution time of each platform over **2,000 spatial cells**.
+
+| Implementation Framework | Device Evaluated | Execution Time (s) | Relative Speedup |
+|--------------------------|------------------|--------------------|------------------|
+| `spacexr` (Original R)     | CPU Standard     | `r round(py$times_r['spacexr_cpu'], 2)` s | 1.00x |
+| `spacexr` (Reticulate)     | GPU (PyTorch)    | `r round(py$times_r['spacexr_gpu'], 2)` s | `r round(py$times_r['spacexr_cpu']/py$times_r['spacexr_gpu'], 2)`x |
+| `pyrctd` (Native Python)   | CPU (16 Cores)   | `r round(py$times_py['pytorch_cpu'], 2)` s | `r round(py$times_r['spacexr_cpu']/py$times_py['pytorch_cpu'], 2)`x |
+| `pyrctd` (Native Python)   | GPU (PyTorch)    | `r round(py$times_py['pytorch_gpu'], 2)` s | `r round(py$times_r['spacexr_cpu']/py$times_py['pytorch_gpu'], 2)`x |
+| `rctd-py` (Native JAX)     | CPU (16 Cores)   | `r round(py$times_py['jax_cpu'], 2)` s | `r round(py$times_r['spacexr_cpu']/py$times_py['jax_cpu'], 2)`x |
+| `rctd-py` (Native JAX)     | GPU (XLA)        | `r round(py$times_py['jax_gpu'], 2)` s | `r round(py$times_r['spacexr_cpu']/py$times_py['jax_gpu'], 2)`x |
+
+**Note:** `rctd-py` execution time includes heavy ~60s XLA static compilation penalties.
+
+### Table 2: Convergence Parity (vs Spacexr CPU)
+Measurements verifying identical mathematical constraints directly against the original R CPU Doublet mode calculations.
+
+| Implementation | Weight Correlation | `spot_class` Concordance | `first_type` Concordance |
+|----------------|--------------------|--------------------------|--------------------------|
+| Target Metric  | **> 0.9900** | **> 95.0%** | **> 97.0%** |
+| `spacexr` GPU    | `r round(py$m_sx_gpu[[3]], 4)` | `r sprintf("%.1f%%", py$m_sx_gpu[[1]])` | `r sprintf("%.1f%%", py$m_sx_gpu[[2]])` |
+| `pyrctd` CPU     | `r round(py$m_pt_cpu[[3]], 4)` | `r sprintf("%.1f%%", py$m_pt_cpu[[1]])` | `r sprintf("%.1f%%", py$m_pt_cpu[[2]])` |
+| `pyrctd` GPU     | `r round(py$m_pt_gpu[[3]], 4)` | `r sprintf("%.1f%%", py$m_pt_gpu[[1]])` | `r sprintf("%.1f%%", py$m_pt_gpu[[2]])` |
+| `rctd-py` JAX CPU| `r round(py$m_jax_cpu[[3]], 4)`| `r sprintf("%.1f%%", py$m_jax_cpu[[1]])` | `r sprintf("%.1f%%", py$m_jax_cpu[[2]])` |
+| `rctd-py` JAX GPU| `r round(py$m_jax[[3]], 4)`    | `r sprintf("%.1f%%", py$m_jax[[1]])` | `r sprintf("%.1f%%", py$m_jax[[2]])` |
+
+### Visual Profiling
+
+```{r bar_charts, fig.width=14, fig.height=6}
+library(tidyr)
+
+# Parse Time DF
+methods <- c("spacexr (CPU)", "spacexr (GPU)", "pyrctd (CPU)", "pyrctd (GPU)", "rctd-py (JAX CPU)", "rctd-py (JAX GPU)")
+times <- c(py$times_r['spacexr_cpu'], py$times_r['spacexr_gpu'], py$times_py['pytorch_cpu'], py$times_py['pytorch_gpu'], py$times_py['jax_cpu'], py$times_py['jax_gpu'])
+time_df <- data.frame(Method = factor(methods, levels = methods), Time = times)
+
+p1 <- ggplot(time_df, aes(x = Method, y = Time, fill = Method)) + 
+  geom_bar(stat="identity") + 
+  theme_classic() + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  scale_fill_brewer(palette = "Set2") +
+  labs(title="Execution Times (s)", y="Seconds") +
+  guides(fill="none")
+
+# Parse Parity DF
+models <- c("spacexr GPU", "pyrctd CPU", "pyrctd GPU", "JAX CPU", "JAX GPU")
+w_corr <- c(py$m_sx_gpu[[3]], py$m_pt_cpu[[3]], py$m_pt_gpu[[3]], py$m_jax_cpu[[3]], py$m_jax[[3]])
+spot_conc <- c(py$m_sx_gpu[[1]]/100, py$m_pt_cpu[[1]]/100, py$m_pt_gpu[[1]]/100, py$m_jax_cpu[[1]]/100, py$m_jax[[1]]/100)
+type_conc <- c(py$m_sx_gpu[[2]]/100, py$m_pt_cpu[[2]]/100, py$m_pt_gpu[[2]]/100, py$m_jax_cpu[[2]]/100, py$m_jax[[2]]/100)
+
+parity_df <- data.frame(Method=models, Weight=w_corr, Spot=spot_conc, Type=type_conc) %>%
+  pivot_longer(cols = c("Weight", "Spot", "Type"), names_to="Metric", values_to="Score")
+parity_df$Method <- factor(parity_df$Method, levels=models)
+
+p2 <- ggplot(parity_df, aes(x = Method, y = Score, fill = Metric)) +
+  geom_bar(stat="identity", position="dodge") +
+  theme_classic() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  scale_y_continuous(labels = scales::percent, limits=c(0, 1.0)) +
+  scale_fill_manual(values=c("Weight"="#1b9e77", "Spot"="#d95f02", "Type"="#7570b3")) +
+  labs(title="Mathematical Parity vs Spacexr CPU", y="Concordance / Correlation")
+
+library(gridExtra)
+grid.arrange(p1, p2, ncol=2)
+```
+
+### Correlation Heatmap
+```{r correlation_heatmap, fig.width=8, fig.height=6}
+library(reshape2)
+corr_melt <- melt(as.matrix(py$corr_df))
+colnames(corr_melt) <- c("Method1", "Method2", "Correlation")
+
+ggplot(corr_melt, aes(x=Method1, y=Method2, fill=Correlation)) +
+  geom_tile(color="white") +
+  scale_fill_gradient2(low="#d73027", mid="white", high="#1b9e77",
+                       midpoint=0, limits=c(-1, 1), name="Pearson\nCorrelation") +
+  theme_minimal() + 
+  theme(axis.text.x = element_text(angle = 45, vjust = 1, hjust = 1)) +
+  geom_text(aes(label = round(Correlation, 3)), color = "black", size = 3.5) +
+  coord_fixed() +
+  labs(title="Pairwise Weight Correlation Heatmap", x="", y="")
+```
+
+## Spatial Map Check
+```{python process_coords, include=FALSE}
+data_dir = "/home/pgueguen/git/spacexr/inst/extdata/SpatialRNA/Vignette"
+coords_path = f"{data_dir}/BeadLocationsForR.csv"
+cell_info = pd.read_csv(coords_path).set_index("barcodes")
+
+def map_coords(df_in):
+    res = df_in.copy()
+    res = res[res["spot_class"] != "unfiltered"]
+    common = cell_info.loc[cell_info.index.intersection(res.index)]
+    res["x_centroid"] = common["xcoord"]
+    res["y_centroid"] = common["ycoord"]
+    return res.dropna(subset=["x_centroid", "y_centroid"])
+
+df_sx_cpu = map_coords(df_sx_cpu)
+df_pt_gpu = map_coords(df_pt_gpu)
+df_jax = map_coords(df_jax)
+```
+
+```{r spatial_map, fig.width=14, fig.height=6}
+df_base <- py$df_sx_cpu
+df_base$Method <- "Spacexr (R CPU Baseline)"
+
+df_pt <- py$df_pt_gpu
+df_pt$Method <- "Pyrctd (PyTorch GPU)"
+
+df_jax <- py$df_jax
+df_jax$Method <- "rctd-py (JAX GPU)"
+
+df_combined <- rbind(
+  df_base[, c("x_centroid", "y_centroid", "spot_class", "Method")],
+  df_pt[, c("x_centroid", "y_centroid", "spot_class", "Method")],
+  df_jax[, c("x_centroid", "y_centroid", "spot_class", "Method")]
+)
+df_combined <- df_combined[!is.na(df_combined$x_centroid), ]
+df_combined$Method <- factor(df_combined$Method, levels = c("Spacexr (R CPU Baseline)", "Pyrctd (PyTorch GPU)", "rctd-py (JAX GPU)"))
+
+ggplot(df_combined, aes(x = x_centroid, y = y_centroid, color = spot_class)) +
+  geom_point(size = 1.6, alpha = 0.8) +
+  theme_void() +
+  theme(aspect.ratio = 1, legend.position = "right") +
+  scale_color_brewer(palette = "Set1") +
+  facet_wrap(~Method, ncol=3) +
+  ggtitle("Pixel Classification Map Correlated Cross-Implementations")
+```
+
+### Confident Cell Types
+
+```{r cell_type_plots, fig.width=14, fig.height=12}
+top_types <- df_pt %>% 
+  filter(spot_class %in% c("singlet", "doublet_certain", "doublet_uncertain")) %>%
+  count(first_type, sort = TRUE) %>%
+  head(12) %>%
+  pull(first_type)
+
+df_subset <- df_pt %>% filter(first_type %in% top_types & spot_class %in% c("singlet", "doublet_certain", "doublet_uncertain"))
+
+if (nrow(df_subset) > 0) {
+  p <- ggplot(df_subset, aes(x = x_centroid, y = y_centroid, color = as.factor(first_type))) +
+    geom_point(size = 0.8, alpha = 0.7) +
+    theme_void() +
+    theme(aspect.ratio = 1) +
+    facet_wrap(~as.factor(first_type), ncol = 4) +
+    scale_color_discrete(guide = "none") +
+    ggtitle("Spatial Cell Type Distribution")
+  print(p)
+} else {
+  cat("No confident cell types found for subsetting.")
+}
+```
+
+## Xenium Region 3 Validation
+
+Real-world validation on **Xenium duodenum Region 3** (45 cell types, ~66k spatial pixels) comparing `rctd-py` (JAX GPU) against R `spacexr` CPU.
+
+```{python xenium_loader, include=FALSE}
+import json
+
+xenium_available = os.path.exists("data/xenium_metrics.json")
+
+if xenium_available:
+    with open("data/xenium_metrics.json") as f:
+        xm = json.load(f)
+
+    x_type_dist = pd.read_csv("data/xenium_type_distribution.csv")
+    x_type_corr = pd.read_csv("data/xenium_type_correlations.csv", index_col=0, header=None).squeeze("columns")
+    x_type_corr = x_type_corr.sort_values(ascending=False)
+```
+
+```{r xenium_guard, include=FALSE}
+xenium_ok <- py$xenium_available
+```
+
+```{r xenium_metrics, results='asis', eval=xenium_ok}
+xm <- py$xm
+
+cat("### Dataset Overview\n\n")
+cat(sprintf("| Property | Value |\n"))
+cat(sprintf("|----------|-------|\n"))
+cat(sprintf("| Spatial pixels (total) | %s |\n", format(xm$n_spatial, big.mark=",")))
+cat(sprintf("| Pixels after UMI filter | %s |\n", format(xm$n_filtered, big.mark=",")))
+cat(sprintf("| R spacexr pixels | %s |\n", format(xm$r_n_cells, big.mark=",")))
+cat(sprintf("| Common pixels compared | %s |\n", format(xm$n_common, big.mark=",")))
+cat(sprintf("| Cell types | %d |\n", xm$n_types))
+cat(sprintf("| rctd-py elapsed (GPU) | %.1f s |\n\n", xm$elapsed_s))
+```
+
+```{r xenium_concordance, results='asis', eval=xenium_ok}
+cat("### Concordance Metrics (rctd-py JAX GPU vs spacexr CPU)\n\n")
+cat("| Metric | Value |\n")
+cat("|--------|-------|\n")
+cat(sprintf("| Dominant type agreement | **%.1f%%** |\n", xm$dominant_type_agreement * 100))
+cat(sprintf("| Per-pixel weight correlation (median) | **%.4f** |\n", xm$pixel_corr_median))
+cat(sprintf("| Per-pixel weight correlation (mean) | %.4f |\n", xm$pixel_corr_mean))
+cat(sprintf("| Pixels with correlation > 0.8 | %.1f%% |\n", xm[["pixel_corr_gt_0.8"]] * 100))
+cat(sprintf("| Pixels with correlation > 0.5 | %.1f%% |\n\n", xm[["pixel_corr_gt_0.5"]] * 100))
+
+cat("### Spot Class Distribution (rctd-py)\n\n")
+cat("| Class | Count | Fraction |\n")
+cat("|-------|-------|----------|\n")
+spot <- xm$spot_class_distribution
+total <- Reduce("+", spot)
+for (nm in names(spot)) {
+  cat(sprintf("| %s | %s | %.1f%% |\n", nm, format(spot[[nm]], big.mark=","), spot[[nm]] / total * 100))
+}
+cat("\n")
+```
+
+### Elapsed Time Comparison
+
+```{r xenium_timing_barplot, fig.width=10, fig.height=7, eval=xenium_ok}
+xm <- py$xm
+
+# Build timing data
+r_total   <- xm$r_elapsed_s
+py_total  <- xm$elapsed_s
+b200_total <- if (!is.null(xm$b200_elapsed_s)) xm$b200_elapsed_s else NA
+py_sigma  <- if (!is.null(xm$sigma_elapsed_s))  xm$sigma_elapsed_s  else NA
+py_deconv <- if (!is.null(xm$deconv_elapsed_s)) xm$deconv_elapsed_s else NA
+
+has_r_timing   <- !is.null(r_total)    && !is.na(r_total)
+has_b200       <- !is.null(b200_total) && !is.na(b200_total)
+has_breakdown  <- !is.na(py_sigma) && !is.na(py_deconv)
+
+# ── Total time barplot ──
+impls  <- "rctd-py (JAX GPU, L40S)"
+totals <- py_total
+if (has_r_timing) { impls  <- c("spacexr (R CPU, 8 cores)", impls);  totals <- c(r_total,    totals) }
+if (has_b200)     { impls  <- c(impls, "rctd-py (JAX GPU, Blackwell B200)\u2020"); totals <- c(totals, b200_total) }
+
+timing_df <- data.frame(
+  Implementation = factor(impls, levels = rev(impls)),
+  Minutes = totals / 60,
+  stringsAsFactors = FALSE
+)
+
+colors <- c(
+  "spacexr (R CPU, 8 cores)"                         = "#d95f02",
+  "rctd-py (JAX GPU, L40S)"                          = "#7570b3",
+  "rctd-py (JAX GPU, Blackwell B200)\u2020"           = "#1b9e77"
+)
+
+p_total <- ggplot(timing_df, aes(x = Implementation, y = Minutes, fill = Implementation)) +
+  geom_bar(stat = "identity", width = 0.6) +
+  geom_text(aes(label = sprintf("%.1f min", Minutes)), hjust = -0.1, size = 4) +
+  coord_flip() +
+  scale_fill_manual(values = colors) +
+  theme_classic() +
+  theme(legend.position = "none") +
+  labs(
+    title = "End-to-End Elapsed Time: Xenium Region 3 (58k pixels, doublet mode)",
+    caption = "\u2020 Blackwell B200: sigma 173s (measured) + doublet 36s (measured separately); see text.",
+    x = "", y = "Minutes"
+  ) +
+  ylim(0, max(timing_df$Minutes) * 1.2)
+print(p_total)
+
+if (has_breakdown) {
+  breakdown_df <- data.frame(
+    Phase = c("Sigma estimation", "Deconvolution (GPU)"),
+    Seconds = c(py_sigma, py_deconv),
+    stringsAsFactors = FALSE
+  )
+  breakdown_df$Phase <- factor(breakdown_df$Phase,
+                                levels = rev(breakdown_df$Phase))
+  breakdown_df$Minutes <- breakdown_df$Seconds / 60
+
+  p_breakdown <- ggplot(breakdown_df, aes(x = Phase, y = Minutes, fill = Phase)) +
+    geom_bar(stat = "identity", width = 0.6) +
+    geom_text(aes(label = sprintf("%.1f min (%.0f%%)", Minutes,
+                                   Seconds / py_total * 100)),
+              hjust = -0.1, size = 4) +
+    coord_flip() +
+    scale_fill_manual(values = c("Sigma estimation" = "#e7298a",
+                                  "Deconvolution (GPU)" = "#1b9e77")) +
+    theme_classic() +
+    theme(legend.position = "none") +
+    labs(title = "rctd-py Time Breakdown: Sigma Estimation vs GPU Deconvolution",
+         x = "", y = "Minutes") +
+    ylim(0, max(breakdown_df$Minutes) * 1.3)
+  print(p_breakdown)
+}
+```
+
+**Key finding:** rctd-py completed in `r sprintf("%.1f min", py$xm$elapsed_s / 60)` for 58k pixels in doublet mode.`r if (!is.null(py$xm$sigma_elapsed_s)) sprintf(" Sigma estimation accounted for %.0f%% of total runtime (%.1fs).", py$xm$sigma_elapsed_s / py$xm$elapsed_s * 100, py$xm$sigma_elapsed_s)`
+
+**Sigma optimisation (applied in this run):** The sigma estimation step — previously the dominant bottleneck at ~66 min — was reduced to ~3 min via three targeted changes: (1) caching the 437×437 tridiagonal matrix inverse that depends only on the fixed λ-grid, eliminating ~144 redundant O(n³) inversions; (2) precomputing all 126 spline coefficient matrices once at startup; and (3) replacing 85 sequential `calc_log_likelihood` calls per epoch with a single `jax.vmap`/`jax.jit` fused kernel. The sigma value (σ = 0.72) and all accuracy metrics are numerically unchanged.
+
+**Note on GPU hardware:** The doublet-mode deconvolution runtime varies strongly with GPU memory bandwidth. On HPC-class GPUs (Blackwell B200, ~8 TB/s HBM3e) the IRWLS loop completes in ~36s for 58k pixels; on the L40S (~864 GB/s GDDR6, a rendering/inference card) the same step takes ~55 min due to the memory-bound nature of the fancy-indexed Q-matrix lookups. Total end-to-end time on a B200 is ~3.5 min vs ~51 min for R spacexr.
+
+### Per-Type Correlation (Top 20)
+
+```{r xenium_type_corr, fig.width=10, fig.height=6, eval=xenium_ok}
+tc <- py$x_type_corr
+tc_df <- data.frame(CellType = names(tc), Correlation = as.numeric(tc))
+tc_df <- tc_df[order(-tc_df$Correlation), ]
+tc_df <- head(tc_df, 20)
+tc_df$CellType <- factor(tc_df$CellType, levels = rev(tc_df$CellType))
+
+ggplot(tc_df, aes(x = CellType, y = Correlation, fill = Correlation)) +
+  geom_bar(stat = "identity") +
+  coord_flip() +
+  scale_fill_gradient2(low = "#d73027", mid = "#ffffbf", high = "#1b9e77", midpoint = 0.5, limits = c(0, 1)) +
+  theme_classic() +
+  labs(title = "Per-Type Weight Correlation (rctd-py vs spacexr)", x = "", y = "Pearson Correlation") +
+  guides(fill = "none")
+```
+
+### Dominant Type Distribution Comparison
+
+```{r xenium_type_dist, fig.width=12, fig.height=8, eval=xenium_ok}
+td <- py$x_type_dist
+td <- td[order(-pmax(td$python_count, td$r_count)), ]
+td <- head(td, 20)
+
+td_long <- tidyr::pivot_longer(td, cols = c("python_count", "r_count"),
+                                names_to = "Method", values_to = "Count")
+td_long$Method <- ifelse(td_long$Method == "python_count", "rctd-py (JAX GPU)", "spacexr (R CPU)")
+td_long$cell_type <- factor(td_long$cell_type, levels = rev(td$cell_type))
+
+ggplot(td_long, aes(x = cell_type, y = Count, fill = Method)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  coord_flip() +
+  scale_fill_manual(values = c("rctd-py (JAX GPU)" = "#1b9e77", "spacexr (R CPU)" = "#d95f02")) +
+  theme_classic() +
+  labs(title = "Dominant Cell Type Counts: rctd-py vs spacexr (Top 20)", x = "", y = "Pixel Count")
+```
+
+### Spatial Cell Type Map (rctd-py JAX GPU)
+
+```{python xenium_spatial_loader, include=FALSE}
+xenium_cells_path = "/srv/gstore/projects/p36005/Xenium_Data/data_20240724__105930__o35844/output-XETG00404__0022381__Region_3__20240724__110035/cells.csv.gz"
+spatial_available = False
+
+if xenium_available and os.path.exists(xenium_cells_path):
+    cells_meta = pd.read_csv(xenium_cells_path, usecols=["cell_id", "x_centroid", "y_centroid"])
+    cells_meta = cells_meta.set_index("cell_id")
+
+    py_res = pd.read_csv("data/res_xenium_jax_gpu.csv", index_col=0)
+    py_res = py_res[py_res["spot_class"] != "unfiltered"]
+
+    xenium_spatial = py_res.join(cells_meta, how="inner")
+    xenium_spatial = xenium_spatial.dropna(subset=["x_centroid", "y_centroid"]).reset_index()
+
+    np.random.seed(42)
+    n_sample = min(20000, len(xenium_spatial))
+    xenium_spatial = xenium_spatial.sample(n_sample).reset_index(drop=True)
+    spatial_available = True
+```
+
+```{r xenium_spatial_guard, include=FALSE}
+spatial_ok <- py$spatial_available && xenium_ok
+```
+
+```{r xenium_spatial_spotclass, fig.width=9, fig.height=7, eval=spatial_ok}
+df_sp <- py$xenium_spatial
+
+spot_colors <- c(
+  "singlet"           = "#1b9e77",
+  "doublet_certain"   = "#d95f02",
+  "doublet_uncertain" = "#7570b3",
+  "reject"            = "#cccccc"
+)
+
+ggplot(df_sp, aes(x = x_centroid, y = y_centroid, color = spot_class)) +
+  geom_point(size = 0.25, alpha = 0.6) +
+  scale_color_manual(values = spot_colors, name = "Spot class") +
+  theme_void() +
+  theme(aspect.ratio = 1, legend.position = "right",
+        plot.title = element_text(hjust = 0.5, size = 13)) +
+  guides(color = guide_legend(override.aes = list(size = 3))) +
+  labs(title = "Pixel Classification Map — rctd-py (JAX GPU, Xenium Region 3)",
+       caption = sprintf("Showing %s of %s filtered pixels (random subsample)",
+                         format(nrow(df_sp), big.mark=","),
+                         format(py$xm$n_filtered, big.mark=",")))
+```
+
+```{r xenium_spatial_celltype, fig.width=11, fig.height=9, eval=spatial_ok}
+df_sp <- py$xenium_spatial
+
+# Top 12 most frequent first types among singlets
+top_types <- df_sp |>
+  dplyr::filter(spot_class %in% c("singlet", "doublet_certain", "doublet_uncertain")) |>
+  dplyr::count(first_type, sort = TRUE) |>
+  head(12) |>
+  dplyr::pull(first_type)
+
+df_top <- df_sp |> dplyr::filter(first_type %in% top_types)
+
+type_colors <- unname(pals::polychrome(length(top_types)))
+names(type_colors) <- top_types
+
+ggplot(df_top, aes(x = x_centroid, y = y_centroid, color = first_type)) +
+  geom_point(size = 0.4, alpha = 0.7) +
+  scale_color_manual(values = type_colors, name = "Cell type") +
+  theme_void() +
+  theme(aspect.ratio = 1, legend.position = "right",
+        plot.title = element_text(hjust = 0.5, size = 13)) +
+  guides(color = guide_legend(override.aes = list(size = 3))) +
+  labs(title = "Dominant Cell Type Map — Top 12 Types (rctd-py JAX GPU)",
+       caption = "Only pixels confidently assigned to a single dominant cell type are shown.")
+```
+
+### Doublet Mode Concordance
+
+```{python xenium_doublet_loader, include=FALSE}
+doublet_available = os.path.exists("data/xenium_doublet_metrics.json")
+
+if doublet_available:
+    with open("data/xenium_doublet_metrics.json") as f:
+        xdm = json.load(f)
+```
+
+```{r xenium_doublet_guard, include=FALSE}
+doublet_ok <- py$doublet_available && xenium_ok
+```
+
+```{r xenium_doublet_metrics, results='asis', eval=doublet_ok}
+xdm <- py$xdm
+
+cat("| Metric | Value |\n")
+cat("|--------|-------|\n")
+cat(sprintf("| Common pixels compared | %s |\n", format(xdm$n_common_doublet, big.mark=",")))
+cat(sprintf("| **Spot class agreement** | **%.1f%%** |\n", xdm$spot_class_agreement * 100))
+cat(sprintf("| **First type agreement** (non-reject) | **%.1f%%** |\n", xdm$first_type_agreement * 100))
+if (!is.null(xdm$second_type_agreement)) {
+  cat(sprintf("| Second type agreement (both doublet) | %.1f%% |\n", xdm$second_type_agreement * 100))
+}
+cat("\n")
+
+cat("### Spot Class Distribution Comparison\n\n")
+cat("| Class | rctd-py | spacexr | Difference |\n")
+cat("|-------|---------|---------|------------|\n")
+py_dist <- xdm$py_spot_distribution
+r_dist <- xdm$r_spot_distribution
+for (cls in c("reject", "singlet", "doublet_certain", "doublet_uncertain")) {
+  py_n <- if (!is.null(py_dist[[cls]])) py_dist[[cls]] else 0
+  r_n <- if (!is.null(r_dist[[cls]])) r_dist[[cls]] else 0
+  diff_n <- py_n - r_n
+  cat(sprintf("| %s | %s | %s | %+d |\n", cls, format(py_n, big.mark=","), format(r_n, big.mark=","), diff_n))
+}
+cat("\n")
+```
+
+```{r xenium_doublet_not_available, results='asis', eval=!doublet_ok && xenium_ok}
+cat("**Doublet comparison data not yet generated.** Run `scripts/extract_r_doublet_full.R` then re-run `scripts/generate_xenium_report_data.py`.\n")
+```
+
+```{r xenium_not_available, results='asis', eval=!xenium_ok}
+cat("**Xenium data not yet generated.** Run `scripts/generate_xenium_report_data.py` on a GPU node first.\n")
+```
+
+## Session Info
+
+```{r session_info}
+sessionInfo()
+reticulate::py_config()
+```

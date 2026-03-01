@@ -1,3 +1,4 @@
+import time
 from typing import Literal, Union
 
 import anndata
@@ -190,12 +191,18 @@ class RCTD:
         self.x_vals = cache.pop("X_vals")
         q_matrices = {k.replace("Q_", ""): v for k, v in cache.items()}
 
+        # Precompute all spline coefficients once (MI inverse is cached internally)
+        sq_matrices = {
+            k: compute_spline_coefficients(v, self.x_vals) for k, v in q_matrices.items()
+        }
+
         if sigma_override is not None:
             # Bypass auto-calibration — use externally provided sigma (e.g. from R)
             self.sigma = int(sigma_override)
             print(f"Using provided sigma override: {self.sigma / 100.0}")
         else:
             print("Estimating sigma...")
+            t_sigma = time.time()
             self.sigma = choose_sigma(
                 spatial_counts=self.counts,
                 spatial_numi=self.nUMI,
@@ -207,8 +214,10 @@ class RCTD:
                 n_fit=self.config.N_fit,
                 n_epoch=self.config.N_epoch,
                 k_val=self.config.K_val,
+                sq_matrices=sq_matrices,
             )
-            print(f"Chosen sigma: {self.sigma / 100.0}")
+            sigma_elapsed = time.time() - t_sigma
+            print(f"Chosen sigma: {self.sigma / 100.0} ({sigma_elapsed:.1f}s)")
         best_q_key = str(self.sigma)
         if best_q_key not in q_matrices:
             import re
@@ -220,7 +229,7 @@ class RCTD:
             best_q_key = str(nearest)
 
         self.q_mat = q_matrices[best_q_key]
-        self.sq_mat = compute_spline_coefficients(self.q_mat, self.x_vals)
+        self.sq_mat = sq_matrices[best_q_key]
 
         # Cast to target dtype for GPU memory efficiency
         target_dtype = np.float32 if self.config.dtype == "float32" else np.float64
