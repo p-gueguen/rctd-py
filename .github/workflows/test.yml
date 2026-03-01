@@ -34,7 +34,7 @@ jobs:
       - name: Download Q-matrices
         if: steps.cache-q.outputs.cache-hit != 'true'
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.PAT }}
         run: |
           mkdir -p ~/.cache/rctd
           gh release download v0.1.1 --repo p-gueguen/rctd-py \
@@ -49,4 +49,5 @@ jobs:
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v5
         with:
+          token: ${{ secrets.PAT }}
           files: ./coverage.xml

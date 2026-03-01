@@ -39,6 +39,15 @@ Thumbs.db
 *.err
 /scratch/
 
+# Credentials / local secrets
+.env
+.env.local
+.env.*.local
+*.key
+*.pem
+secrets/
+.netrc
+
 # Build artifacts
 *.knit.md
 

@@ -61,7 +61,8 @@ df_jax_cpu = df_jax_cpu.reindex(common_cells)
 df_sx_gpu = df_sx_gpu.reindex(common_cells)
 
 # 5. Load weights
-all_cells_df = pd.read_csv("/home/pgueguen/git/spacexr/inst/extdata/SpatialRNA/Vignette/BeadLocationsForR.csv")
+_vignette_dir = os.getenv("SPACEXR_VIGNETTE_DIR")  # path to spacexr extdata/SpatialRNA/Vignette
+all_cells_df = pd.read_csv(os.path.join(_vignette_dir, "BeadLocationsForR.csv"))
 all_barcodes = all_cells_df["barcodes"].values
 
 def align_py_weights(w_file, all_barcodes, target_cells):
@@ -236,7 +237,7 @@ ggplot(corr_melt, aes(x=Method1, y=Method2, fill=Correlation)) +
 
 ## Spatial Map Check
 ```{python process_coords, include=FALSE}
-data_dir = "/home/pgueguen/git/spacexr/inst/extdata/SpatialRNA/Vignette"
+data_dir = os.getenv("SPACEXR_VIGNETTE_DIR")  # path to spacexr extdata/SpatialRNA/Vignette
 coords_path = f"{data_dir}/BeadLocationsForR.csv"
 cell_info = pd.read_csv(coords_path).set_index("barcodes")
 
@@ -485,10 +486,10 @@ ggplot(td_long, aes(x = cell_type, y = Count, fill = Method)) +
 ### Spatial Cell Type Map (rctd-py JAX GPU)
 
 ```{python xenium_spatial_loader, include=FALSE}
-xenium_cells_path = "/srv/gstore/projects/p36005/Xenium_Data/data_20240724__105930__o35844/output-XETG00404__0022381__Region_3__20240724__110035/cells.csv.gz"
+xenium_cells_path = os.getenv("XENIUM_CELLS_PATH")  # path to cells.csv.gz in Xenium output dir
 spatial_available = False
 
-if xenium_available and os.path.exists(xenium_cells_path):
+if xenium_available and xenium_cells_path and os.path.exists(xenium_cells_path):
     cells_meta = pd.read_csv(xenium_cells_path, usecols=["cell_id", "x_centroid", "y_centroid"])
     cells_meta = cells_meta.set_index("cell_id")
 
@@ -610,5 +611,4 @@ cat("**Xenium data not yet generated.** Run `scripts/generate_xenium_report_data
 
 ```{r session_info}
 sessionInfo()
-reticulate::py_config()
 ```

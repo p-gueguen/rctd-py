@@ -109,7 +109,7 @@ Validated against R spacexr on a Xenium dataset (45 cell types, 380 genes, ~58k 
 | Mean per-pixel weight correlation | 0.9998 |
 | Pixels with correlation > 0.8 | 99.98% |
 
-Both implementations use identical parameters: `UMI_min=20`, doublet mode, `constrain=FALSE` for full-mode weight estimation. See the [validation report](https://p-gueguen.github.io/rctd-py/analysis_region3.html) for full details including spatial maps and per-type correlations.
+Both implementations use identical parameters: `UMI_min=20`, doublet mode, `constrain=FALSE` for full-mode weight estimation. See the [rendered tutorial](https://p-gueguen.github.io/rctd-py/) for a walkthrough on synthetic data.
 
 ## API Overview
 
