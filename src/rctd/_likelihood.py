@@ -12,7 +12,7 @@ import numpy as np
 from scipy.special import gammaln
 from scipy.stats import norm as normal_dist
 
-_Q_MATRICES_URL = "https://github.com/p-gueguen/rctd-py/releases/download/v0.1.0/q_matrices.npz"
+_Q_MATRICES_URL = "https://github.com/p-gueguen/rctd-py/releases/download/v0.1.1/q_matrices.npz"
 
 # Module-level cache for the tridiagonal matrix inverse in compute_spline_coefficients.
 # Keyed by x_vals.tobytes() since x_vals never changes during a session.
