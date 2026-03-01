@@ -57,6 +57,7 @@ testpaths = ["tests"]
 [tool.ruff]
 line-length = 100
 target-version = "py310"
+extend-exclude = ["src/rctd/_version.py"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "W"]
