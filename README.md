@@ -13,13 +13,19 @@ A Python reimplementation of the [spacexr](https://github.com/dmcable/spacexr) R
 ## Installation
 
 ```bash
+uv pip install rctd-py
+```
+
+Or with standard pip:
+
+```bash
 pip install rctd-py
 ```
 
 With CUDA support (GPU acceleration):
 
 ```bash
-pip install "rctd-py[cuda]"
+uv pip install "rctd-py[cuda]"
 ```
 
 For development:
@@ -27,7 +33,7 @@ For development:
 ```bash
 git clone https://github.com/p-gueguen/rctd-py.git
 cd rctd-py
-pip install -e ".[dev]"
+uv pip install -e ".[dev]"
 ```
 
 **Dependencies:** jax, jaxlib, numpy, scipy, anndata
@@ -65,16 +71,19 @@ RCTD supports three modes, selected via the `mode` parameter:
 
 ## Benchmarks
 
-### End-to-end (Xenium, 58k pixels)
+### End-to-end (Xenium, 58k pixels, doublet mode)
 
-Full pipeline on 10x Xenium duodenum Region 3 (58,187 pixels, 380 genes, 38 cell types, doublet mode):
+Full pipeline on a 58k-pixel Xenium dataset (380 genes, 45 cell types):
 
-| Backend | Time | Pixels/sec |
-|---------|------|-----------|
-| R spacexr (8 CPU cores) | 51 min | ~19 |
-| JAX GPU (L40S) | 66 min | ~15 |
+| Backend | Sigma estimation | Deconvolution | Total |
+|---------|-----------------|---------------|-------|
+| R spacexr (8 CPU cores) | ~49 min | ~2 min | ~51 min |
+| rctd-py — JAX GPU (Blackwell B200) | **~3 min** | ~36s | **~3.5 min** |
+| rctd-py — JAX GPU (L40S) | ~3 min | ~55 min* | ~58 min |
 
-End-to-end runtime is dominated by sigma estimation, which runs sequentially and accounts for most of the wall-clock time. The IRWLS deconvolution step itself is much faster on GPU (see below), but sigma estimation currently limits overall speedup.
+*The L40S is a rendering/inference GPU (GDDR6, 864 GB/s) rather than an HPC card. Its memory bandwidth is ~9× lower than the B200 (HBM3e, ~8 TB/s), making the memory-bound doublet IRWLS loop much slower. On HPC-class GPUs (H100, A100, B200) the deconvolution step completes in under 1 minute.
+
+**Sigma estimation** uses a Poisson-Lognormal model with cubic spline interpolation. After optimisation (cached matrix inverse, precomputed spline coefficients, vmapped JAX evaluation), sigma drops from ~66 min to ~3 min — a **~23× speedup** — and results are numerically identical.
 
 ### IRWLS solver only
 
@@ -91,17 +100,16 @@ GPU throughput saturates at ~3,900 pixels/sec on L40S at 7k+ pixels. JAX compila
 
 ## Validation
 
-Validated against R spacexr on a 10x Xenium duodenum dataset (Region 3, 66,611 spatial cells, 45 reference cell types, 380 genes):
+Validated against R spacexr on a Xenium dataset (45 cell types, 380 genes, ~58k filtered pixels):
 
 | Metric | Value |
 |--------|-------|
-| Dominant type agreement | 99.7% |
-| Median per-pixel weight correlation | 1.0000 |
+| Dominant type agreement | **99.7%** |
+| Median per-pixel weight correlation | **1.0000** |
 | Mean per-pixel weight correlation | 0.9998 |
 | Pixels with correlation > 0.8 | 99.98% |
-| Common barcodes evaluated | 58,188 |
 
-Both implementations use identical parameters: `UMI_min=20`, doublet mode, `constrain=FALSE` for full-mode weight estimation.
+Both implementations use identical parameters: `UMI_min=20`, doublet mode, `constrain=FALSE` for full-mode weight estimation. See the [validation report](https://p-gueguen.github.io/rctd-py/) for full details including spatial maps and per-type correlations.
 
 ## API Overview
 

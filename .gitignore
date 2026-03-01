@@ -41,10 +41,7 @@ Thumbs.db
 
 # Build artifacts
 *.knit.md
-*.html
-
-# Lock files
-uv.lock
 
 # Generated version file
 src/rctd/_version.py
+docs/plans/

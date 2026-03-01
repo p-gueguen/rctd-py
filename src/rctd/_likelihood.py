@@ -14,6 +14,33 @@ from scipy.stats import norm as normal_dist
 
 _Q_MATRICES_URL = "https://github.com/p-gueguen/rctd-py/releases/download/v0.1.0/q_matrices.npz"
 
+# Module-level cache for the tridiagonal matrix inverse in compute_spline_coefficients.
+# Keyed by x_vals.tobytes() since x_vals never changes during a session.
+_MI_CACHE: dict[bytes, np.ndarray] = {}
+
+
+def _get_or_compute_MI(x_vals: np.ndarray) -> np.ndarray:
+    """Compute and cache the tridiagonal matrix inverse for spline coefficients.
+
+    The matrix M depends only on x_vals (the lambda grid), which is constant
+    across all Q-matrices. Caching avoids ~144 redundant O(n^3) inversions
+    of the 437x437 tridiagonal matrix during sigma estimation.
+    """
+    cache_key = x_vals.tobytes()
+    if cache_key in _MI_CACHE:
+        return _MI_CACHE[cache_key]
+
+    n = len(x_vals) - 1
+    delta = np.diff(x_vals)
+    M = np.zeros((n - 1, n - 1))
+    np.fill_diagonal(M, 2.0 * (delta[:-1] + delta[1:]))
+    for i in range(n - 2):
+        M[i + 1, i] = delta[i + 1]
+        M[i, i + 1] = delta[i + 1]
+    MI = np.linalg.inv(M)
+    _MI_CACHE[cache_key] = MI
+    return MI
+
 
 def _download_q_matrices(dest: Path) -> None:
     """Download pre-computed Q-matrices from GitHub release."""
@@ -171,14 +198,7 @@ def compute_spline_coefficients(Q_mat: np.ndarray, x_vals: np.ndarray) -> np.nda
     n = len(x_vals) - 1
     delta = np.diff(x_vals)
 
-    # Build tridiagonal matrix M of size (n-1, n-1)
-    M = np.zeros((n - 1, n - 1))
-    np.fill_diagonal(M, 2.0 * (delta[:-1] + delta[1:]))
-    for i in range(n - 2):
-        M[i + 1, i] = delta[i + 1]
-        M[i, i + 1] = delta[i + 1]
-
-    MI = np.linalg.inv(M)
+    MI = _get_or_compute_MI(x_vals)
 
     # Forward differences: fB = diff(t(Q_mat)) / del in R
     # In R: fB <- sweep(diff(t(Q_mat)), 1, del, '/') — shape (n, K_val+3)

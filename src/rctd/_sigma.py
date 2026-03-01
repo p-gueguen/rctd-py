@@ -1,5 +1,6 @@
 from typing import Dict
 
+import jax
 import jax.numpy as jnp
 import numpy as np
 
@@ -22,6 +23,7 @@ def choose_sigma(
     n_epoch: int = 8,
     k_val: int = 1000,
     seed: int = 42,
+    sq_matrices: Dict[str, np.ndarray] | None = None,
 ) -> int:
     """Estimate the optimal sigma parameter for the Poisson-Lognormal model.
 
@@ -44,6 +46,7 @@ def choose_sigma(
         n_epoch: maximum number of iterations
         k_val: max count value for likelihood
         seed: random seed for sampling
+        sq_matrices: precomputed spline coefficients dict (optional, computed if None)
     """
     from rctd._likelihood import compute_spline_coefficients
 
@@ -57,21 +60,41 @@ def choose_sigma(
     n_samples = min(n_fit, len(valid_idx))
     fit_idx = rng.choice(valid_idx, size=n_samples, replace=False)
 
-    fit_counts = jnp.array(spatial_counts[fit_idx])  # (n_samples, G)
-    fit_numi = jnp.array(spatial_numi[fit_idx])  # (n_samples,)
-    P_gpu = jnp.array(norm_profiles)  # (G, K)
+    # ── Precompute all SQ_mats at startup (Step 2) ──
+    if sq_matrices is None:
+        sq_matrices = {}
+        for key, q_mat in q_matrices.items():
+            sq_matrices[key] = compute_spline_coefficients(q_mat, np.array(x_vals))
+
+    # ── Pre-convert arrays to JAX once (Step 4) ──
+    x_j = jnp.array(x_vals)
+    P_gpu = jnp.array(norm_profiles)
+    q_gpu = {k: jnp.array(v) for k, v in q_matrices.items()}
+    sq_gpu = {k: jnp.array(v) for k, v in sq_matrices.items()}
+    fit_counts = jnp.array(spatial_counts[fit_idx])
+    fit_numi = jnp.array(spatial_numi[fit_idx])
+
+    # ── Define vmapped evaluation kernel (Step 3) ──
+    def _eval_candidates(Y, X_scaled, Q_stack, SQ_stack):
+        """Evaluate all sigma candidates × scale factors in one fused kernel."""
+        def score_one_sigma(Q, SQ):
+            def score_one_fac(X_fac):
+                return calc_log_likelihood(Y, X_fac, Q, SQ, x_j, k_val)
+            return jnp.min(jax.vmap(score_one_fac)(X_scaled))
+        return jax.vmap(score_one_sigma)(Q_stack, SQ_stack)
+
+    eval_candidates_jit = jax.jit(_eval_candidates)
 
     sigma = sigma_init
 
     for epoch in range(n_epoch):
         # ── Step 1: Fit weights at current sigma (R: decompose_batch at sigma) ──
-        if str(sigma) not in q_matrices:
+        if str(sigma) not in q_gpu:
             diffs = np.abs(SIGMA_ALL - sigma)
             sigma = int(SIGMA_ALL[np.argmin(diffs)])
 
-        Q_cur = jnp.array(q_matrices[str(sigma)])
-        SQ_cur = jnp.array(compute_spline_coefficients(np.array(Q_cur), np.array(x_vals)))
-        x_j = jnp.array(x_vals)
+        Q_cur = q_gpu[str(sigma)]
+        SQ_cur = sq_gpu[str(sigma)]
 
         S_batch = fit_numi[:, None, None] * P_gpu[None, :, :]  # (n, G, K)
 
@@ -97,12 +120,12 @@ def choose_sigma(
         X = prediction.flatten()
         Y = fit_counts.flatten()
         max_samples = 1_000_000
-        if len(X) > max_samples:
-            sub_idx = rng.choice(len(X), size=max_samples, replace=False)
+        if X.shape[0] > max_samples:
+            sub_idx = rng.choice(X.shape[0], size=max_samples, replace=False)
             X = X[sub_idx]
             Y = Y[sub_idx]
 
-        # ── Step 3: chooseSigma — evaluate sigma window on fixed prediction ──
+        # ── Step 3: chooseSigma — vectorized evaluation of sigma window ──
         # R: sigma_ind = c(10:70, (36:100)*2); window = ±8 around current
         try:
             si_idx = int(np.where(SIGMA_ALL == round(sigma))[0][0])
@@ -114,28 +137,24 @@ def choose_sigma(
         sigma_cands = SIGMA_ALL[start_idx:end_idx]
 
         # R: mult_fac_vec = (8:12)/10
-        mult_fac_vec = np.arange(8, 13) / 10.0
+        mult_fac_vec = jnp.arange(8, 13) / 10.0
 
-        lowest_score = float("inf")
-        best_sigma = sigma
+        # Filter to available sigma candidates
+        valid_cands = [s for s in sigma_cands if str(s) in q_gpu]
+        if not valid_cands:
+            break
 
-        for cand_sigma in sigma_cands:
-            cand_key = str(cand_sigma)
-            if cand_key not in q_matrices:
-                continue
-            cand_Q = jnp.array(q_matrices[cand_key])
-            cand_SQ = jnp.array(compute_spline_coefficients(np.array(cand_Q), np.array(x_vals)))
+        # Stack Q/SQ matrices for vectorized evaluation
+        Q_stack = jnp.stack([q_gpu[str(s)] for s in valid_cands])
+        SQ_stack = jnp.stack([sq_gpu[str(s)] for s in valid_cands])
 
-            # R: best_val = min over mult_fac of calc_log_l_vec(X*mult_fac, Y)
-            best_fac_score = float("inf")
-            for fac in mult_fac_vec:
-                score = float(calc_log_likelihood(Y, X * fac, cand_Q, cand_SQ, x_j, k_val))
-                if score < best_fac_score:
-                    best_fac_score = score
+        # Pre-scale predictions: (n_fac, G_flat)
+        X_scaled = X[None, :] * mult_fac_vec[:, None]
 
-            if best_fac_score < lowest_score:
-                lowest_score = best_fac_score
-                best_sigma = cand_sigma
+        # Single vmapped call replaces 85 sequential calc_log_likelihood calls
+        scores = eval_candidates_jit(Y, X_scaled, Q_stack, SQ_stack)
+        best_idx = int(jnp.argmin(scores))
+        best_sigma = valid_cands[best_idx]
 
         sigma_prev = sigma
         sigma = int(best_sigma)

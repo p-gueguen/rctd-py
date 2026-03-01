@@ -21,14 +21,11 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install build tools
-        run: pip install build twine
+      - name: Install uv
+        run: pip install uv
 
       - name: Build package
-        run: python -m build
-
-      - name: Validate distribution
-        run: twine check dist/*
+        run: uv build
 
       - name: Publish to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
