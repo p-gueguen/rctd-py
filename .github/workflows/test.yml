@@ -37,7 +37,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           mkdir -p ~/.cache/rctd
-          gh release download v0.1.0 --repo p-gueguen/rctd-py \
+          gh release download v0.1.1 --repo p-gueguen/rctd-py \
             --pattern q_matrices.npz --dir ~/.cache/rctd
 
       - name: Install dependencies
