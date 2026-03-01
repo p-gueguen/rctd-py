@@ -195,7 +195,6 @@ def compute_spline_coefficients(Q_mat: np.ndarray, x_vals: np.ndarray) -> np.nda
     Returns:
         SQ_mat: spline coefficients, shape (K_val+3, N_X).
     """
-    n = len(x_vals) - 1
     delta = np.diff(x_vals)
 
     MI = _get_or_compute_MI(x_vals)
