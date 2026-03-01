@@ -11,7 +11,7 @@ jobs:
   publish:
     runs-on: ubuntu-latest
     permissions:
-      id-token: write
+      contents: read
 
     steps:
       - uses: actions/checkout@v4
@@ -32,4 +32,4 @@ jobs:
       - name: Publish to PyPI
         env:
           UV_PUBLISH_TOKEN: ${{ secrets.PYPI_API_TOKEN }}
-        run: uv publish --check-url https://pypi.org/simple/rctd-py/
+        run: uv publish --trusted-publishing never --check-url https://pypi.org/simple/rctd-py/
