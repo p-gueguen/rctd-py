@@ -34,7 +34,7 @@ jobs:
       - name: Download Q-matrices
         if: steps.cache-q.outputs.cache-hit != 'true'
         env:
-          GH_TOKEN: ${{ secrets.PAT }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           mkdir -p ~/.cache/rctd
           gh release download v0.1.1 --repo p-gueguen/rctd-py \
