@@ -1,8 +1,8 @@
 """Tests for IRWLS solver."""
 
-import jax.numpy as jnp
 import numpy as np
 import pytest
+import torch
 
 from rctd._irwls import solve_irwls, solve_irwls_batch
 from rctd._likelihood import build_x_vals, compute_q_matrix, compute_spline_coefficients
@@ -13,7 +13,7 @@ def likelihood_tables():
     x_vals = build_x_vals()
     Q_mat = compute_q_matrix(sigma=1.0, x_vals=x_vals, K_val=100)
     SQ_mat = compute_spline_coefficients(Q_mat, x_vals)
-    return jnp.array(Q_mat), jnp.array(SQ_mat), jnp.array(x_vals)
+    return torch.tensor(Q_mat), torch.tensor(SQ_mat), torch.tensor(x_vals)
 
 
 class TestSolveIRWLS:
@@ -25,8 +25,8 @@ class TestSolveIRWLS:
         profile = rng.exponential(0.01, size=G)
         profile = profile / profile.sum()
         nUMI = 1000.0
-        S = jnp.array((profile * nUMI).reshape(-1, 1))
-        Y = jnp.array(rng.poisson(profile * nUMI).astype(np.float32))
+        S = torch.tensor((profile * nUMI).reshape(-1, 1))
+        Y = torch.tensor(rng.poisson(profile * nUMI).astype(np.float32))
 
         weights, converged = solve_irwls(S, Y, nUMI, Q_mat, SQ_mat, x_vals)
         np.testing.assert_allclose(float(weights[0]), 1.0, atol=0.1)
@@ -43,11 +43,11 @@ class TestSolveIRWLS:
         true_w = np.array([0.7, 0.3])
         nUMI = 2000.0
         lam = (profiles @ true_w) * nUMI
-        Y = jnp.array(rng.poisson(lam).astype(np.float32))
-        S = jnp.array(profiles * nUMI)
+        Y = torch.tensor(rng.poisson(lam).astype(np.float32))
+        S = torch.tensor(profiles * nUMI)
 
         weights, converged = solve_irwls(S, Y, nUMI, Q_mat, SQ_mat, x_vals)
-        np.testing.assert_allclose(np.array(weights), true_w, atol=0.15)
+        np.testing.assert_allclose(weights.numpy(), true_w, atol=0.15)
 
     def test_weights_on_simplex(self, likelihood_tables):
         """Constrained weights should be non-negative and sum to 1."""
@@ -59,12 +59,12 @@ class TestSolveIRWLS:
         nUMI = 1500.0
         true_w = np.array([0.4, 0.3, 0.1, 0.1, 0.1])
         lam = (profiles @ true_w) * nUMI
-        Y = jnp.array(rng.poisson(lam).astype(np.float32))
-        S = jnp.array(profiles * nUMI)
+        Y = torch.tensor(rng.poisson(lam).astype(np.float32))
+        S = torch.tensor(profiles * nUMI)
 
         weights, converged = solve_irwls(S, Y, nUMI, Q_mat, SQ_mat, x_vals)
-        assert jnp.all(weights >= -1e-6)
-        np.testing.assert_allclose(float(jnp.sum(weights)), 1.0, atol=1e-4)
+        assert (weights >= -1e-6).all()
+        np.testing.assert_allclose(float(weights.sum()), 1.0, atol=1e-4)
 
     def test_unconstrained_nonnegative(self, likelihood_tables):
         """With constrain=False, weights should be non-negative but not necessarily sum to 1."""
@@ -76,11 +76,11 @@ class TestSolveIRWLS:
         nUMI = 1500.0
         true_w = np.array([0.5, 0.3, 0.2])
         lam = (profiles @ true_w) * nUMI
-        Y = jnp.array(rng.poisson(lam).astype(np.float32))
-        S = jnp.array(profiles * nUMI)
+        Y = torch.tensor(rng.poisson(lam).astype(np.float32))
+        S = torch.tensor(profiles * nUMI)
 
         weights, converged = solve_irwls(S, Y, nUMI, Q_mat, SQ_mat, x_vals, constrain=False)
-        assert jnp.all(weights >= -1e-6)
+        assert (weights >= -1e-6).all()
 
 
 class TestSolveIRWLSBatch:
@@ -100,11 +100,11 @@ class TestSolveIRWLSBatch:
             Y_batch[i] = rng.poisson(lam)
 
         # Build S_batch: (N, G, K) = profiles[None] * nUMIs[:, None, None]
-        S_batch = jnp.array(profiles)[None, :, :] * jnp.array(nUMIs)[:, None, None]
+        S_batch = torch.tensor(profiles)[None, :, :] * torch.tensor(nUMIs)[:, None, None]
         batch_weights, batch_conv = solve_irwls_batch(
             S_batch,
-            jnp.array(Y_batch),
-            jnp.array(nUMIs),
+            torch.tensor(Y_batch),
+            torch.tensor(nUMIs),
             Q_mat,
             SQ_mat,
             x_vals,
@@ -115,15 +115,15 @@ class TestSolveIRWLSBatch:
         for i in range(N):
             single_w, single_c = solve_irwls(
                 S_batch[i],
-                jnp.array(Y_batch[i]),
+                torch.tensor(Y_batch[i]),
                 nUMIs[i],
                 Q_mat,
                 SQ_mat,
                 x_vals,
             )
             np.testing.assert_allclose(
-                np.array(batch_weights[i]),
-                np.array(single_w),
+                batch_weights[i].numpy(),
+                single_w.numpy(),
                 atol=1e-5,
             )
 
@@ -142,13 +142,15 @@ class TestSolveIRWLSBatch:
             lam = (profiles @ true_w) * nUMIs[i]
             Y_batch[i] = rng.poisson(lam)
 
-        S_batch = jnp.array(profiles)[None, :, :] * jnp.array(nUMIs)[:, None, None]
+        S_batch = torch.tensor(profiles)[None, :, :] * torch.tensor(nUMIs)[:, None, None]
         batch_weights, batch_conv = solve_irwls_batch(
             S_batch,
-            jnp.array(Y_batch),
-            jnp.array(nUMIs),
+            torch.tensor(Y_batch),
+            torch.tensor(nUMIs),
             Q_mat,
             SQ_mat,
             x_vals,
         )
-        np.testing.assert_allclose(jnp.sum(batch_weights, axis=1), jnp.ones(N), atol=1e-4)
+        np.testing.assert_allclose(
+            batch_weights.sum(dim=1).numpy(), np.ones(N), atol=1e-4
+        )

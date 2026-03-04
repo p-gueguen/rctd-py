@@ -1,12 +1,12 @@
 from itertools import combinations
 from typing import List
 
-import jax
-import jax.numpy as jnp
 import numpy as np
+import torch
 
 from rctd._full import run_full_mode
 from rctd._irwls import solve_irwls_batch
+from rctd._likelihood import calc_log_likelihood_batch
 from rctd._types import (
     SPOT_CLASS_DOUBLET_CERTAIN,
     SPOT_CLASS_DOUBLET_UNCERTAIN,
@@ -43,10 +43,15 @@ def run_doublet_mode(
     """
     N, G = spatial_counts.shape
     K = norm_profiles.shape[1]
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    import time as _time
 
     # 1. Full fit to get candidates
     # In R, doublet_mode="doublet" first runs doublet_mode="full"
     # (or equivalent) in process_beads_batch
+    print(f"  [doublet] Step 1/6: full-mode fit ({N} pixels, K={K})...")
+    _t0 = _time.time()
     full_res = run_full_mode(
         spatial_counts=spatial_counts,
         spatial_numi=spatial_numi,
@@ -58,6 +63,7 @@ def run_doublet_mode(
         batch_size=batch_size,
     )
     W_full = full_res.weights  # (N, K)
+    print(f"  [doublet] Step 1 done ({_time.time() - _t0:.1f}s)")
 
     # 2. Candidate selection (CPU)
     # R: candidates <- names(which(all_weights > initial_weight_thresh))
@@ -82,14 +88,16 @@ def run_doublet_mode(
     for n, cands in enumerate(candidates_list):
         for t1, t2 in combinations(cands, 2):
             triples.append((n, t1, t2))
+    print(f"  [doublet] Step 3: pairwise scoring ({len(triples)} triples)...")
+    _t3 = _time.time()
 
     pair_log_l = {}  # (n, t1, t2) -> score
     pair_weights = {}  # (n, t1, t2) -> array([w1, w2])
 
-    P_gpu = jnp.array(norm_profiles)
-    Q_gpu = jnp.array(q_mat)
-    SQ_gpu = jnp.array(sq_mat)
-    X_gpu = jnp.array(x_vals)
+    P_gpu = torch.tensor(norm_profiles, device=device)
+    Q_gpu = torch.tensor(q_mat, device=device)
+    SQ_gpu = torch.tensor(sq_mat, device=device)
+    X_gpu = torch.tensor(x_vals, device=device)
 
     if triples:
         triples_arr = np.array(triples, dtype=np.int32)
@@ -104,17 +112,17 @@ def run_doublet_mode(
             t1_idx = tr[:, 1]
             t2_idx = tr[:, 2]
 
-            nUMI_tr = jnp.array(spatial_numi[pix_idx])
-            B_tr = jnp.array(spatial_counts[pix_idx])
+            nUMI_tr = torch.tensor(spatial_numi[pix_idx], device=device)
+            B_tr = torch.tensor(spatial_counts[pix_idx], device=device)
 
-            # P_pair: (G, bs, 2) -> (bs, G, 2)
-            # Using advanced indexing in JAX:
+            # P_pair: (bs, G, 2)
             # P_gpu: (G, K)
-            # We want (bs, G, 2).
-            # P_gpu[:, t1_idx]: (G, bs) -> transpose: (bs, G)
-            P1 = P_gpu[:, t1_idx].T
-            P2 = P_gpu[:, t2_idx].T
-            P_pair = jnp.stack([P1, P2], axis=-1)  # (bs, G, 2)
+            # P_gpu[:, t1_idx]: (G, bs) -> .T: (bs, G)
+            t1_t = torch.tensor(t1_idx, dtype=torch.long, device=device)
+            t2_t = torch.tensor(t2_idx, dtype=torch.long, device=device)
+            P1 = P_gpu[:, t1_t].T
+            P2 = P_gpu[:, t2_t].T
+            P_pair = torch.stack([P1, P2], dim=-1)  # (bs, G, 2)
 
             S_pair = nUMI_tr[:, None, None] * P_pair
 
@@ -131,29 +139,26 @@ def run_doublet_mode(
                 bulk_mode=False,
             )
 
-            from rctd._likelihood import calc_log_likelihood
-
             # Score logic: R's calc_log_l_vec returns positive NLL (lower=better)
-            expected_tr = jnp.sum(S_pair * weights_batch[:, None, :], axis=-1)  # (bs, G)
-            expected_tr = jnp.maximum(expected_tr, 1e-4)  # (matches RCTD R solver)
+            expected_tr = torch.sum(S_pair * weights_batch[:, None, :], dim=-1)  # (bs, G)
+            expected_tr = torch.clamp(expected_tr, min=1e-4)
 
-            # vmap of calc_log_likelihood
-            batched_nll = jax.vmap(
-                lambda y, lam: calc_log_likelihood(y, lam, Q_gpu, SQ_gpu, X_gpu, config.K_val),
-                in_axes=(0, 0),
-            )
-            scores_batch = batched_nll(B_tr, expected_tr)
+            scores_batch = calc_log_likelihood_batch(B_tr, expected_tr, Q_gpu, SQ_gpu, X_gpu, config.K_val)
 
-            w_np = np.array(weights_batch)
-            sc_np = np.array(scores_batch)
+            w_np = weights_batch.cpu().numpy()
+            sc_np = scores_batch.cpu().numpy()
 
             for i in range(bs):
                 n_idx, t1, t2 = triples[start + i]
                 pair_log_l[(n_idx, t1, t2)] = sc_np[i]
                 pair_weights[(n_idx, t1, t2)] = w_np[i]
 
+    print(f"  [doublet] Step 3 done ({_time.time() - _t3:.1f}s)")
+
     # 4. Singlet scoring
     singles = list({(n, t) for n, cands in enumerate(candidates_list) for t in cands})
+    print(f"  [doublet] Step 4: singlet scoring ({len(singles)} singles)...")
+    _t4 = _time.time()
     singlet_log_l = {}
 
     if singles:
@@ -168,11 +173,12 @@ def run_doublet_mode(
             pix_idx = sg[:, 0]
             t_idx = sg[:, 1]
 
-            nUMI_sg = jnp.array(spatial_numi[pix_idx])
-            B_sg = jnp.array(spatial_counts[pix_idx])
+            nUMI_sg = torch.tensor(spatial_numi[pix_idx], device=device)
+            B_sg = torch.tensor(spatial_counts[pix_idx], device=device)
 
             # P_sg: (bs, G, 1)
-            P_sg = P_gpu[:, t_idx].T[..., None]
+            t_t = torch.tensor(t_idx, dtype=torch.long, device=device)
+            P_sg = P_gpu[:, t_t].T.unsqueeze(-1)
             S_sg = nUMI_sg[:, None, None] * P_sg
 
             weights_batch, conv_batch = solve_irwls_batch(
@@ -188,21 +194,21 @@ def run_doublet_mode(
                 bulk_mode=False,
             )
 
-            expected_sg = jnp.sum(S_sg * weights_batch[:, None, :], axis=-1)
-            expected_sg = jnp.maximum(expected_sg, 1e-4)
+            expected_sg = torch.sum(S_sg * weights_batch[:, None, :], dim=-1)
+            expected_sg = torch.clamp(expected_sg, min=1e-4)
 
-            batched_nll = jax.vmap(
-                lambda y, lam: calc_log_likelihood(y, lam, Q_gpu, SQ_gpu, X_gpu, config.K_val),
-                in_axes=(0, 0),
-            )
-            scores_batch = batched_nll(B_sg, expected_sg)
-            sc_np = np.array(scores_batch)
+            scores_batch = calc_log_likelihood_batch(B_sg, expected_sg, Q_gpu, SQ_gpu, X_gpu, config.K_val)
+            sc_np = scores_batch.cpu().numpy()
 
             for i in range(bs):
                 n_idx, t = singles[start + i]
                 singlet_log_l[(n_idx, t)] = sc_np[i]
 
+    print(f"  [doublet] Step 4 done ({_time.time() - _t4:.1f}s)")
+
     # 5. Classification — matches R's process_bead_doublet logic
+    print(f"  [doublet] Step 5: classification ({N} pixels)...")
+    _t5 = _time.time()
     # Build score matrix per pixel for check_pairs_type
     weights_doublet = np.zeros((N, 2), dtype=np.float32)
     spot_class = np.zeros(N, dtype=np.int32)
@@ -266,9 +272,6 @@ def run_doublet_mode(
             sc_class = False
         elif type1_all_pairs and not type2_all_pairs:
             s_class = SPOT_CLASS_DOUBLET_UNCERTAIN
-            # R: first_class <- !type1_pres$all_pairs
-            # With default class_df (each type = own class), all_pairs == all_pairs_class
-            # so when all_pairs_class is True, all_pairs is also True → !True = False
             f_class = False
             sc_class = False
             s_score = type1_sing
@@ -284,7 +287,6 @@ def run_doublet_mode(
             # Both types uniquely necessary
             s_class = SPOT_CLASS_DOUBLET_CERTAIN
             s_score = min(type1_sing, type2_sing)
-            # R: first_class <- !type1_pres$all_pairs (False with default class_df)
             f_class = False
             sc_class = False
             # R: order by singlet score (lower = more confident)
@@ -332,24 +334,29 @@ def run_doublet_mode(
         first_class[n] = f_class
         second_class[n] = sc_class
 
+    print(f"  [doublet] Step 5 done ({_time.time() - _t5:.1f}s)")
+
     # 6. Final doublet decomposition — matches R's line 134 in process_bead_doublet
     # R runs a FRESH decompose_sparse(first_type, second_type, score_mode=FALSE)
     # with n.iter=50, constrain=FALSE, then normalizes weights to sum=1.
     # This gives the final doublet weights for ALL pixels (including singlets/rejects).
+    print(f"  [doublet] Step 6: final decomposition ({N} pixels)...")
+    _t6 = _time.time()
     final_t1 = first_type  # (N,) int
     final_t2 = second_type  # (N,) int
 
     for start in range(0, N, batch_size):
         end = min(start + batch_size, N)
-        bs = end - start
 
         pix_idx = np.arange(start, end)
-        nUMI_f = jnp.array(spatial_numi[pix_idx])
-        B_f = jnp.array(spatial_counts[pix_idx])
+        nUMI_f = torch.tensor(spatial_numi[pix_idx], device=device)
+        B_f = torch.tensor(spatial_counts[pix_idx], device=device)
 
-        P1 = P_gpu[:, final_t1[pix_idx]].T
-        P2 = P_gpu[:, final_t2[pix_idx]].T
-        P_pair = jnp.stack([P1, P2], axis=-1)  # (bs, G, 2)
+        ft1_t = torch.tensor(final_t1[pix_idx], dtype=torch.long, device=device)
+        ft2_t = torch.tensor(final_t2[pix_idx], dtype=torch.long, device=device)
+        P1 = P_gpu[:, ft1_t].T
+        P2 = P_gpu[:, ft2_t].T
+        P_pair = torch.stack([P1, P2], dim=-1)  # (bs, G, 2)
         S_pair = nUMI_f[:, None, None] * P_pair
 
         w_final, _ = solve_irwls_batch(
@@ -365,13 +372,16 @@ def run_doublet_mode(
             bulk_mode=False,
         )
 
-        w_np = np.array(w_final)
+        w_np = w_final.cpu().numpy()
         # R: results$weights = results$weights / sum(results$weights)
         w_sums = w_np.sum(axis=1, keepdims=True)
         w_sums = np.maximum(w_sums, 1e-10)
         w_np = w_np / w_sums
 
         weights_doublet[start:end] = w_np
+
+    print(f"  [doublet] Step 6 done ({_time.time() - _t6:.1f}s)")
+    print(f"  [doublet] Total doublet mode: {_time.time() - _t0:.1f}s")
 
     return DoubletResult(
         weights=W_full,

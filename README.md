@@ -1,7 +1,7 @@
 <p align="center">
   <h1 align="center">rctd-py</h1>
   <p align="center">
-    <strong>GPU-accelerated spatial transcriptomics deconvolution — 15× faster than R</strong>
+    <strong>GPU-accelerated spatial transcriptomics deconvolution — 4× faster than R</strong>
   </p>
   <p align="center">
     <a href="https://github.com/p-gueguen/rctd-py/actions/workflows/test.yml"><img src="https://github.com/p-gueguen/rctd-py/actions/workflows/test.yml/badge.svg" alt="Tests"></a>
@@ -14,7 +14,7 @@
 
 ---
 
-A Python reimplementation of the [spacexr](https://github.com/dmcable/spacexr) RCTD algorithm ([Cable et al., *Nature Biotechnology* 2022](https://doi.org/10.1038/s41587-021-00830-w)) with GPU acceleration via [JAX](https://github.com/jax-ml/jax).
+A Python reimplementation of the [spacexr](https://github.com/dmcable/spacexr) RCTD algorithm ([Cable et al., *Nature Biotechnology* 2022](https://doi.org/10.1038/s41587-021-00830-w)) with GPU acceleration via [PyTorch](https://pytorch.org/).
 
 Deconvolve spatial transcriptomics spots (Visium, Xenium, MERFISH, Slide-seq, …) into cell type proportions using a scRNA-seq reference — in minutes instead of hours.
 
@@ -22,7 +22,7 @@ Deconvolve spatial transcriptomics spots (Visium, Xenium, MERFISH, Slide-seq, �
 
 | | |
 |---|---|
-| 🚀 **15× end-to-end speedup** | 58k-pixel Xenium dataset: **3.5 min** (GPU) vs 51 min (R) |
+| 🚀 **4× end-to-end speedup** | 58k-pixel Xenium dataset: **12 min** (GPU) vs 51 min (R) |
 | 🎯 **99.7% concordance** with R spacexr | Median per-pixel weight correlation = **1.0000** |
 | 🔧 **Drop-in replacement** | Same algorithm, same parameters, same results — just faster |
 | 📦 **`pip install rctd-py`** | Pure Python, works on CPU out of the box |
@@ -46,16 +46,16 @@ result = run_rctd(spatial, reference, mode="doublet")
 ## Installation
 
 ```bash
-pip install rctd-py          # CPU (works everywhere)
-pip install "rctd-py[cuda]"  # GPU acceleration (CUDA 12)
+pip install rctd-py   # CPU (works everywhere; GPU auto-detected if CUDA available)
 ```
 
 <details>
 <summary>Verify GPU detection</summary>
 
 ```python
-import jax
-print(jax.devices())  # [CudaDevice(id=0)]
+import torch
+print(torch.cuda.is_available())    # True
+print(torch.cuda.get_device_name()) # e.g. 'NVIDIA L40S'
 ```
 
 Use the `batch_size` parameter in `run_rctd` to control GPU memory. The default (10,000 pixels/batch) works well for 24+ GB VRAM.
@@ -72,23 +72,15 @@ Use the `batch_size` parameter in `run_rctd` to control GPU memory. The default 
 
 ## Benchmarks
 
-### End-to-end performance (Xenium, 58k pixels, doublet mode)
+### End-to-end performance (Xenium, 58k pixels, 45 cell types, doublet mode)
 
-| Backend | Sigma | Deconvolution | **Total** |
-|---------|-------|---------------|-----------|
-| R spacexr (8 CPU cores) | ~49 min | ~2 min | ~51 min |
-| **rctd-py — JAX GPU (B200)** | **~3 min** | **~36s** | **~3.5 min** |
+| Backend | Sigma | Deconvolution | **Total** | **Speedup** |
+|---------|-------|---------------|-----------|-------------|
+| R spacexr (8 CPU cores) | ~49 min | ~2 min | ~51 min | 1× |
+| **rctd-py — PyTorch GPU (L40S)** | **21s** | **~12 min** | **~12 min** | **4.2×** |
+| **rctd-py — PyTorch GPU (RTX 6000 Blackwell)** | **21s** | **~11 min** | **~12 min** | **4.3×** |
 
-> **Note:** HPC-class GPUs (H100, A100, B200) with HBM memory complete deconvolution in under 1 minute. Consumer/inference GPUs (L40S, RTX) are bottlenecked by memory bandwidth on the IRWLS loop.
-
-### Solver throughput (IRWLS only)
-
-| Backend | Pixels/sec | Speedup |
-|---------|-----------|---------|
-| R spacexr (1 core) | ~62 | 1× |
-| JAX CPU (16 threads) | ~374 | 6× |
-| JAX GPU (L40S) | ~3,900 | 63× |
-| JAX GPU (B200) | ~4,450 | **72×** |
+> **Note:** The IRWLS solver loop is memory-bandwidth bound for large cell type panels (K=45). Speedup scales with the number of cell types — smaller panels (K < 20) see larger speedups.
 
 ## Validation
 

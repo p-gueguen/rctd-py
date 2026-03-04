@@ -1,8 +1,7 @@
 from typing import Dict
 
-import jax
-import jax.numpy as jnp
 import numpy as np
+import torch
 
 from rctd._irwls import solve_irwls_batch
 from rctd._likelihood import calc_log_likelihood
@@ -51,6 +50,7 @@ def choose_sigma(
     from rctd._likelihood import compute_spline_coefficients
 
     rng = np.random.default_rng(seed)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # Filter pixels by min_umi (R: puck@nUMI > MIN_UMI)
     valid_idx = np.where(spatial_numi > min_umi)[0]
@@ -60,38 +60,24 @@ def choose_sigma(
     n_samples = min(n_fit, len(valid_idx))
     fit_idx = rng.choice(valid_idx, size=n_samples, replace=False)
 
-    # ── Precompute all SQ_mats at startup (Step 2) ──
+    # ── Precompute all SQ_mats at startup ──
     if sq_matrices is None:
         sq_matrices = {}
         for key, q_mat in q_matrices.items():
             sq_matrices[key] = compute_spline_coefficients(q_mat, np.array(x_vals))
 
-    # ── Pre-convert arrays to JAX once (Step 4) ──
-    x_j = jnp.array(x_vals)
-    P_gpu = jnp.array(norm_profiles)
-    q_gpu = {k: jnp.array(v) for k, v in q_matrices.items()}
-    sq_gpu = {k: jnp.array(v) for k, v in sq_matrices.items()}
-    fit_counts = jnp.array(spatial_counts[fit_idx])
-    fit_numi = jnp.array(spatial_numi[fit_idx])
-
-    # ── Define vmapped evaluation kernel (Step 3) ──
-    def _eval_candidates(Y, X_scaled, Q_stack, SQ_stack):
-        """Evaluate all sigma candidates × scale factors in one fused kernel."""
-
-        def score_one_sigma(Q, SQ):
-            def score_one_fac(X_fac):
-                return calc_log_likelihood(Y, X_fac, Q, SQ, x_j, k_val)
-
-            return jnp.min(jax.vmap(score_one_fac)(X_scaled))
-
-        return jax.vmap(score_one_sigma)(Q_stack, SQ_stack)
-
-    eval_candidates_jit = jax.jit(_eval_candidates)
+    # ── Pre-convert arrays to torch tensors ──
+    x_j = torch.tensor(x_vals, device=device)
+    P_gpu = torch.tensor(norm_profiles, device=device)
+    q_gpu = {k: torch.tensor(v, device=device) for k, v in q_matrices.items()}
+    sq_gpu = {k: torch.tensor(v, device=device) for k, v in sq_matrices.items()}
+    fit_counts = torch.tensor(spatial_counts[fit_idx], device=device)
+    fit_numi = torch.tensor(spatial_numi[fit_idx], device=device)
 
     sigma = sigma_init
 
     for epoch in range(n_epoch):
-        # ── Step 1: Fit weights at current sigma (R: decompose_batch at sigma) ──
+        # ── Step 1: Fit weights at current sigma ──
         if str(sigma) not in q_gpu:
             diffs = np.abs(SIGMA_ALL - sigma)
             sigma = int(SIGMA_ALL[np.argmin(diffs)])
@@ -113,22 +99,24 @@ def choose_sigma(
             constrain=False,
             bulk_mode=False,
         )
-        weights = jnp.maximum(weights, 0.0)
+        weights = torch.clamp(weights, min=0.0)
 
-        # ── Step 2: Fixed prediction (R: sweep(norm_profiles %*% t(weights), 2, nUMI, '*')) ──
-        prediction = jnp.dot(weights, P_gpu.T) * fit_numi[:, None]  # (n, G)
-        prediction = jnp.maximum(prediction, 1e-4)
+        # ── Step 2: Fixed prediction ──
+        prediction = (weights @ P_gpu.T) * fit_numi[:, None]  # (n, G)
+        prediction = torch.clamp(prediction, min=1e-4)
 
         # Flatten and subsample (R: num_sample = min(1000000, length(X)))
-        X = prediction.flatten()
-        Y = fit_counts.flatten()
+        X = prediction.reshape(-1)
+        Y = fit_counts.reshape(-1)
         max_samples = 1_000_000
         if X.shape[0] > max_samples:
-            sub_idx = rng.choice(X.shape[0], size=max_samples, replace=False)
+            sub_idx = torch.tensor(
+                rng.choice(X.shape[0], size=max_samples, replace=False), device=device
+            )
             X = X[sub_idx]
             Y = Y[sub_idx]
 
-        # ── Step 3: chooseSigma — vectorized evaluation of sigma window ──
+        # ── Step 3: chooseSigma — evaluate sigma window ──
         # R: sigma_ind = c(10:70, (36:100)*2); window = ±8 around current
         try:
             si_idx = int(np.where(SIGMA_ALL == round(sigma))[0][0])
@@ -140,23 +128,25 @@ def choose_sigma(
         sigma_cands = SIGMA_ALL[start_idx:end_idx]
 
         # R: mult_fac_vec = (8:12)/10
-        mult_fac_vec = jnp.arange(8, 13) / 10.0
+        mult_fac_vec = torch.arange(8, 13, dtype=X.dtype, device=device) / 10.0
 
         # Filter to available sigma candidates
         valid_cands = [s for s in sigma_cands if str(s) in q_gpu]
         if not valid_cands:
             break
 
-        # Stack Q/SQ matrices for vectorized evaluation
-        Q_stack = jnp.stack([q_gpu[str(s)] for s in valid_cands])
-        SQ_stack = jnp.stack([sq_gpu[str(s)] for s in valid_cands])
+        # Evaluate each sigma candidate: pick best scale factor per sigma
+        scores = torch.zeros(len(valid_cands), device=device)
+        for sig_idx, s in enumerate(valid_cands):
+            Q_s = q_gpu[str(s)]
+            SQ_s = sq_gpu[str(s)]
+            fac_scores = torch.zeros(len(mult_fac_vec), device=device)
+            for fac_idx in range(len(mult_fac_vec)):
+                X_fac = X * mult_fac_vec[fac_idx]
+                fac_scores[fac_idx] = calc_log_likelihood(Y, X_fac, Q_s, SQ_s, x_j, k_val)
+            scores[sig_idx] = fac_scores.min()
 
-        # Pre-scale predictions: (n_fac, G_flat)
-        X_scaled = X[None, :] * mult_fac_vec[:, None]
-
-        # Single vmapped call replaces 85 sequential calc_log_likelihood calls
-        scores = eval_candidates_jit(Y, X_scaled, Q_stack, SQ_stack)
-        best_idx = int(jnp.argmin(scores))
+        best_idx = int(torch.argmin(scores).item())
         best_sigma = valid_cands[best_idx]
 
         sigma_prev = sigma

@@ -2,8 +2,8 @@ import time
 from typing import Literal, Union
 
 import anndata
-import jax.numpy as jnp
 import numpy as np
+import torch
 
 from rctd._doublet import run_doublet_mode
 from rctd._full import run_full_mode
@@ -109,6 +109,8 @@ class RCTD:
         if self.is_normalized:
             return
 
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
         # ── 1. Gene-list split (R: get_de_genes) ──
         # spatial_bulk must be indexed by ALL reference genes (not just common)
         # so that get_de_genes gene indices align with the reference profile matrix
@@ -164,16 +166,16 @@ class RCTD:
         bulk_counts = self.counts[:, bulk_gene_idx]
 
         bulk_weights, norm_prof_bulk = fit_bulk(
-            cell_type_profiles=jnp.array(bulk_profiles),
-            spatial_counts=jnp.array(bulk_counts),
-            spatial_nUMI=jnp.array(self.nUMI),  # total nUMI (all genes)
+            cell_type_profiles=torch.tensor(bulk_profiles, device=device),
+            spatial_counts=torch.tensor(bulk_counts, device=device),
+            spatial_nUMI=torch.tensor(self.nUMI, device=device),
             min_change=self.config.MIN_CHANGE_BULK,
         )
 
         # ── 3. Restrict to gene_list_reg for pixel-level fitting ──
         # Subset the bulk-normalized profiles to reg genes (matching R's approach:
         # R normalizes on gene_list_bulk via get_norm_ref, then subsets to gene_list_reg)
-        norm_prof_bulk_np = np.array(norm_prof_bulk)  # (G_bulk, K)
+        norm_prof_bulk_np = norm_prof_bulk.cpu().numpy()  # (G_bulk, K)
         bulk_gene_map = {g: i for i, g in enumerate(gene_list_bulk)}
         reg_in_bulk_idx = [bulk_gene_map[g] for g in gene_list_reg]
         self.norm_profiles = norm_prof_bulk_np[reg_in_bulk_idx]  # (G_reg, K)

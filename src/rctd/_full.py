@@ -1,7 +1,7 @@
 from typing import List
 
-import jax.numpy as jnp
 import numpy as np
+import torch
 
 from rctd._irwls import solve_irwls_batch
 from rctd._types import FullResult
@@ -33,12 +33,12 @@ def run_full_mode(
         FullResult object containing weights per pixel.
     """
     N, G = spatial_counts.shape
-    norm_profiles.shape[1]
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    P_gpu = jnp.array(norm_profiles)
-    Q_gpu = jnp.array(q_mat)
-    SQ_gpu = jnp.array(sq_mat)
-    X_gpu = jnp.array(x_vals)
+    P_gpu = torch.tensor(norm_profiles, device=device)
+    Q_gpu = torch.tensor(q_mat, device=device)
+    SQ_gpu = torch.tensor(sq_mat, device=device)
+    X_gpu = torch.tensor(x_vals, device=device)
 
     all_weights = []
     all_converged = []
@@ -46,8 +46,8 @@ def run_full_mode(
     for start in range(0, N, batch_size):
         end = min(start + batch_size, N)
 
-        batch_counts = jnp.array(spatial_counts[start:end])
-        batch_numi = jnp.array(spatial_numi[start:end])
+        batch_counts = torch.tensor(spatial_counts[start:end], device=device)
+        batch_numi = torch.tensor(spatial_numi[start:end], device=device)
 
         # S_batch: (bs, G, K)
         S_batch = batch_numi[:, None, None] * P_gpu[None, :, :]
@@ -69,12 +69,8 @@ def run_full_mode(
             bulk_mode=False,
         )
 
-        # Get host numpy arrays
-        weights_np = np.array(weights)
-        converged_np = np.array(converged)
-
-        all_weights.append(weights_np)
-        all_converged.append(converged_np)
+        all_weights.append(weights.cpu().numpy())
+        all_converged.append(converged.cpu().numpy())
 
     final_weights = np.vstack(all_weights)
     final_converged = np.concatenate(all_converged)

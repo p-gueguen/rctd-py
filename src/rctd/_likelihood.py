@@ -7,8 +7,8 @@ from prob_model.R.
 import urllib.request
 from pathlib import Path
 
-import jax.numpy as jnp
 import numpy as np
+import torch
 from scipy.special import gammaln
 from scipy.stats import norm as normal_dist
 
@@ -225,13 +225,13 @@ def compute_spline_coefficients(Q_mat: np.ndarray, x_vals: np.ndarray) -> np.nda
 
 
 def calc_q_all(
-    Y: jnp.ndarray,
-    lam: jnp.ndarray,
-    Q_mat: jnp.ndarray,
-    SQ_mat: jnp.ndarray,
-    x_vals: jnp.ndarray,
+    Y: torch.Tensor,
+    lam: torch.Tensor,
+    Q_mat: torch.Tensor,
+    SQ_mat: torch.Tensor,
+    x_vals: torch.Tensor,
     K_val: int = -1,
-) -> tuple[jnp.ndarray, jnp.ndarray, jnp.ndarray]:
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """Cubic spline interpolation of Poisson-Lognormal likelihood.
 
     Ports calc_Q_all from R prob_model.R lines 125-145.
@@ -253,20 +253,17 @@ def calc_q_all(
     # R: K_val = dim(Q_mat)[1] - 3, set globally by set_likelihood_vars
     if K_val < 0:
         K_val = Q_mat.shape[0] - 3
-    Y = jnp.minimum(Y, K_val)
+    Y = torch.clamp(Y, max=K_val)
     epsilon = 1e-4
-    X_max = x_vals[-1]
-    lam = jnp.clip(lam, epsilon, X_max - epsilon)
+    X_max = x_vals[-1].item()
+    lam = torch.clamp(lam, min=epsilon, max=X_max - epsilon)
 
     delta = 1e-6
-    l = jnp.floor(jnp.sqrt(lam / delta)).astype(jnp.int32)
+    l = torch.floor(torch.sqrt(lam / delta)).long()
     # R: m <- pmin(l - 9, 40) + pmax(ceiling(sqrt(pmax(l - 48.7499, 0) * 4)) - 2, 0)
-    m = jnp.minimum(l - 9, 40) + jnp.maximum(
-        jnp.ceil(jnp.sqrt(jnp.maximum(l.astype(jnp.float32) - 48.7499, 0.0) * 4.0)).astype(
-            jnp.int32
-        )
-        - 2,
-        0,
+    m = torch.clamp(l - 9, max=40) + torch.clamp(
+        torch.ceil(torch.sqrt(torch.clamp(l.float() - 48.7499, min=0.0) * 4.0)).long() - 2,
+        min=0,
     )
 
     # R is 1-indexed: ti1 <- X_vals[m]; ti <- X_vals[m+1]
@@ -276,7 +273,7 @@ def calc_q_all(
     hi = ti - ti1
 
     # R: Q_mat[Y+1, m] (1-indexed) -> Python: Q_mat[Y, m-1] (0-indexed)
-    Y_idx = Y.astype(jnp.int32)
+    Y_idx = Y.long()
     fti1 = Q_mat[Y_idx, m - 1]
     fti = Q_mat[Y_idx, m]
     zi1 = SQ_mat[Y_idx, m - 1]
@@ -298,13 +295,13 @@ def calc_q_all(
 
 
 def calc_log_likelihood(
-    Y: jnp.ndarray,
-    lam: jnp.ndarray,
-    Q_mat: jnp.ndarray,
-    SQ_mat: jnp.ndarray,
-    x_vals: jnp.ndarray,
+    Y: torch.Tensor,
+    lam: torch.Tensor,
+    Q_mat: torch.Tensor,
+    SQ_mat: torch.Tensor,
+    x_vals: torch.Tensor,
     K_val: int = -1,
-) -> jnp.ndarray:
+) -> torch.Tensor:
     """Compute total negative log-likelihood.
 
     Ports calc_log_l_vec from R: sum of -d0_vec.
@@ -321,4 +318,21 @@ def calc_log_likelihood(
         Scalar negative log-likelihood (lower = better fit).
     """
     d0, _, _ = calc_q_all(Y, lam, Q_mat, SQ_mat, x_vals, K_val)
-    return -jnp.sum(d0)
+    return -torch.sum(d0)
+
+
+def calc_log_likelihood_batch(
+    Y: torch.Tensor,
+    lam: torch.Tensor,
+    Q_mat: torch.Tensor,
+    SQ_mat: torch.Tensor,
+    x_vals: torch.Tensor,
+    K_val: int = -1,
+) -> torch.Tensor:
+    """Batched negative log-likelihood. Y: (N, G), lam: (N, G) -> scores: (N,).
+
+    Vectorized replacement for looping calc_log_likelihood over N pixels.
+    """
+    N, G = Y.shape
+    d0, _, _ = calc_q_all(Y.reshape(-1), lam.reshape(-1), Q_mat, SQ_mat, x_vals, K_val)
+    return -d0.reshape(N, G).sum(dim=1)

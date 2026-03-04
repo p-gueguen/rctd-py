@@ -5,12 +5,12 @@ build-backend = "hatchling.build"
 [project]
 name = "rctd-py"
 dynamic = ["version"]
-description = "GPU-accelerated Robust Cell Type Decomposition (RCTD) for spatial transcriptomics"
+description = "GPU-accelerated Robust Cell Type Decomposition (RCTD) for spatial transcriptomics using PyTorch"
 readme = "README.md"
 license = "GPL-3.0-or-later"
 requires-python = ">=3.10"
 authors = [{ name = "Paul Gueguen" }]
-keywords = ["spatial-transcriptomics", "deconvolution", "single-cell", "JAX", "GPU"]
+keywords = ["spatial-transcriptomics", "deconvolution", "single-cell", "PyTorch", "GPU"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Science/Research",
@@ -22,15 +22,13 @@ classifiers = [
     "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",
 ]
 dependencies = [
-    "jax>=0.4.20",
-    "jaxlib>=0.4.20",
+    "torch>=2.0",
     "numpy>=1.24",
     "scipy>=1.10",
     "anndata>=0.10",
 ]
 
 [project.optional-dependencies]
-cuda = ["jax[cuda12]"]
 dev = ["pytest>=7.0", "pytest-cov", "ruff"]
 
 [project.urls]

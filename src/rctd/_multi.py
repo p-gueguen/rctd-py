@@ -1,11 +1,11 @@
 from typing import List, Tuple
 
-import jax
-import jax.numpy as jnp
 import numpy as np
+import torch
 
 from rctd._full import run_full_mode
 from rctd._irwls import solve_irwls_batch
+from rctd._likelihood import calc_log_likelihood
 from rctd._types import MultiResult, RCTDConfig
 
 
@@ -13,10 +13,10 @@ def _run_batched_scoring(
     task_triples: List[Tuple[int, List[int]]],
     spatial_numi: np.ndarray,
     spatial_counts: np.ndarray,
-    P_gpu: jnp.ndarray,
-    Q_gpu: jnp.ndarray,
-    SQ_gpu: jnp.ndarray,
-    X_gpu: jnp.ndarray,
+    P_gpu: torch.Tensor,
+    Q_gpu: torch.Tensor,
+    SQ_gpu: torch.Tensor,
+    X_gpu: torch.Tensor,
     batch_size: int,
     K_val: int,
     n_iter: int = 25,
@@ -26,16 +26,12 @@ def _run_batched_scoring(
         return np.array([])
 
     M = len(task_triples)
-    len(task_triples[0][1])
+    device = P_gpu.device
 
     all_scores = []
 
-    # We need calc_log_likelihood to compute negative log-likelihood like R
-    from rctd._likelihood import calc_log_likelihood
-
     for start in range(0, M, batch_size):
         end = min(start + batch_size, M)
-        end - start
 
         pix_idx = []
         type_idx = []
@@ -46,16 +42,14 @@ def _run_batched_scoring(
         pix_idx = np.array(pix_idx, dtype=np.int32)
         type_idx = np.array(type_idx, dtype=np.int32)  # (bs, K_sub)
 
-        nUMI_tr = jnp.array(spatial_numi[pix_idx])
-        B_tr = jnp.array(spatial_counts[pix_idx])
+        nUMI_tr = torch.tensor(spatial_numi[pix_idx], device=device)
+        B_tr = torch.tensor(spatial_counts[pix_idx], device=device)
 
         # P_gpu is (G, K). We need (bs, G, K_sub)
-        # using jax.vmap or list comprehension:
-        # P_gpu[:, type_idx[i]] -> (G, K_sub)
-        # To do this efficiently: type_idx is (bs, K_sub)
-        # P_gpu[:, type_idx] -> shape (G, bs, K_sub). Then transpose to (bs, G, K_sub)
-        # Using numpy advanced indexing:
-        P_sub = P_gpu[:, type_idx].transpose((1, 0, 2))  # (bs, G, K_sub)
+        # type_idx is (bs, K_sub) -> convert to long tensor for indexing
+        type_idx_t = torch.tensor(type_idx, dtype=torch.long, device=device)  # (bs, K_sub)
+        # P_gpu[:, type_idx_t] -> shape (G, bs, K_sub). Then permute to (bs, G, K_sub)
+        P_sub = P_gpu[:, type_idx_t].permute(1, 0, 2)  # (bs, G, K_sub)
 
         S_sub = nUMI_tr[:, None, None] * P_sub
 
@@ -72,14 +66,15 @@ def _run_batched_scoring(
             bulk_mode=False,
         )
 
-        expected_tr = jnp.sum(S_sub * weights_batch[:, None, :], axis=-1)  # (bs, G)
-        expected_tr = jnp.maximum(expected_tr, 1e-4)
+        expected_tr = torch.sum(S_sub * weights_batch[:, None, :], dim=-1)  # (bs, G)
+        expected_tr = torch.clamp(expected_tr, min=1e-4)
 
-        batched_nll = jax.vmap(
-            lambda y, lam: calc_log_likelihood(y, lam, Q_gpu, SQ_gpu, X_gpu, K_val), in_axes=(0, 0)
-        )
-        scores_batch = batched_nll(B_tr, expected_tr)
-        all_scores.append(np.array(scores_batch))
+        bs = end - start
+        scores_batch = torch.stack([
+            calc_log_likelihood(B_tr[i], expected_tr[i], Q_gpu, SQ_gpu, X_gpu, K_val)
+            for i in range(bs)
+        ])
+        all_scores.append(scores_batch.cpu().numpy())
 
     return np.concatenate(all_scores)
 
@@ -88,10 +83,10 @@ def _run_batched_weights(
     task_triples: List[Tuple[int, List[int]]],
     spatial_numi: np.ndarray,
     spatial_counts: np.ndarray,
-    P_gpu: jnp.ndarray,
-    Q_gpu: jnp.ndarray,
-    SQ_gpu: jnp.ndarray,
-    X_gpu: jnp.ndarray,
+    P_gpu: torch.Tensor,
+    Q_gpu: torch.Tensor,
+    SQ_gpu: torch.Tensor,
+    X_gpu: torch.Tensor,
     batch_size: int,
     n_iter: int = 50,
 ) -> List[np.ndarray]:
@@ -99,13 +94,12 @@ def _run_batched_weights(
         return []
 
     M = len(task_triples)
-    len(task_triples[0][1])
+    device = P_gpu.device
 
     all_weights = []
 
     for start in range(0, M, batch_size):
         end = min(start + batch_size, M)
-        end - start
 
         pix_idx = []
         type_idx = []
@@ -116,10 +110,11 @@ def _run_batched_weights(
         pix_idx = np.array(pix_idx, dtype=np.int32)
         type_idx = np.array(type_idx, dtype=np.int32)
 
-        nUMI_tr = jnp.array(spatial_numi[pix_idx])
-        B_tr = jnp.array(spatial_counts[pix_idx])
+        nUMI_tr = torch.tensor(spatial_numi[pix_idx], device=device)
+        B_tr = torch.tensor(spatial_counts[pix_idx], device=device)
 
-        P_sub = P_gpu[:, type_idx].transpose((1, 0, 2))
+        type_idx_t = torch.tensor(type_idx, dtype=torch.long, device=device)
+        P_sub = P_gpu[:, type_idx_t].permute(1, 0, 2)
         S_sub = nUMI_tr[:, None, None] * P_sub
 
         weights_batch, conv_batch = solve_irwls_batch(
@@ -134,7 +129,7 @@ def _run_batched_weights(
             constrain=False,
             bulk_mode=False,
         )
-        all_weights.append(np.array(weights_batch))
+        all_weights.append(weights_batch.cpu().numpy())
 
     return list(np.concatenate(all_weights))
 
@@ -164,7 +159,7 @@ def run_multi_mode(
         batch_size: Number of pixels to process simultaneously on GPU
     """
     N, G = spatial_counts.shape
-    norm_profiles.shape[1]
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     # 1. Full fit to get candidates
     full_res = run_full_mode(
@@ -189,10 +184,10 @@ def run_multi_mode(
             cands.add(best)
         candidates_list.append(cands)
 
-    P_gpu = jnp.array(norm_profiles)
-    Q_gpu = jnp.array(q_mat)
-    SQ_gpu = jnp.array(sq_mat)
-    X_gpu = jnp.array(x_vals)
+    P_gpu = torch.tensor(norm_profiles, device=device)
+    Q_gpu = torch.tensor(q_mat, device=device)
+    SQ_gpu = torch.tensor(sq_mat, device=device)
+    X_gpu = torch.tensor(x_vals, device=device)
 
     INF = 1e18
     current_scores = np.full(N, INF, dtype=np.float64)
