@@ -137,7 +137,7 @@ def run_doublet_mode(
                 min_change=0.001,
                 constrain=False,
                 bulk_mode=False,
-            )
+                    )
 
             # Score logic: R's calc_log_l_vec returns positive NLL (lower=better)
             expected_tr = torch.sum(S_pair * weights_batch[:, None, :], dim=-1)  # (bs, G)
@@ -194,7 +194,7 @@ def run_doublet_mode(
                 min_change=0.001,
                 constrain=False,
                 bulk_mode=False,
-            )
+                    )
 
             expected_sg = torch.sum(S_sg * weights_batch[:, None, :], dim=-1)
             expected_sg = torch.clamp(expected_sg, min=1e-4)
@@ -374,7 +374,7 @@ def run_doublet_mode(
             min_change=0.001,
             constrain=False,
             bulk_mode=False,
-        )
+            )
 
         w_np = w_final.cpu().numpy()
         # R: results$weights = results$weights / sum(results$weights)

@@ -4,7 +4,11 @@ import numpy as np
 import pytest
 import torch
 
-from rctd._irwls import solve_irwls, solve_irwls_batch
+from rctd._irwls import (
+    _solve_box_qp,
+    solve_irwls,
+    solve_irwls_batch,
+)
 from rctd._likelihood import build_x_vals, compute_q_matrix, compute_spline_coefficients
 
 

@@ -1,121 +1,111 @@
 # Roadmap: 100% Concordance with R spacexr
 
 **Date:** 2026-03-05
-**Current concordance:** 99.7% dominant type agreement (Xenium, 58k pixels, K=45, doublet mode)
-**Goal:** 100.0% concordance — bit-level matching of weight vectors on the spacexr vignette dataset, and >99.95% on large Xenium datasets.
+**Current concordance:** 99.73% dominant type agreement (Xenium Region 1, 13,936 pixels, K=45, doublet mode)
+**With R's intermediates injected:** 100.00% (0 disagreeing pixels)
 
 ---
 
-## Where the 0.3% Gap Comes From
+## Investigation Summary (2026-03-05)
 
-The discrepancy is concentrated in **doublet mode** — singlet pixels already achieve ~99.99% agreement. Three root causes are responsible, listed by estimated impact.
+### What Was Tested
 
-### 1. QP Solver Divergence (biggest source)
+| Hypothesis | Result | Verdict |
+|------------|--------|---------|
+| QP solver divergence (Gauss-Seidel vs Goldfarb-Idnani) | Both produce identical results | **NOT the cause** |
+| Spline coefficient precision (np.linalg.inv vs solve vs tridiag) | Zero difference in likelihood values | **NOT the cause** |
+| Per-pixel IRWLS algorithm | 100% match when given same inputs | **NOT the cause** |
+| Platform effects (norm_profiles + sigma) | 100% match when R's values injected | **THE cause** |
 
-**R code:** `quadprog::solve.QP(D, d, A, b)` — Goldfarb-Idnani dual active-set algorithm.
-**Python code:** `_solve_box_qp()` (`_irwls.py:65-100`) — Gauss-Seidel coordinate descent + simplex projection.
+### Root Cause: Platform Effect Estimation
 
-These are fundamentally different algorithms. While both converge to the same optimum for well-conditioned problems, they diverge when:
-- The Hessian `D` is ill-conditioned (cond(D) >> 1e6, common for K=45 types)
-- Multiple coordinates are simultaneously active at their bounds
-- The warm-start point differs (Python uses diagonal approximation; R uses `solve(D, d)`)
+The entire 0.27% gap comes from `fit_bulk()` producing slightly different normalized reference profiles than R's `fitBulk()`, which cascades into a different sigma estimate:
 
-The comment at `_irwls.py:87-89` documents this explicitly:
-> "Using solve(D, d) blows up when cond(D) >> 1 (e.g. 5e6 for 45 types), producing delta_w ~ 1e5"
+| Parameter | Python | R |
+|-----------|--------|---|
+| sigma (full dataset) | 63 | 62 |
+| sigma (1000-cell subset) | 58 | 62 |
+| gene_list_bulk | 243 | 243 |
+| gene_list_reg | 206 | 206 |
 
-**Impact:** This is the primary source of weight differences. Even small delta_w divergences accumulate across IRWLS iterations (up to 50) and compound through the doublet pipeline where pairwise scoring uses IRWLS results.
+The gene lists match exactly. The difference is in the Gaussian IRWLS (`bulk_mode=True`) used for platform normalization, where floating-point accumulation in log/division operations over ~14k cells produces slightly different bulk proportions. This causes a small norm_profiles shift, which shifts sigma estimation by 1 unit, which shifts all per-pixel likelihood values.
 
-### 2. Doublet Pair Selection Ties
+### Key Proof
 
-**R code:** `process_bead_doublet` iterates candidate pairs and selects the pair with lowest score.
-**Python code:** `run_doublet_mode` (`_doublet.py:86-157`) does the same, but floating-point accumulation differences from source #1 cause tie-breaking to differ.
+**Experiment:** Inject R's exact `norm_profiles` (206×45) and `sigma=62` into Python, then run the full doublet pipeline.
 
-When two candidate pairs score within ~1e-4 of each other, the QP solver differences from source #1 can flip which pair is selected. Once a different pair is chosen, the K=2 refit in step 6 produces legitimately different weights.
+| Approach | Dominant Type Agreement | Disagreeing Pixels | MAE |
+|----------|-------------------------|--------------------|-----|
+| Python platform effects (full dataset) | 99.73% | 37/13,936 | 0.000084 |
+| R's norm_profiles + sigma injected | **100.00%** | **0/13,936** | **0.000000** |
+| Python platform effects (1000-cell subset) | 95.60% | 44/1,000 | 0.001342 |
+| R's intermediates (1000-cell subset) | **100.00%** | **0/1,000** | **0.000000** |
 
-**Impact:** This is the mechanism that turns small numerical differences into categorical disagreements (different cell type assignments). Affects ~0.3% of pixels.
-
-### 3. Likelihood Interpolation Precision
-
-**R code:** Natural cubic spline interpolation using R's internal spline functions.
-**Python code:** `compute_spline_coefficients()` (`_likelihood.py:22-42`) using scipy/numpy matrix inversion.
-
-The tridiagonal matrix inverse `MI` (437×437) is computed differently between R and Python. While both should produce identical results in exact arithmetic, floating-point accumulation differs, leading to O(1e-10) differences in spline coefficients. These propagate through `calc_q_all()` into every IRWLS iteration.
-
-**Impact:** Small per se, but compounds with source #1 over many iterations.
-
----
-
-## Proposed Fixes (Priority Order)
-
-### Priority 1: Replace QP solver with quadprog port (Medium effort)
-
-Replace `_solve_box_qp()` with a Python implementation that matches R's `quadprog::solve.QP` exactly.
-
-**Options:**
-- **Option A (recommended):** Use `qpsolvers` package with `quadprog` backend — this is a Python binding to the same Goldfarb-Idnani algorithm. `pip install qpsolvers quadprog`.
-- **Option B:** Port the Fortran source of `quadprog::solve.QP` to PyTorch directly. More work but avoids CPU roundtrip.
-- **Option C:** Use `cvxpy` with `OSQP` backend. Different algorithm but may match more closely than Gauss-Seidel.
-
-**Implementation plan:**
-1. Add `quadprog` to optional dependencies
-2. Create `_qp_goldfarb_idnani()` wrapper that matches R's calling convention
-3. Replace `_solve_box_qp()` in single-pixel `solve_irwls()`
-4. For batched path (`solve_irwls_batch`), call the QP solver per-pixel on CPU (the QP is tiny: K×K where K≤45)
-5. Validate on vignette data (100 beads) — should achieve exact match
-
-**Risk:** The batched CPU QP may be slower than the current GPU Gauss-Seidel. Profile and consider keeping both paths with a `solver="quadprog"` option.
-
-### Priority 2: Match tie-breaking in doublet pair scoring (Small effort)
-
-Ensure the iteration order over candidate pairs matches R exactly.
-
-**Steps:**
-1. In R, `combinations(cands, 2)` iterates in a specific order. Verify Python's `itertools.combinations` produces the same order (it should — both produce lexicographic order).
-2. When scores tie (within machine epsilon), use the same tie-breaking rule as R:
-   - R: first pair in iteration order wins (implicit `<` comparison)
-   - Python: currently same (`if sc < min_p_score`), but floating-point differences from source #1 may change which pair is "first"
-3. After fixing source #1, verify this resolves automatically.
-
-### Priority 3: Export R's spline coefficients (Small effort)
-
-Instead of computing spline coefficients from scratch in Python, export R's exact coefficients and load them.
-
-**Steps:**
-1. In R: compute the Q-matrices and spline coefficients, save as `.npz`
-2. In Python: load pre-computed coefficients instead of calling `_get_or_compute_MI()`
-3. This eliminates any floating-point divergence in the interpolation tables
-
-**Note:** The pre-computed Q-matrices (`q_matrices.npz`) already exist and are used. The question is whether the spline coefficients computed at runtime from these Q-matrices exactly match R's.
-
-### Priority 4: Validate on vignette data first (Small effort)
-
-Use the 100-bead Slide-seq vignette (same data as tutorial) for per-pixel debugging.
-
-**Steps:**
-1. Run R spacexr on vignette, export per-pixel: `weights_doublet`, `spot_class`, `first_type`, `second_type`, intermediate IRWLS weights at each iteration
-2. Run Python rctd-py on same data, export same intermediates
-3. Compare pixel-by-pixel, iteration-by-iteration to identify first divergence point
-4. This small dataset makes debugging tractable (100 pixels × 19 types vs 58k × 45)
-
-### Priority 5: Re-validate on Xenium Region 3 (Small effort)
-
-After fixes, re-run the full 58k-pixel benchmark:
-1. Run `scripts/validate_pytorch_vs_spacexr.py` with updated code
-2. Update `data/region3/xenium_metrics.json` with new concordance numbers
-3. Update README claims if concordance improves
+The per-pixel IRWLS produces **bit-identical** weights to R spacexr given the same norm_profiles and sigma.
 
 ---
 
-## Expected Outcome
+## Current Status
 
-| Fix | Expected concordance improvement |
-|-----|----------------------------------|
-| QP solver (Priority 1) | 99.7% → ~99.95% |
-| Tie-breaking (Priority 2) | Resolves automatically with #1 |
-| Spline coefficients (Priority 3) | ~99.95% → ~99.99% |
-| Combined | ~99.99%+ on large datasets, 100% on vignette |
+### Already Implemented
+- `quadprog` optional dependency with `solver` config parameter (`"auto"`, `"quadprog"`, `"gauss_seidel"`)
+- `sigma_override` parameter in `run_rctd()` and `RCTD.fit_platform_effects()` for injecting R's sigma
+- All 55 tests passing
 
-**True 100%** (bit-identical weights) is achievable on the 100-bead vignette but may remain at 99.99% on 58k-pixel datasets due to irreducible floating-point differences between R and Python linear algebra libraries (LAPACK implementations, FMA instruction differences, etc.). This is acceptable — the practical threshold for "matching" is dominant type agreement >99.95%.
+### The Concordance Gap
+
+The 37/13,936 (0.27%) disagreeing pixels are all **close-margin** cases where two cell types have weights within ~0.01-0.05 of each other. The platform effect shift causes the dominant type to flip for these borderline pixels.
+
+---
+
+## Remaining Improvement Options
+
+### Option A: Match R's fit_bulk precision (Hard, diminishing returns)
+
+The Gaussian IRWLS in `fit_bulk()` uses `bulk_mode=True` with log operations on summed counts across ~14k cells. Matching R's floating-point behavior exactly would require:
+1. Ensuring identical operation order for `torch.log(prediction)` vs R's `log(prediction)`
+2. Matching R's matrix multiplication precision (BLAS differences)
+3. This is fundamentally limited by CPU/GPU arithmetic differences
+
+**Expected improvement:** 99.73% → ~99.9%
+**Effort:** High, and inherently fragile across hardware
+
+### Option B: Export R's norm_profiles as reference (Easy, 100% match)
+
+For users who need exact R concordance:
+1. Run R spacexr once to get norm_profiles and sigma
+2. Export as CSV/NPZ
+3. Pass to Python via `sigma_override` + a new `norm_profiles_override` parameter
+4. This achieves 100.00% concordance
+
+**Expected improvement:** 100.00% guaranteed
+**Effort:** Small (add `norm_profiles_override` parameter)
+
+### Option C: Accept 99.73% as sufficient (No effort)
+
+The 0.27% gap affects only borderline pixels where two cell types are within ~0.01 weight of each other. These are genuinely ambiguous assignments that could go either way. The practical impact on downstream analysis is negligible.
+
+---
+
+## Invalidated Hypotheses
+
+### 1. QP Solver Divergence — INVALIDATED
+
+The original hypothesis was that Gauss-Seidel coordinate descent diverges from R's Goldfarb-Idnani active-set algorithm on ill-conditioned problems. Testing showed:
+- Both solvers produce identical weights on the Region 1 dataset
+- The Gauss-Seidel already converges to the same optimum
+- Even for K=45 (cond(D) >> 1e6), the box constraints + simplex projection make the algorithms equivalent
+
+### 2. Spline Coefficient Precision — INVALIDATED
+
+The original hypothesis was that `np.linalg.inv(M)` for the 437×437 tridiagonal matrix differs from R's implementation. Testing showed:
+- Condition number of M: 1.6e6 (moderate)
+- Max absolute difference between inv/solve/tridiag: ~1.5e-8
+- Impact on likelihood values: **exactly zero** (d0 diff = 0.00e+00)
+
+### 3. Doublet Pair Selection Ties — INVALIDATED (indirectly)
+
+Since the per-pixel IRWLS is bit-identical with R's inputs, tie-breaking cannot diverge when given the same upstream values.
 
 ---
 

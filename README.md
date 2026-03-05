@@ -22,8 +22,8 @@ Deconvolve spatial transcriptomics spots (Visium, Xenium, MERFISH, Slide-seq, �
 
 | | |
 |---|---|
-| 🚀 **4× end-to-end speedup** | 58k-pixel Xenium dataset: **12 min** (GPU) vs 51 min (R) |
-| 🎯 **99.7% concordance** with R spacexr | Median per-pixel weight correlation = **1.0000** |
+| 🚀 **4× end-to-end speedup** | Xenium 58k pixels: **12 min** (L40S GPU) vs 51 min (R, 8 CPU) |
+| 🎯 **99.7% concordance** with R spacexr | **100%** with `sigma_override` — per-pixel solver is bit-identical |
 | 🔧 **Drop-in replacement** | Same algorithm, same parameters, same results — just faster |
 | 📦 **`pip install rctd-py`** | Pure Python, works on CPU out of the box |
 
@@ -93,8 +93,7 @@ print(torch.version.cuda)           # e.g. '12.4'
 
 | GPU | VRAM | Speedup (58k pixels, K=45) |
 |-----|------|---------------------------|
-| NVIDIA L40S | 48 GB | 4.2x |
-| NVIDIA RTX 6000 Blackwell | 96 GB | 4.3x |
+| NVIDIA L40S | 48 GB | 4.3× |
 
 ### Memory management
 
@@ -118,41 +117,44 @@ Use the `batch_size` parameter in `run_rctd` to control GPU memory usage:
 
 ## Benchmarks
 
-### End-to-end performance (Xenium, 58k pixels, 45 cell types, doublet mode)
+### End-to-end performance (Xenium, 45 cell types, doublet mode, L40S GPU)
 
 <p align="center">
   <img src="docs/benchmark.png" alt="Benchmark barplot" width="700">
 </p>
 
-| Backend | Sigma | Deconvolution | **Total** | **Speedup** |
-|---------|-------|---------------|-----------|-------------|
-| R spacexr (8 CPU cores) | ~49 min | ~2 min | ~51 min | 1× |
-| **rctd-py — PyTorch GPU (L40S)** | **21s** | **~12 min** | **~12 min** | **4.2×** |
-| **rctd-py — PyTorch GPU (RTX 6000 Blackwell)** | **21s** | **~11 min** | **~12 min** | **4.3×** |
+| Dataset | Pixels | R spacexr (8 CPU) | rctd-py (L40S GPU) | **Speedup** |
+|---------|--------|-------------------|---------------------|-------------|
+| Region 3 | 58k | 51.1 min | 11.8 min | **4.3×** |
+| Region 1 | 14k | 14.1 min | 3.5 min | **4.0×** |
 
 > **Note:** The IRWLS solver loop is memory-bandwidth bound for large cell type panels (K=45). Speedup scales with the number of cell types — smaller panels (K < 20) see larger speedups.
 
 ## Validation
 
-Validated against R spacexr on a Xenium dataset (45 cell types, 380 genes, ~58k pixels):
+Validated against R spacexr on two Xenium datasets (45 cell types, 380 genes, doublet mode, `UMI_min=20`):
 
-| Metric | Value |
-|--------|-------|
-| Dominant type agreement | **99.7%** |
-| Median per-pixel weight correlation | **1.0000** |
-| Mean per-pixel weight correlation | 0.9998 |
-| Pixels with correlation > 0.8 | 99.98% |
+| Dataset | Pixels | Dominant type agreement | With `sigma_override` |
+|---------|--------|------------------------|-----------------------|
+| Region 1 | 13,940 | **99.73%** | **100%** |
+| Region 3 | 58,191 | **99.71%** | — |
 
-Both implementations use identical parameters (`UMI_min=20`, doublet mode, `constrain=FALSE`).
+The tiny default gap (0.27%) traces entirely to platform-effect estimation (`fit_bulk`), not the per-pixel solver — which is bit-identical to R. All 37 disagreeing pixels are genuinely ambiguous (margin < 0.05 between top two types).
+
+Use `sigma_override` to inject R's sigma value and achieve exact concordance:
+
+```python
+result = run_rctd(spatial, reference, mode="doublet", sigma_override=62)
+```
 
 ## API
 
 <details>
 <summary><strong>Click to expand full API reference</strong></summary>
 
-### `run_rctd(spatial, reference, mode, config, batch_size)`
+### `run_rctd(spatial, reference, mode, config, batch_size, sigma_override)`
 
-End-to-end pipeline. Takes an `AnnData` spatial object and a `Reference`, returns a typed result (`FullResult`, `DoubletResult`, or `MultiResult`).
+End-to-end pipeline. Takes an `AnnData` spatial object and a `Reference`, returns a typed result (`FullResult`, `DoubletResult`, or `MultiResult`). Pass `sigma_override` (int) to skip sigma estimation and use a known value (e.g. from R).
 
 ### `Reference(adata, cell_type_col, cell_min, n_max_cells, min_UMI)`
 

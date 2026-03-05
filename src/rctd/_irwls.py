@@ -165,7 +165,6 @@ def solve_irwls(
         d = -grad / norm_factor
 
         # Solve box-constrained QP: min 0.5 x^T D x - d^T x  s.t. x >= -solution
-        # Matches R's quadprog::solve.QP(D_mat, d_vec, diag(K), -solution, meq=0)
         delta_w = _solve_box_qp(D, d, -solution)
 
         # Damped update (R: solution <- solution + alpha * delta_w)
