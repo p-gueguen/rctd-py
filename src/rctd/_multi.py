@@ -317,7 +317,14 @@ def run_multi_mode(
     final_weights_dict = {}
     for k_sub, t_list in final_tasks.items():
         w_res = _run_batched_weights(
-            t_list, spatial_numi, spatial_counts, P_gpu, Q_gpu, SQ_gpu, X_gpu, batch_size,
+            t_list,
+            spatial_numi,
+            spatial_counts,
+            P_gpu,
+            Q_gpu,
+            SQ_gpu,
+            X_gpu,
+            batch_size,
         )
         for i, (n, _) in enumerate(t_list):
             # Normalize the weights from IRWLS
