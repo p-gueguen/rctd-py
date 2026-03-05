@@ -139,11 +139,16 @@ Validated against R spacexr on two Xenium datasets (45 cell types, 380 genes, do
 | Region 1 | 13,940 | **99.73%** | **100%** |
 | Region 3 | 58,191 | **99.71%** | — |
 
-The tiny default gap (0.27%) traces entirely to platform-effect estimation (`fit_bulk`), not the per-pixel solver — which is bit-identical to R. All 37 disagreeing pixels are genuinely ambiguous (margin < 0.05 between top two types).
+The tiny default gap (0.27%) traces entirely to platform-effect estimation (`fit_bulk`), not the per-pixel solver — which is bit-identical to R. All disagreeing pixels are genuinely ambiguous (margin < 0.05 between top two types).
 
-Use `sigma_override` to inject R's sigma value and achieve exact concordance:
+**`sigma_override` is not needed for normal use.** The default Python-estimated sigma is valid and produces near-identical results. It exists for specific scenarios:
+
+- **Validation** — proving solver equivalence with R
+- **Migration** — replicating exact R spacexr results when you already have R's sigma
+- **Reproducibility** — locking sigma to a known value across runs
 
 ```python
+# Only if you need exact R concordance and know R's sigma value:
 result = run_rctd(spatial, reference, mode="doublet", sigma_override=62)
 ```
 
