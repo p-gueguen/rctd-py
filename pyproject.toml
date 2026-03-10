@@ -29,7 +29,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=7.0", "pytest-cov", "ruff"]
+dev = ["pytest>=7.0", "pytest-cov", "ruff", "pandas>=1.5"]
 
 [project.urls]
 Homepage = "https://github.com/p-gueguen/rctd-py"
@@ -51,6 +51,7 @@ exclude = ["src/rctd/data/q_matrices.npz", "data/", "benchmarks/", "docs/", "scr
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = ["slow: R concordance tests (downloads vignette data from GitHub)"]
 
 [tool.ruff]
 line-length = 100

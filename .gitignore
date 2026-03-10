@@ -12,6 +12,7 @@ scripts/
 benchmarks/**/*.R
 benchmarks/**/*.sh
 test_*.py
+!tests/test_*.py
 *debug*.py
 *.qmd
 *.html
@@ -36,6 +37,9 @@ coverage.xml
 
 # Data (large reference/validation files)
 data/
+
+# Keep test fixtures (small R reference outputs for concordance tests)
+!tests/fixtures/
 
 # R reference validation data
 scripts/r_reference/

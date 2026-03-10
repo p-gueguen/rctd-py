@@ -1,7 +1,11 @@
 """Shared test fixtures for rctd tests."""
 
+import io
+import urllib.request
+
 import anndata
 import numpy as np
+import pandas as pd
 import pytest
 
 
@@ -63,6 +67,60 @@ def _make_synthetic_spatial(profiles, n_pixels=100, n_types=5, seed=123):
     adata.var_names = [f"Gene_{i}" for i in range(n_genes)]
     adata.obs_names = [f"Pixel_{i}" for i in range(n_pixels)]
     return adata, true_weights
+
+
+_SPACEXR_BASE = "https://raw.githubusercontent.com/dmcable/spacexr/master/inst/extdata"
+
+
+def _fetch_csv(url):
+    """Download a CSV from URL and return as pandas DataFrame."""
+    with urllib.request.urlopen(url) as resp:
+        return pd.read_csv(io.BytesIO(resp.read()))
+
+
+@pytest.fixture(scope="session")
+def vignette_data():
+    """Download spacexr vignette data (SlideSeq cerebellum, ~100 beads, 19 types).
+
+    Returns dict with 'spatial' and 'reference' AnnData objects.
+    """
+    # Reference
+    ref_dge = _fetch_csv(f"{_SPACEXR_BASE}/Reference/Vignette/dge.csv")
+    ref_meta = _fetch_csv(f"{_SPACEXR_BASE}/Reference/Vignette/meta_data.csv")
+    cell_type_dict = _fetch_csv(f"{_SPACEXR_BASE}/Reference/Vignette/cell_type_dict.csv")
+
+    gene_names = ref_dge.iloc[:, 0].values
+    counts = ref_dge.iloc[:, 1:].values.T.astype(np.float32)
+    cell_barcodes = ref_dge.columns[1:].values
+    cluster_to_name = dict(zip(cell_type_dict["Cluster"], cell_type_dict["Name"]))
+    ref_meta_indexed = ref_meta.set_index("barcode")
+    cell_types = [cluster_to_name[ref_meta_indexed.loc[bc, "cluster"]] for bc in cell_barcodes]
+    ref_adata = anndata.AnnData(
+        X=counts,
+        obs=pd.DataFrame({"cell_type": cell_types}, index=cell_barcodes),
+    )
+    ref_adata.var_names = pd.Index(gene_names)
+
+    # Spatial
+    spatial_dge = _fetch_csv(f"{_SPACEXR_BASE}/SpatialRNA/Vignette/MappedDGEForR.csv")
+    bead_locs = _fetch_csv(f"{_SPACEXR_BASE}/SpatialRNA/Vignette/BeadLocationsForR.csv")
+    sp_gene_names = spatial_dge.iloc[:, 0].values
+    sp_counts = spatial_dge.iloc[:, 1:].values.T.astype(np.float32)
+    sp_barcodes = spatial_dge.columns[1:].values
+    locs = bead_locs.set_index("barcodes")
+    spatial_adata = anndata.AnnData(
+        X=sp_counts,
+        obs=pd.DataFrame(
+            {
+                "x": locs.loc[sp_barcodes, "xcoord"].values,
+                "y": locs.loc[sp_barcodes, "ycoord"].values,
+            },
+            index=sp_barcodes,
+        ),
+    )
+    spatial_adata.var_names = pd.Index(sp_gene_names)
+
+    return {"spatial": spatial_adata, "reference": ref_adata}
 
 
 @pytest.fixture

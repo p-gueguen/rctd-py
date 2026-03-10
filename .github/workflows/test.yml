@@ -43,8 +43,11 @@ jobs:
       - name: Install dependencies
         run: uv pip install --system ".[dev]"
 
-      - name: Run tests
-        run: pytest tests/ -v --cov=rctd --cov-report=xml
+      - name: Run unit tests
+        run: pytest tests/ -v --cov=rctd --cov-report=xml -m "not slow"
+
+      - name: Run R concordance tests
+        run: pytest tests/test_concordance.py -v -m slow
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v5
