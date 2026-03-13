@@ -5,6 +5,7 @@ from prob_model.R.
 """
 
 import urllib.request
+import zipfile
 from pathlib import Path
 
 import numpy as np
@@ -63,7 +64,6 @@ def load_cached_q_matrices(data_dir: Path | str | None = None) -> dict[str, np.n
     data_dir = Path(data_dir)
     npz_path = data_dir / "q_matrices.npz"
 
-    # Fallback: user cache directory
     cache_path = Path.home() / ".cache" / "rctd" / "q_matrices.npz"
 
     if not npz_path.exists():
@@ -73,8 +73,18 @@ def load_cached_q_matrices(data_dir: Path | str | None = None) -> dict[str, np.n
             _download_q_matrices(cache_path)
             npz_path = cache_path
 
-    with np.load(npz_path) as data:
-        return {k: data[k] for k in data.files}
+    try:
+        with np.load(npz_path) as data:
+            return {k: data[k] for k in data.files}
+    except (zipfile.BadZipFile, ValueError, EOFError, OSError) as exc:
+        # Most commonly this means a partial/corrupt download in cache.
+        # Recover by re-downloading to cache and retrying once.
+        print(f"Failed to load Q-matrices from {npz_path}: {exc}")
+        if cache_path.exists():
+            cache_path.unlink()
+        _download_q_matrices(cache_path)
+        with np.load(cache_path) as data:
+            return {k: data[k] for k in data.files}
 
 
 def build_x_vals() -> np.ndarray:
