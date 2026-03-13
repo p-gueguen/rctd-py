@@ -252,7 +252,7 @@ def _psd_batch(H: torch.Tensor, epsilon: float = 1e-3) -> tuple[torch.Tensor, to
     )
 
 
-@torch.compile(mode="reduce-overhead", fullgraph=True)
+@torch.compile(dynamic=True)
 def _solve_box_qp_batch_compiled(
     D: torch.Tensor,
     d: torch.Tensor,
@@ -261,9 +261,10 @@ def _solve_box_qp_batch_compiled(
 ) -> torch.Tensor:
     """Compiled Gauss-Seidel coordinate descent for batched box-constrained QP.
 
-    torch.compile with reduce-overhead mode uses Triton to fuse the inner
-    coordinate descent operations into optimized CUDA kernels, reducing
-    memory traffic and kernel launch overhead compared to torch.jit.script.
+    torch.compile with dynamic=True fuses the inner coordinate descent
+    operations into optimized kernels via Triton/Inductor, reducing memory
+    traffic and kernel launch overhead. Dynamic shapes avoid excessive
+    recompilations when batch size N or type count K varies across calls.
     """
     K = d.shape[1]
     D_diag = torch.diagonal(D, dim1=-2, dim2=-1)  # (N, K)
