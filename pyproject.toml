@@ -51,6 +51,7 @@ exclude = ["src/rctd/data/q_matrices.npz", "data/", "benchmarks/", "docs/", "scr
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+addopts = "-m 'not performance'"
 markers = [
     "slow: R concordance tests (downloads vignette data from GitHub)",
     "performance: Runtime and memory regression tests",

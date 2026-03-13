@@ -3,7 +3,7 @@
 These tests are intentionally opt-in because they are heavier and can be noisy on
 shared CI runners. Run them with:
 
-    pytest --run-performance tests/test_performance.py
+    pytest -m performance tests/test_performance.py
 
 Each execution appends measured runtime/memory metrics to a CSV file.
 Default path: tests/performance_metrics.csv
@@ -132,9 +132,9 @@ def _append_metric_row(
 
 def _make_reference_and_spatial(
     n_genes: int = 500,
-    n_cells: int = 2400,
+    n_cells: int = 50000,
     n_types: int = 12,
-    n_pixels: int = 300,
+    n_pixels: int = 50000,
     seed: int = 1234,
     sparse_inputs: bool = False,
 ):
@@ -150,16 +150,18 @@ def _make_reference_and_spatial(
         profiles[start:stop, k] *= 8.0
     profiles /= profiles.sum(axis=0, keepdims=True)
 
-    cells_per_type = n_cells // n_types
+    base_cells_per_type, remainder = divmod(n_cells, n_types)
     ref_counts = np.zeros((n_cells, n_genes), dtype=np.float32)
     cell_types = []
+    row = 0
     for k in range(n_types):
-        for c in range(cells_per_type):
-            i = k * cells_per_type + c
+        n_cells_k = base_cells_per_type + (1 if k < remainder else 0)
+        for _ in range(n_cells_k):
             n_umi = int(rng.integers(1200, 5000))
             lam = profiles[:, k] * n_umi
-            ref_counts[i, :] = rng.poisson(lam).astype(np.float32)
+            ref_counts[row, :] = rng.poisson(lam).astype(np.float32)
             cell_types.append(f"Type_{k}")
+            row += 1
 
     ref_x = sparse.csr_matrix(ref_counts) if sparse_inputs else ref_counts
     ref = anndata.AnnData(X=ref_x, obs={"cell_type": cell_types})
@@ -190,9 +192,9 @@ _GPU_DATASETS = [
         "genes_500",
         {
             "n_genes": 500,
-            "n_cells": 12000,
+            "n_cells": 50000,
             "n_types": 12,
-            "n_pixels": 3000,
+            "n_pixels": 50000,
             "seed": 2234,
         },
     ),
@@ -200,9 +202,9 @@ _GPU_DATASETS = [
         "genes_5000",
         {
             "n_genes": 5000,
-            "n_cells": 24000,
+            "n_cells": 50000,
             "n_types": 12,
-            "n_pixels": 6000,
+            "n_pixels": 50000,
             "seed": 3234,
         },
     ),
@@ -211,30 +213,30 @@ _GPU_DATASETS = [
 _TARGETED_DATASETS = {
     "sparse_full": {
         "n_genes": 5000,
-        "n_cells": 24000,
+        "n_cells": 50000,
         "n_types": 12,
-        "n_pixels": 6000,
+        "n_pixels": 50000,
         "seed": 4234,
     },
     "sigma_calibration": {
         "n_genes": 1200,
-        "n_cells": 12000,
+        "n_cells": 50000,
         "n_types": 12,
-        "n_pixels": 2000,
+        "n_pixels": 50000,
         "seed": 5234,
     },
     "multi_mode": {
         "n_genes": 1000,
-        "n_cells": 12000,
+        "n_cells": 50000,
         "n_types": 12,
-        "n_pixels": 3000,
+        "n_pixels": 50000,
         "seed": 6234,
     },
     "doublet_mode": {
         "n_genes": 1000,
-        "n_cells": 12000,
+        "n_cells": 50000,
         "n_types": 12,
-        "n_pixels": 3000,
+        "n_pixels": 50000,
         "seed": 7234,
     },
 }
@@ -264,9 +266,9 @@ def _child_run(
         dataset_kwargs = dataset_kwargs or {}
         data_kwargs = {
             "n_genes": int(dataset_kwargs.get("n_genes", 700)),
-            "n_cells": int(dataset_kwargs.get("n_cells", 1400)),
+            "n_cells": int(dataset_kwargs.get("n_cells", 50000)),
             "n_types": int(dataset_kwargs.get("n_types", 7)),
-            "n_pixels": int(dataset_kwargs.get("n_pixels", 300)),
+            "n_pixels": int(dataset_kwargs.get("n_pixels", 50000)),
             "seed": int(dataset_kwargs.get("seed", 1234)),
         }
         ref_adata, spatial_adata = _make_reference_and_spatial(

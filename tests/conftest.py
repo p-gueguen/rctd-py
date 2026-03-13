@@ -9,27 +9,6 @@ import pandas as pd
 import pytest
 
 
-def pytest_addoption(parser):
-    """Add CLI options for optional test groups."""
-    parser.addoption(
-        "--run-performance",
-        action="store_true",
-        default=False,
-        help="Run performance and memory regression tests.",
-    )
-
-
-def pytest_collection_modifyitems(config, items):
-    """Skip performance tests unless explicitly requested."""
-    if config.getoption("--run-performance"):
-        return
-
-    skip_perf = pytest.mark.skip(reason="need --run-performance option to run")
-    for item in items:
-        if "performance" in item.keywords:
-            item.add_marker(skip_perf)
-
-
 def _make_synthetic_reference(n_genes=200, n_cells=500, n_types=5, seed=42):
     """Create synthetic scRNA-seq reference with known cell type profiles."""
     rng = np.random.default_rng(seed)
