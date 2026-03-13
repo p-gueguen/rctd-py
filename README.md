@@ -175,7 +175,7 @@ Stateful class for step-by-step control. Call `fit_platform_effects()`, then `ru
 |-----------|---------|-------------|
 | `UMI_min` | 100 | Minimum UMI count per pixel |
 | `UMI_min_sigma` | 300 | Minimum UMI for sigma estimation |
-| `N_fit` | 1000 | # cells for sigma fitting |
+| `N_fit` | 100 | # pixels sampled for sigma fitting |
 | `MAX_MULTI_TYPES` | 4 | Max cell types in multi mode |
 | `CONFIDENCE_THRESHOLD` | 5.0 | Singlet confidence threshold |
 | `DOUBLET_THRESHOLD` | 20.0 | Doublet certainty threshold |
