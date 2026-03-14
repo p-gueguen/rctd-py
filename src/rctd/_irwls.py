@@ -231,25 +231,22 @@ def _get_derivatives_batch(
 def _psd_batch(H: torch.Tensor, epsilon: float = 1e-3) -> tuple[torch.Tensor, torch.Tensor]:
     """Batched PSD projection. H: (N, K, K) → (H_psd (N, K, K), max_eig (N,)).
 
-    Eigendecomposition is offloaded to CPU when input is on GPU. Batched eigh
-    on GPU is poorly parallelized for small matrices (K=45): cuSOLVER's
-    syevjBatched underutilizes GPU cores, taking ~2.7s for N=5000 on L40S.
-    CPU eigh with OpenBLAS/MKL threading handles the same batch in ~50ms.
-    The GPU↔CPU transfer for (5000, 45, 45) is ~2ms on PCIe 4.0.
+    Uses eigendecomposition on CPU (faster than GPU for small K×K matrices).
+    When already on CPU, avoids unnecessary copy.
     """
-    orig_device = H.device
-    orig_dtype = H.dtype
+    compute_device = H.device if H.device.type == "cpu" else torch.device("cpu")
+    H_compute = H if H.device.type == "cpu" else H.cpu()
 
-    # CPU eigh is faster for batched small matrices
-    H_cpu = H.cpu()
-    eigenvalues, eigenvectors = torch.linalg.eigh(H_cpu)
+    eigenvalues, eigenvectors = torch.linalg.eigh(H_compute)
     eigenvalues = torch.clamp(eigenvalues, min=epsilon)
     H_psd = eigenvectors @ torch.diag_embed(eigenvalues) @ eigenvectors.transpose(-1, -2)
     max_eig = eigenvalues[:, -1]
 
-    return H_psd.to(device=orig_device, dtype=orig_dtype), max_eig.to(
-        device=orig_device, dtype=orig_dtype
-    )
+    if H.device.type != "cpu":
+        return H_psd.to(device=H.device, dtype=H.dtype), max_eig.to(
+            device=H.device, dtype=H.dtype
+        )
+    return H_psd, max_eig
 
 
 @torch.compile(dynamic=True)
