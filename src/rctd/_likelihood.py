@@ -259,46 +259,47 @@ def calc_q_all(
     Returns:
         (d0_vec, d1_vec, d2_vec): each shape (G,).
     """
-    # Infer K_val from Q_mat shape if not explicitly provided
-    # R: K_val = dim(Q_mat)[1] - 3, set globally by set_likelihood_vars
     if K_val < 0:
         K_val = Q_mat.shape[0] - 3
     Y = torch.clamp(Y, max=K_val)
-    epsilon = 1e-4
-    X_max = x_vals[-1].item()
-    lam = torch.clamp(lam, min=epsilon, max=X_max - epsilon)
+    lam = torch.clamp(lam, min=1e-4, max=x_vals[-1].item() - 1e-4)
 
-    delta = 1e-6
-    l = torch.floor(torch.sqrt(lam / delta)).long()
-    # R: m <- pmin(l - 9, 40) + pmax(ceiling(sqrt(pmax(l - 48.7499, 0) * 4)) - 2, 0)
+    # Index computation: map lambda -> spline interval index m
+    l = torch.floor(torch.sqrt(lam * 1e6)).long()
+    l_float = l.float()
     m = torch.clamp(l - 9, max=40) + torch.clamp(
-        torch.ceil(torch.sqrt(torch.clamp(l.float() - 48.7499, min=0.0) * 4.0)).long() - 2,
+        torch.ceil(torch.sqrt(torch.clamp(l_float - 48.7499, min=0.0) * 4.0)).long() - 2,
         min=0,
     )
 
-    # R is 1-indexed: ti1 <- X_vals[m]; ti <- X_vals[m+1]
-    # Python 0-indexed: x_vals[m-1] and x_vals[m]
-    ti1 = x_vals[m - 1]
+    # Interval endpoints and width
+    m_lo = m - 1  # 0-indexed left endpoint
+    ti1 = x_vals[m_lo]
     ti = x_vals[m]
     hi = ti - ti1
 
-    # R: Q_mat[Y+1, m] (1-indexed) -> Python: Q_mat[Y, m-1] (0-indexed)
+    # Look up spline data for (Y, interval) pairs
     Y_idx = Y.long()
-    fti1 = Q_mat[Y_idx, m - 1]
+    fti1 = Q_mat[Y_idx, m_lo]
     fti = Q_mat[Y_idx, m]
-    zi1 = SQ_mat[Y_idx, m - 1]
+    zi1 = SQ_mat[Y_idx, m_lo]
     zi = SQ_mat[Y_idx, m]
 
+    # Precompute reusable intermediates
     diff1 = lam - ti1
     diff2 = ti - lam
-    diff3 = fti / hi - zi * hi / 6.0
-    diff4 = fti1 / hi - zi1 * hi / 6.0
-    zdi = zi / hi
-    zdi1 = zi1 / hi
+    inv_hi = 1.0 / hi
+    zdi = zi * inv_hi
+    zdi1 = zi1 * inv_hi
+    hi_over_6 = hi / 6.0
+    diff3 = fti * inv_hi - zi * hi_over_6
+    diff4 = fti1 * inv_hi - zi1 * hi_over_6
 
-    # Cubic spline interpolation
-    d0_vec = zdi * diff1**3 / 6.0 + zdi1 * diff2**3 / 6.0 + diff3 * diff1 + diff4 * diff2
-    d1_vec = zdi * diff1**2 / 2.0 - zdi1 * diff2**2 / 2.0 + diff3 - diff4
+    # Cubic spline: value, first derivative, second derivative
+    diff1_sq = diff1 * diff1
+    diff2_sq = diff2 * diff2
+    d0_vec = zdi * (diff1_sq * diff1) / 6.0 + zdi1 * (diff2_sq * diff2) / 6.0 + diff3 * diff1 + diff4 * diff2
+    d1_vec = zdi * diff1_sq * 0.5 - zdi1 * diff2_sq * 0.5 + diff3 - diff4
     d2_vec = zdi * diff1 + zdi1 * diff2
 
     return d0_vec, d1_vec, d2_vec
