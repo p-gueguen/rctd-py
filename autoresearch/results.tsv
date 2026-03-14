@@ -1,1 +1,10 @@
 commit	elapsed_s	memory_mb	hash	status	description
+379c06d	37.02	2223.0	d3d325ba79bedd50	keep	baseline (CPU, 5k pixels, 500 genes, 8 types)
+d407be0	38.19	2223.0	d3d325ba79bedd50	keep	reduce QP sweeps from 50 to 30
+5771191	37.67	2223.0	d3d325ba79bedd50	keep	truly skip converged pixels in IRWLS
+9c63f3f	40.42	2223.0	d3d325ba79bedd50	discard	torch.compile calc_q_all (compile overhead)
+12203b3	37.32	2223.0	d3d325ba79bedd50	keep	avoid CPU copy in _psd_batch
+d36feb3	37.63	2223.0	d3d325ba79bedd50	keep	optimize calc_q_all intermediates
+19ec963	38.14	2223.0	83ab68d369feeb88	discard	replace eigh with diagonal regularization (wrong hash)
+77be7f7	35.74	2223.0	d3d325ba79bedd50	keep	factor S_batch into P + nUMI
+c080027	36.05	2223.0	d3d325ba79bedd50	discard	einsum Hessian (no improvement)
