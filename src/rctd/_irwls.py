@@ -257,7 +257,7 @@ def _solve_box_qp_batch_compiled(
     D: torch.Tensor,
     d: torch.Tensor,
     lower_bound: torch.Tensor,
-    n_sweeps: int = 50,
+    n_sweeps: int = 30,
 ) -> torch.Tensor:
     """Compiled Gauss-Seidel coordinate descent for batched box-constrained QP.
 
