@@ -191,39 +191,56 @@ def _get_derivatives_batch(
     SQ_mat: torch.Tensor,
     x_vals: torch.Tensor,
     bulk_mode: bool = False,
+    P: torch.Tensor | None = None,
+    nUMI: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Batched gradient and Hessian computation.
 
+    When P and nUMI are provided, avoids materializing the full (N, G, K)
+    design matrix S by factoring S[n] = nUMI[n] * P.
+
     Args:
-        S: (N, G, K) design matrices
+        S: (N, G, K) design matrices (can be None if P and nUMI provided)
         Y: (N, G) observed counts
         prediction: (N, G) current predicted values
         Q_mat, SQ_mat, x_vals: likelihood tables
         bulk_mode: if True, use Gaussian approximation
+        P: (G, K) shared profile matrix (optional, avoids S materialization)
+        nUMI: (N,) per-pixel UMI counts (required if P is provided)
 
     Returns:
         (grad, hess): gradient (N, K) and Hessian (N, K, K)
     """
-    N, G, K = S.shape
+    N = Y.shape[0]
     if bulk_mode:
         d1_vec = -2.0 * (torch.log(prediction) - torch.log(Y + 1e-10)) / prediction
         d2_vec = -2.0 * (1.0 - torch.log(prediction) + torch.log(Y + 1e-10)) / prediction**2
     else:
-        # Flatten (N, G) → (N*G,) for calc_q_all, then reshape back
-        Y_flat = Y.reshape(-1)
-        pred_flat = prediction.reshape(-1)
-        _, d1_flat, d2_flat = calc_q_all(Y_flat, pred_flat, Q_mat, SQ_mat, x_vals)
-        d1_vec = d1_flat.reshape(N, G)
-        d2_vec = d2_flat.reshape(N, G)
+        _, d1_flat, d2_flat = calc_q_all(Y.reshape(-1), prediction.reshape(-1), Q_mat, SQ_mat, x_vals)
+        d1_vec = d1_flat.reshape(N, -1)
+        d2_vec = d2_flat.reshape(N, -1)
 
-    # grad[n] = -(d1[n] @ S[n]) → (N, 1, G) @ (N, G, K) → (N, 1, K) → (N, K)
-    grad = -torch.bmm(d1_vec.unsqueeze(1), S).squeeze(1)
+    if P is not None and nUMI is not None:
+        # Factor S = nUMI[:, None, None] * P[None, :, :]:
+        # grad[n] = -(d1[n] @ S[n]) = -nUMI[n] * (d1[n] @ P)
+        grad = -(d1_vec @ P) * nUMI[:, None]  # (N, K)
 
-    # hess[n] = S[n].T @ diag(-d2[n]) @ S[n]
-    # = (S[n] * (-d2[n])[:, None]).T @ S[n]
-    # Batched: (N, K, G) @ (N, G, K) where S_weighted = S * (-d2)[:, :, None]
-    S_weighted = S * (-d2_vec).unsqueeze(2)  # (N, G, K)
-    hess = torch.bmm(S_weighted.transpose(1, 2), S)  # (N, K, K)
+        # hess[n] = S[n]^T diag(-d2[n]) S[n] = nUMI[n]^2 * P^T diag(-d2[n]) P
+        # Batched: weight d2 by nUMI^2, then P^T @ diag(-d2_weighted) @ P
+        d2_weighted = (-d2_vec) * (nUMI * nUMI)[:, None]  # (N, G)
+        # hess = (d2_weighted^T @ kron(I_N, P))... need batched approach
+        # P^T diag(d2_w[n]) P for each n:
+        # = (P * d2_w[n][:, None])^T @ P
+        # Vectorized: (N, K, G) @ (G, K) but we need per-row weighting
+        P_T = P.T  # (K, G)
+        hess = torch.bmm(
+            (d2_weighted.unsqueeze(1) * P_T.unsqueeze(0)),  # (N, K, G)
+            P.unsqueeze(0).expand(N, -1, -1),               # (N, G, K)
+        )  # (N, K, K)
+    else:
+        grad = -torch.bmm(d1_vec.unsqueeze(1), S).squeeze(1)
+        S_weighted = S * (-d2_vec).unsqueeze(2)
+        hess = torch.bmm(S_weighted.transpose(1, 2), S)
 
     return grad, hess
 
@@ -339,43 +356,59 @@ def solve_irwls_batch(
         k_val = Q_mat.shape[0] - 3
         Y_batch = torch.clamp(Y_batch, max=k_val)
 
+    # Extract shared profile matrix P from S_batch to avoid (N, G, K) re-indexing.
+    # S_batch[n] = nUMI[n] * P, so P = S_batch[0] / nUMI[0] (when nUMI[0] > 0).
+    # We use the factored form: prediction = nUMI * |P @ w|, grad/hess via P + nUMI.
+    # This avoids copying (A, G, K) slices of S_batch each iteration.
+    first_valid = (nUMI_batch > 0).nonzero(as_tuple=True)[0]
+    if len(first_valid) > 0:
+        ref_idx = first_valid[0].item()
+        P = S_batch[ref_idx] / nUMI_batch[ref_idx]  # (G, K) shared profiles
+        use_factored = True
+    else:
+        P = None
+        use_factored = False
+
     w = torch.ones(N, K, dtype=dtype, device=device) / K
-    eye_K = torch.eye(K, dtype=dtype, device=device)  # shared identity
+    eye_K = torch.eye(K, dtype=dtype, device=device)
 
-    # Per-pixel convergence tracking
-    change = torch.full((N,), float("inf"), dtype=dtype, device=device)
     converged = torch.zeros(N, dtype=torch.bool, device=device)
+    threshold = torch.clamp(nUMI_batch * 1e-7, min=1e-4)
 
-    # Threshold per pixel: max(1e-4, nUMI * 1e-7)
-    threshold = torch.clamp(nUMI_batch * 1e-7, min=1e-4)  # (N,)
-
-    # Active index tracking: only compute on non-converged pixels
     active_idx = torch.arange(N, device=device)
 
     for it in range(max_iter):
         if len(active_idx) == 0:
             break
 
-        # Subset to active pixels only
-        S_act = S_batch[active_idx]          # (A, G, K)
-        Y_act = Y_batch[active_idx]          # (A, G)
-        w_act = w[active_idx]                # (A, K)
-        thr_act = threshold[active_idx]      # (A,)
+        Y_act = Y_batch[active_idx]
+        w_act = w[active_idx]
+        thr_act = threshold[active_idx]
+        nUMI_act = nUMI_batch[active_idx]
 
-        solution = torch.clamp(w_act, min=0.0)  # (A, K)
+        solution = torch.clamp(w_act, min=0.0)
 
-        # prediction = |S @ w|: (A, G, K) @ (A, K, 1) → (A, G)
-        prediction = torch.abs(torch.bmm(S_act, solution.unsqueeze(2)).squeeze(2))
+        if use_factored:
+            # prediction = |nUMI * (P @ w)|: avoid (A, G, K) materialization
+            prediction = torch.abs(nUMI_act[:, None] * (solution @ P.T))  # (A, G)
+        else:
+            S_act = S_batch[active_idx]
+            prediction = torch.abs(torch.bmm(S_act, solution.unsqueeze(2)).squeeze(2))
         prediction = torch.clamp(prediction, min=thr_act.unsqueeze(1))
 
-        grad, hess = _get_derivatives_batch(
-            S_act, Y_act, prediction, Q_mat, SQ_mat, x_vals, bulk_mode
-        )
+        if use_factored:
+            grad, hess = _get_derivatives_batch(
+                None, Y_act, prediction, Q_mat, SQ_mat, x_vals, bulk_mode,
+                P=P, nUMI=nUMI_act,
+            )
+        else:
+            grad, hess = _get_derivatives_batch(
+                S_act, Y_act, prediction, Q_mat, SQ_mat, x_vals, bulk_mode,
+            )
 
         hess, norm_factor = _psd_batch(hess)
         norm_factor = torch.clamp(norm_factor, min=1e-10)
 
-        A = len(active_idx)
         D = hess / norm_factor[:, None, None] + 1e-7 * eye_K.unsqueeze(0)
         d = -grad / norm_factor[:, None]
 
@@ -386,15 +419,12 @@ def solve_irwls_batch(
         if constrain:
             w_new = project_simplex_batch(w_new)
 
-        # Per-pixel L1 change
-        change_act = torch.sum(torch.abs(w_new - w_act), dim=1)  # (A,)
+        change_act = torch.sum(torch.abs(w_new - w_act), dim=1)
 
-        # Update weights for active pixels
         w[active_idx] = w_new
         newly_converged = change_act <= min_change
         converged[active_idx] = converged[active_idx] | newly_converged
 
-        # Shrink active set
         still_active = ~newly_converged
         active_idx = active_idx[still_active]
 
