@@ -352,25 +352,33 @@ def solve_irwls_batch(
     # Threshold per pixel: max(1e-4, nUMI * 1e-7)
     threshold = torch.clamp(nUMI_batch * 1e-7, min=1e-4)  # (N,)
 
+    # Active index tracking: only compute on non-converged pixels
+    active_idx = torch.arange(N, device=device)
+
     for it in range(max_iter):
-        # Only process non-converged pixels
-        active = ~converged
-        if not active.any():
+        if len(active_idx) == 0:
             break
 
-        solution = torch.clamp(w, min=0.0)  # (N, K)
+        # Subset to active pixels only
+        S_act = S_batch[active_idx]          # (A, G, K)
+        Y_act = Y_batch[active_idx]          # (A, G)
+        w_act = w[active_idx]                # (A, K)
+        thr_act = threshold[active_idx]      # (A,)
 
-        # prediction = |S @ w|: (N, G, K) @ (N, K, 1) → (N, G)
-        prediction = torch.abs(torch.bmm(S_batch, solution.unsqueeze(2)).squeeze(2))
-        prediction = torch.clamp(prediction, min=threshold.unsqueeze(1))
+        solution = torch.clamp(w_act, min=0.0)  # (A, K)
+
+        # prediction = |S @ w|: (A, G, K) @ (A, K, 1) → (A, G)
+        prediction = torch.abs(torch.bmm(S_act, solution.unsqueeze(2)).squeeze(2))
+        prediction = torch.clamp(prediction, min=thr_act.unsqueeze(1))
 
         grad, hess = _get_derivatives_batch(
-            S_batch, Y_batch, prediction, Q_mat, SQ_mat, x_vals, bulk_mode
+            S_act, Y_act, prediction, Q_mat, SQ_mat, x_vals, bulk_mode
         )
 
         hess, norm_factor = _psd_batch(hess)
         norm_factor = torch.clamp(norm_factor, min=1e-10)
 
+        A = len(active_idx)
         D = hess / norm_factor[:, None, None] + 1e-7 * eye_K.unsqueeze(0)
         d = -grad / norm_factor[:, None]
 
@@ -382,11 +390,15 @@ def solve_irwls_batch(
             w_new = project_simplex_batch(w_new)
 
         # Per-pixel L1 change
-        change = torch.sum(torch.abs(w_new - w), dim=1)  # (N,)
-        newly_converged = change <= min_change
+        change_act = torch.sum(torch.abs(w_new - w_act), dim=1)  # (A,)
 
-        # Freeze converged pixels: only update active ones
-        w = torch.where(active.unsqueeze(1), w_new, w)
-        converged = converged | newly_converged
+        # Update weights for active pixels
+        w[active_idx] = w_new
+        newly_converged = change_act <= min_change
+        converged[active_idx] = converged[active_idx] | newly_converged
+
+        # Shrink active set
+        still_active = ~newly_converged
+        active_idx = active_idx[still_active]
 
     return w, converged
