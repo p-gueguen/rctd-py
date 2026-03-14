@@ -234,6 +234,7 @@ def compute_spline_coefficients(Q_mat: np.ndarray, x_vals: np.ndarray) -> np.nda
     return SQ_mat
 
 
+@torch.compile(dynamic=True)
 def calc_q_all(
     Y: torch.Tensor,
     lam: torch.Tensor,
