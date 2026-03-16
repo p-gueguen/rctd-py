@@ -6,6 +6,7 @@ Uses PyTorch for GPU acceleration.
 
 import torch
 
+from rctd._likelihood import _calc_q_all_impl as calc_q_all_eager
 from rctd._likelihood import calc_q_all
 from rctd._simplex import project_simplex, project_simplex_batch
 
@@ -231,9 +232,9 @@ def _get_derivatives_batch(
 def _psd_batch(H: torch.Tensor, epsilon: float = 1e-3) -> tuple[torch.Tensor, torch.Tensor]:
     """Batched PSD projection. H: (N, K, K) → (H_psd (N, K, K), max_eig (N,)).
 
-    For small K (<=16), runs eigh directly on GPU — Blackwell/Ampere handle
-    small batched eigendecompositions efficiently. For larger K, offloads to
-    CPU where OpenBLAS threading is faster than cuSOLVER's syevjBatched.
+    For K<=16, runs eigh directly on GPU — avoids costly CPU↔GPU transfer
+    that otherwise dominates runtime. For larger K (e.g. K=45), CPU
+    OpenBLAS is faster than cuSOLVER's batched syevj.
     """
     K = H.shape[-1]
     if H.device.type == "cuda" and K <= 16:
@@ -448,6 +449,7 @@ def solve_irwls_batch_shared(
     step_size: float = 0.3,
     constrain: bool = True,
     bulk_mode: bool = False,
+    _calc_q_fn=None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Optimized IRWLS for shared reference profiles.
 
@@ -469,6 +471,8 @@ def solve_irwls_batch_shared(
     Returns:
         (weights, converged): (N, K) and (N,) bool arrays
     """
+    _q_fn = _calc_q_fn if _calc_q_fn is not None else calc_q_all
+
     N = Y_batch.shape[0]
     if N == 0:
         K = P.shape[1]
@@ -523,7 +527,7 @@ def solve_irwls_batch_shared(
                 / prediction**2
             )
         else:
-            _, d1_flat, d2_flat = calc_q_all(
+            _, d1_flat, d2_flat = _q_fn(
                 Y_act.reshape(-1), prediction.reshape(-1), Q_mat, SQ_mat, x_vals
             )
             d1_vec = d1_flat.reshape(n_act, G)

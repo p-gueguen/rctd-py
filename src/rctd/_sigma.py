@@ -4,7 +4,7 @@ import numpy as np
 import torch
 
 from rctd._irwls import solve_irwls_batch_shared
-from rctd._likelihood import calc_log_likelihood
+from rctd._likelihood import _calc_q_all_impl as _calc_q_all_eager
 
 # The sequence of sigmas evaluated in spacexr choose_sigma
 SIGMA_ALL = np.concatenate([np.arange(10, 71), np.arange(72, 201, 2)])
@@ -98,6 +98,7 @@ def choose_sigma(
             min_change=0.001,
             constrain=False,
             bulk_mode=False,
+            _calc_q_fn=_calc_q_all_eager,
         )
         weights = torch.clamp(weights, min=0.0)
 
@@ -143,7 +144,8 @@ def choose_sigma(
             fac_scores = torch.zeros(len(mult_fac_vec), device=device)
             for fac_idx in range(len(mult_fac_vec)):
                 X_fac = X * mult_fac_vec[fac_idx]
-                fac_scores[fac_idx] = calc_log_likelihood(Y, X_fac, Q_s, SQ_s, x_j, k_val)
+                d0, _, _ = _calc_q_all_eager(Y, X_fac, Q_s, SQ_s, x_j, k_val)
+                fac_scores[fac_idx] = -torch.sum(d0)
             scores[sig_idx] = fac_scores.min()
 
         best_idx = int(torch.argmin(scores).item())

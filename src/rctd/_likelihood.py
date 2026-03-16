@@ -234,8 +234,7 @@ def compute_spline_coefficients(Q_mat: np.ndarray, x_vals: np.ndarray) -> np.nda
     return SQ_mat
 
 
-@torch.compile(dynamic=True)
-def calc_q_all(
+def _calc_q_all_impl(
     Y: torch.Tensor,
     lam: torch.Tensor,
     Q_mat: torch.Tensor,
@@ -243,7 +242,7 @@ def calc_q_all(
     x_vals: torch.Tensor,
     K_val: int = -1,
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    """Cubic spline interpolation of Poisson-Lognormal likelihood.
+    """Cubic spline interpolation of Poisson-Lognormal likelihood (eager).
 
     Ports calc_Q_all from R prob_model.R lines 125-145.
     Returns (d0, d1, d2): value, first derivative, second derivative
@@ -303,6 +302,13 @@ def calc_q_all(
     d2_vec = zdi * diff1 + zdi1 * diff2
 
     return d0_vec, d1_vec, d2_vec
+
+
+# Compiled version for hot-path deconvolution (IRWLS solver)
+calc_q_all = torch.compile(_calc_q_all_impl, dynamic=True)
+
+# Eager version for sigma estimation (small batches, compilation not amortized)
+calc_q_all_eager = _calc_q_all_impl
 
 
 def calc_log_likelihood(

@@ -1,7 +1,7 @@
 <p align="center">
   <h1 align="center">rctd-py</h1>
   <p align="center">
-    <strong>GPU-accelerated spatial transcriptomics deconvolution — 4× faster than R</strong>
+    <strong>GPU-accelerated spatial transcriptomics deconvolution — up to 8x faster than R</strong>
   </p>
   <p align="center">
     <a href="https://github.com/p-gueguen/rctd-py/actions/workflows/ci.yml"><img src="https://github.com/p-gueguen/rctd-py/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
@@ -22,7 +22,7 @@ Deconvolve spatial transcriptomics spots (Visium, Xenium, MERFISH, Slide-seq, �
 
 | | |
 |---|---|
-| 🚀 **4× end-to-end speedup** | Xenium 58k cells: **12.3 min** (GPU) vs 51 min (R, 8 CPU) |
+| 🚀 **6–15x end-to-end speedup** | Xenium 58k cells: **6.6 min** (GPU) vs 51 min (R, 8 CPU) |
 | 🎯 **99.7% concordance** with R spacexr | **100%** with `sigma_override` — per-pixel solver is bit-identical |
 | 🔧 **Drop-in replacement** | Same algorithm, same parameters, same results — just faster |
 | 📦 **`pip install rctd-py`** | Pure Python, works on CPU out of the box |
@@ -93,17 +93,20 @@ print(torch.version.cuda)           # e.g. '12.4'
 
 | GPU | VRAM | Speedup (58k cells, K=45) |
 |-----|------|---------------------------|
-| NVIDIA L40S | 48 GB | 4.2× |
+| NVIDIA RTX PRO 6000 Blackwell | 96 GB | 7.7x (K=45) / 15.1x (K=22) |
+| NVIDIA L40S | 48 GB | 4.2x (K=45) |
 
 ### Memory management
 
-Use the `batch_size` parameter in `run_rctd` to control GPU memory usage:
+Peak VRAM scales with `batch_size * K^2`. Use the `batch_size` parameter to control GPU memory:
 
-| VRAM | Recommended `batch_size` |
-|------|-------------------------|
-| 24+ GB | 10,000 (default) |
-| 8–16 GB | 5,000 |
-| < 8 GB | 2,000 |
+| Available VRAM | Recommended `batch_size` | Peak VRAM (K=45) |
+|----------------|-------------------------|-------------------|
+| 24+ GB | 10,000 (default) | ~4 GB |
+| 8–16 GB | 5,000 | ~2 GB |
+| < 8 GB | 2,000 | ~1 GB |
+
+Peak CPU RAM (RSS) is typically 2–3x peak VRAM, dominated by intermediate arrays.
 
 </details>
 
@@ -117,18 +120,31 @@ Use the `batch_size` parameter in `run_rctd` to control GPU memory usage:
 
 ## Benchmarks
 
-### End-to-end performance (Xenium, 45 cell types, doublet mode, L40S GPU)
+Benchmarked on 3 datasets across all RCTD modes (full, doublet, multi) on an NVIDIA RTX PRO 6000 Blackwell (96 GB VRAM) vs R spacexr with 8 CPU cores.
 
 <p align="center">
-  <img src="docs/benchmark.png" alt="Benchmark barplot" width="700">
+  <img src="docs/benchmark.png" alt="Benchmark: runtime scalability and memory curves" width="800">
 </p>
 
-| Dataset | # cells | R spacexr (8 CPU) | rctd-py (L40S GPU) | **Speedup** |
-|---------|--------|-------------------|---------------------|-------------|
-| Xenium (large) | 58,191 | 51.1 min | 12.3 min | **4.2×** |
-| Xenium (small) | 13,940 | 14.1 min | 3.4 min | **4.2×** |
+### Runtime (doublet mode)
 
-> **Note:** The IRWLS solver loop is memory-bandwidth bound for large cell type panels (K=45). Speedup scales with the number of cell types — smaller panels (K < 20) see larger speedups.
+| Dataset | Cells | K | R spacexr (8 CPU) | rctd-py (GPU) | Speedup |
+|---------|-------|---|-------------------|---------------|---------|
+| Xenium Region 1 | 13,940 | 45 | 14.1 min | 2.4 min | **6.0x** |
+| Mouse Brain (CTX_HP) | 36,362 | 22 | 81.9 min | 5.4 min | **15.1x** |
+| Xenium Region 3 | 58,191 | 45 | 51.1 min | 6.6 min | **7.7x** |
+
+### Memory requirements
+
+| Dataset | Cells | K | Peak VRAM | Peak RSS |
+|---------|-------|---|-----------|----------|
+| Xenium Region 1 | 13,940 | 45 | 2.6 GB | 34 GB |
+| Mouse Brain | 36,362 | 22 | 2.6 GB | 5 GB |
+| Xenium Region 3 | 58,191 | 45 | 2.6 GB | 34 GB |
+
+Peak VRAM is ~2.6 GB across all tested datasets (doublet mode, default batch size). RSS is dominated by the reference matrix and scales with K. Use the `batch_size` parameter to control peak VRAM — smaller batches trade throughput for lower memory.
+
+> **Note:** Speedup depends strongly on K (number of cell types). Smaller panels (K < 25) see 10–15x speedups because GPU-accelerated eigendecomposition handles all pairwise fits. Larger panels (K > 40) see 6–8x speedups, limited by CPU eigendecomposition for the K-dimensional full-mode fit.
 
 ## Validation
 
