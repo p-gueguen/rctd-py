@@ -6,7 +6,6 @@ Uses PyTorch for GPU acceleration.
 
 import torch
 
-from rctd._likelihood import _calc_q_all_impl as calc_q_all_eager
 from rctd._likelihood import calc_q_all
 from rctd._simplex import project_simplex, project_simplex_batch
 
@@ -521,11 +520,7 @@ def solve_irwls_batch_shared(
         # Derivatives
         if bulk_mode:
             d1_vec = -2.0 * (torch.log(prediction) - torch.log(Y_act + 1e-10)) / prediction
-            d2_vec = (
-                -2.0
-                * (1.0 - torch.log(prediction) + torch.log(Y_act + 1e-10))
-                / prediction**2
-            )
+            d2_vec = -2.0 * (1.0 - torch.log(prediction) + torch.log(Y_act + 1e-10)) / prediction**2
         else:
             _, d1_flat, d2_flat = _q_fn(
                 Y_act.reshape(-1), prediction.reshape(-1), Q_mat, SQ_mat, x_vals

@@ -181,18 +181,30 @@ class TestSolveIRWLSBatchShared:
         # Original batch path
         S_batch = P[None, :, :] * nUMI_t[:, None, None]
         batch_w, batch_c = solve_irwls_batch(
-            S_batch, Y_t, nUMI_t, Q_mat, SQ_mat, x_vals,
+            S_batch,
+            Y_t,
+            nUMI_t,
+            Q_mat,
+            SQ_mat,
+            x_vals,
             constrain=False,
         )
 
         # Shared-profile path
         shared_w, shared_c = solve_irwls_batch_shared(
-            P, Y_t, nUMI_t, Q_mat, SQ_mat, x_vals,
+            P,
+            Y_t,
+            nUMI_t,
+            Q_mat,
+            SQ_mat,
+            x_vals,
             constrain=False,
         )
 
         np.testing.assert_allclose(
-            shared_w.numpy(), batch_w.numpy(), atol=1e-5,
+            shared_w.numpy(),
+            batch_w.numpy(),
+            atol=1e-5,
             err_msg="Shared-profile weights diverge from batch weights",
         )
 
@@ -215,11 +227,15 @@ class TestSolveIRWLSBatchShared:
             torch.tensor(profiles),
             torch.tensor(Y_batch),
             torch.tensor(nUMIs),
-            Q_mat, SQ_mat, x_vals,
+            Q_mat,
+            SQ_mat,
+            x_vals,
             constrain=True,
         )
         np.testing.assert_allclose(
-            shared_w.sum(dim=1).numpy(), np.ones(N), atol=1e-4,
+            shared_w.sum(dim=1).numpy(),
+            np.ones(N),
+            atol=1e-4,
         )
 
     def test_shared_many_types(self, likelihood_tables):
@@ -243,17 +259,29 @@ class TestSolveIRWLSBatchShared:
 
         S_batch = P[None, :, :] * nUMI_t[:, None, None]
         batch_w, _ = solve_irwls_batch(
-            S_batch, Y_t, nUMI_t, Q_mat, SQ_mat, x_vals,
+            S_batch,
+            Y_t,
+            nUMI_t,
+            Q_mat,
+            SQ_mat,
+            x_vals,
             constrain=False,
         )
 
         shared_w, _ = solve_irwls_batch_shared(
-            P, Y_t, nUMI_t, Q_mat, SQ_mat, x_vals,
+            P,
+            Y_t,
+            nUMI_t,
+            Q_mat,
+            SQ_mat,
+            x_vals,
             constrain=False,
         )
 
         np.testing.assert_allclose(
-            shared_w.numpy(), batch_w.numpy(), atol=1e-4,
+            shared_w.numpy(),
+            batch_w.numpy(),
+            atol=1e-4,
             err_msg="Shared-profile diverges from batch for K=20",
         )
 
@@ -267,7 +295,9 @@ class TestSolveIRWLSBatchShared:
             P,
             torch.empty(0, G),
             torch.empty(0),
-            Q_mat, SQ_mat, x_vals,
+            Q_mat,
+            SQ_mat,
+            x_vals,
         )
         assert w.shape == (0, K)
         assert c.shape == (0,)

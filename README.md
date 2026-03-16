@@ -130,17 +130,17 @@ Benchmarked on 3 datasets across all RCTD modes (full, doublet, multi) on an NVI
 
 | Dataset | Cells | K | R spacexr (8 CPU) | rctd-py (GPU) | Speedup |
 |---------|-------|---|-------------------|---------------|---------|
-| Xenium Region 1 | 13,940 | 45 | 14.1 min | 2.4 min | **6.0x** |
-| Mouse Brain (CTX_HP) | 36,362 | 22 | 81.9 min | 5.4 min | **15.1x** |
-| Xenium Region 3 | 58,191 | 45 | 51.1 min | 6.6 min | **7.7x** |
+| Xenium Liver (small) | 13,940 | 45 | 14.1 min | 2.4 min | **6.0x** |
+| Xenium Mouse Brain | 36,362 | 22 | 81.9 min | 5.4 min | **15.1x** |
+| Xenium Liver (large) | 58,191 | 45 | 51.1 min | 6.6 min | **7.7x** |
 
 ### Memory requirements
 
 | Dataset | Cells | K | Peak VRAM | Peak RSS |
 |---------|-------|---|-----------|----------|
-| Xenium Region 1 | 13,940 | 45 | 2.6 GB | 34 GB |
-| Mouse Brain | 36,362 | 22 | 2.6 GB | 5 GB |
-| Xenium Region 3 | 58,191 | 45 | 2.6 GB | 34 GB |
+| Xenium Liver (small) | 13,940 | 45 | 2.6 GB | 34 GB |
+| Xenium Mouse Brain | 36,362 | 22 | 2.6 GB | 5 GB |
+| Xenium Liver (large) | 58,191 | 45 | 2.6 GB | 34 GB |
 
 Peak VRAM is ~2.6 GB across all tested datasets (doublet mode, default batch size). RSS is dominated by the reference matrix and scales with K. Use the `batch_size` parameter to control peak VRAM — smaller batches trade throughput for lower memory.
 
@@ -148,12 +148,12 @@ Peak VRAM is ~2.6 GB across all tested datasets (doublet mode, default batch siz
 
 ## Validation
 
-Validated against R spacexr on two Xenium datasets (45 cell types, 380 genes, doublet mode, `UMI_min=20`):
+Validated against R spacexr on two Xenium liver datasets (45 cell types, 380 genes, doublet mode, `UMI_min=20`):
 
 | Dataset | # cells | Dominant type agreement | With `sigma_override` |
 |---------|--------|------------------------|-----------------------|
-| Xenium (small) | 13,940 | **99.73%** | **100%** |
-| Xenium (large) | 58,191 | **99.71%** | — |
+| Xenium Liver (small) | 13,940 | **99.73%** | **100%** |
+| Xenium Liver (large) | 58,191 | **99.71%** | — |
 
 The tiny default gap (0.27%) traces entirely to platform-effect estimation (`fit_bulk`), not the per-pixel solver — which is bit-identical to R. All disagreeing pixels are genuinely ambiguous (margin < 0.05 between top two types).
 
