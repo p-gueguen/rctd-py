@@ -266,7 +266,7 @@ def calc_q_all(
         K_val = Q_mat.shape[0] - 3
     Y = torch.clamp(Y, max=K_val)
     epsilon = 1e-4
-    X_max = x_vals[-1].item()
+    X_max = x_vals[-1]
     lam = torch.clamp(lam, min=epsilon, max=X_max - epsilon)
 
     delta = 1e-6
