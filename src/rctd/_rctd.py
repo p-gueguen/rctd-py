@@ -12,7 +12,14 @@ from rctd._multi import run_multi_mode
 from rctd._normalize import fit_bulk
 from rctd._reference import Reference
 from rctd._sigma import choose_sigma
-from rctd._types import DoubletResult, FullResult, MultiResult, RCTDConfig, auto_batch_size, resolve_device
+from rctd._types import (
+    DoubletResult,
+    FullResult,
+    MultiResult,
+    RCTDConfig,
+    auto_batch_size,
+    resolve_device,
+)
 
 
 class RCTD:

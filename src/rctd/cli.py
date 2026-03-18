@@ -56,7 +56,10 @@ def info(use_json):
                 {
                     "index": i,
                     "name": props.name,
-                    "vram_mb": getattr(props, "total_memory", getattr(props, "total_mem", 0)) // (1024 * 1024),
+                    "vram_mb": getattr(
+                        props, "total_memory", getattr(props, "total_mem", 0)
+                    )
+                    // (1024 * 1024),
                 }
             )
 

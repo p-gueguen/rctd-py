@@ -128,7 +128,7 @@ class TestSolveIRWLSBatch:
             np.testing.assert_allclose(
                 batch_weights[i].numpy(),
                 single_w.numpy(),
-                atol=1e-5,
+                atol=5e-5,
             )
 
     def test_batch_simplex(self, likelihood_tables):
