@@ -228,57 +228,14 @@ def _get_derivatives_batch(
     return grad, hess
 
 
-def _psd_2x2(H: torch.Tensor, epsilon: float = 1e-3) -> tuple[torch.Tensor, torch.Tensor]:
-    """Analytical PSD projection for 2×2 symmetric matrices. H: (N, 2, 2).
-
-    Closed-form eigendecomposition avoids cuSOLVER entirely.
-    For a symmetric [[a, b], [b, d]]:
-      eigenvalues = (a+d)/2 ± sqrt(((a-d)/2)² + b²)
-    """
-    a = H[:, 0, 0]
-    b = H[:, 0, 1]
-    d = H[:, 1, 1]
-
-    half_trace = (a + d) * 0.5
-    disc = torch.sqrt(((a - d) * 0.5) ** 2 + b * b)
-
-    lam1 = torch.clamp(half_trace - disc, min=epsilon)
-    lam2 = torch.clamp(half_trace + disc, min=epsilon)
-
-    # Reconstruct H_psd = V @ diag(lam) @ V.T analytically
-    # For 2×2 symmetric, H_psd = lam1 * v1 v1^T + lam2 * v2 v2^T
-    # where v1, v2 are normalized eigenvectors.
-    # Direct formula: H_psd[i,j] = f(lam1, lam2, a, b, d)
-    # Faster: just reconstruct from clamped eigenvalues
-    # H_psd = half_trace_new * I + disc_new * [[cos2t, sin2t], [sin2t, -cos2t]]
-    # where cos2t = (a-d)/(2*disc), sin2t = b/disc
-    safe_disc = torch.clamp(disc, min=1e-30)
-    cos2t = (a - d) * 0.5 / safe_disc
-    sin2t = b / safe_disc
-
-    half_lam_sum = (lam1 + lam2) * 0.5
-    half_lam_diff = (lam2 - lam1) * 0.5
-
-    H_psd = torch.empty_like(H)
-    H_psd[:, 0, 0] = half_lam_sum + half_lam_diff * cos2t
-    H_psd[:, 0, 1] = half_lam_diff * sin2t
-    H_psd[:, 1, 0] = H_psd[:, 0, 1]
-    H_psd[:, 1, 1] = half_lam_sum - half_lam_diff * cos2t
-
-    return H_psd, lam2
-
-
 def _psd_batch(H: torch.Tensor, epsilon: float = 1e-3) -> tuple[torch.Tensor, torch.Tensor]:
     """Batched PSD projection. H: (N, K, K) → (H_psd (N, K, K), max_eig (N,)).
 
-    For K=2, uses analytical closed-form (no cuSOLVER overhead).
     For K<=16, runs eigh directly on GPU — avoids costly CPU↔GPU transfer
     that otherwise dominates runtime. For larger K (e.g. K=45), CPU
     OpenBLAS is faster than cuSOLVER's batched syevj.
     """
     K = H.shape[-1]
-    if K == 2:
-        return _psd_2x2(H, epsilon)
     if H.device.type == "cuda" and K <= 16:
         # Small matrices: GPU eigh avoids CPU↔GPU transfer overhead
         eigenvalues, eigenvectors = torch.linalg.eigh(H)
@@ -365,40 +322,6 @@ def _solve_box_qp_batch_adaptive_jit(
     return x
 
 
-def _solve_box_qp_2(
-    D: torch.Tensor,
-    d: torch.Tensor,
-    lower_bound: torch.Tensor,
-) -> torch.Tensor:
-    """Analytical box-constrained QP for K=2 via Cramer's rule + clamping.
-
-    For 2 variables the unconstrained optimum is D^{-1}d (closed-form).
-    Then clamp to box constraints with one correction sweep to handle
-    cross-variable coupling from the clamp.
-    """
-    D00 = D[:, 0, 0]
-    D01 = D[:, 0, 1]
-    D11 = D[:, 1, 1]
-    det = D00 * D11 - D01 * D01
-    det = torch.clamp(det.abs(), min=1e-30) * det.sign()  # safe division
-
-    # Unconstrained optimum via Cramer's rule
-    x0 = (D11 * d[:, 0] - D01 * d[:, 1]) / det
-    x1 = (D00 * d[:, 1] - D01 * d[:, 0]) / det
-
-    # Clamp to box constraints
-    x0 = torch.maximum(x0, lower_bound[:, 0])
-    x1 = torch.maximum(x1, lower_bound[:, 1])
-
-    # One correction sweep: re-optimize each coordinate given the other's clamped value
-    x0_corr = (d[:, 0] - D01 * x1) / D00
-    x0 = torch.maximum(x0_corr, lower_bound[:, 0])
-    x1_corr = (d[:, 1] - D01 * x0) / D11
-    x1 = torch.maximum(x1_corr, lower_bound[:, 1])
-
-    return torch.stack([x0, x1], dim=1)
-
-
 def _solve_box_qp_batch(
     D: torch.Tensor,
     d: torch.Tensor,
@@ -407,22 +330,19 @@ def _solve_box_qp_batch(
 ) -> torch.Tensor:
     """Batched box-constrained QP: min 0.5 x^T D x - d^T x  s.t. x >= lb.
 
-    For K=2, uses analytical closed-form (no iterative sweeps needed).
-    Otherwise, Gauss-Seidel coordinate descent, vectorized across pixels.
+    Gauss-Seidel coordinate descent, vectorized across pixels.
+    Delegates to JIT-compiled implementation for performance.
 
     Args:
         D: (N, K, K) PSD matrices
         d: (N, K) linear terms
         lower_bound: (N, K) lower bounds
-        n_sweeps: number of coordinate sweeps (ignored for K=2)
+        n_sweeps: number of coordinate sweeps
 
     Returns:
         x: (N, K) optimal solutions
     """
-    K = d.shape[1]
-    if K == 2:
-        return _solve_box_qp_2(D, d, lower_bound)
-    return _solve_box_qp_batch_adaptive_jit(D, d, lower_bound, n_sweeps)
+    return _solve_box_qp_batch_compiled(D, d, lower_bound, n_sweeps)
 
 
 @torch.no_grad()
@@ -616,7 +536,6 @@ def solve_irwls_batch_shared(
         # H[n,i,j] = nUMI[n]^2 * sum_g (-d2[n,g]) * P[g,i] * P[g,j]
         d2_w = (-d2_vec) * (nUMI_act**2).unsqueeze(1)  # (n_act, G)
         hess = (d2_w @ P_outer).reshape(n_act, K, K)
-        del d2_w, d1_vec, d2_vec, prediction  # free large intermediates
 
         hess, norm_factor = _psd_batch(hess)
         norm_factor = torch.clamp(norm_factor, min=1e-10)

@@ -12,14 +12,7 @@ from rctd._multi import run_multi_mode
 from rctd._normalize import fit_bulk
 from rctd._reference import Reference
 from rctd._sigma import choose_sigma
-from rctd._types import (
-    DoubletResult,
-    FullResult,
-    MultiResult,
-    RCTDConfig,
-    auto_batch_size,
-    resolve_device,
-)
+from rctd._types import DoubletResult, FullResult, MultiResult, RCTDConfig, resolve_device
 
 
 class RCTD:
@@ -257,7 +250,7 @@ def run_rctd(
     reference: Reference,
     mode: Literal["full", "doublet", "multi"] = "doublet",
     config: RCTDConfig | None = None,
-    batch_size: int | str = "auto",
+    batch_size: int = 10000,
     sigma_override: int | None = None,
 ) -> Union[FullResult, DoubletResult, MultiResult]:  # noqa: UP007
     """Run RCTD pipeline on spatial data.
@@ -267,8 +260,7 @@ def run_rctd(
         reference: Reference object with cell type profiles
         mode: Deconvolution mode ('full', 'doublet', or 'multi')
         config: Configuration parameters
-        batch_size: GPU batch size for pixel processing. "auto" calculates
-            optimal size from available VRAM.
+        batch_size: GPU batch size for pixel processing
 
     Returns:
         Result object containing weights and predictions.
@@ -278,14 +270,6 @@ def run_rctd(
 
     rctd = RCTD(spatial, reference, config)
     rctd.fit_platform_effects(sigma_override=sigma_override)
-
-    G = rctd.norm_profiles.shape[0]
-    K = rctd.norm_profiles.shape[1]
-    dtype_bytes = 8 if rctd.config.dtype == "float64" else 4
-
-    if batch_size == "auto":
-        batch_size = auto_batch_size(G, K, dtype_bytes)
-        print(f"Auto batch size: {batch_size}")
 
     print(f"Running in {mode} mode...")
 

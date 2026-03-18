@@ -39,6 +39,21 @@ The IRWLS solver (`solve_irwls_batch_shared`) is the innermost hot loop:
 - Each iteration: predict → derivatives → Hessian → PSD projection → box-QP → update
 - Active pixel compaction skips converged pixels
 
+### GPU optimization layers (RAPIDS-inspired)
+
+Three optimization layers accelerate the hot path beyond basic `torch.compile`:
+
+1. **Custom Triton kernel** (`_likelihood.py:_calc_q_all_triton`): Fuses the entire cubic spline interpolation into a single GPU kernel launch. Falls back to `torch.compile` on CPU or when Triton is unavailable. The dispatch is set at module import time.
+
+2. **Analytical K=2 fast paths** (`_irwls.py`): For doublet-mode pairwise fits (K=2), closed-form solutions replace iterative solvers:
+   - `_psd_2x2`: Analytical eigendecomposition (avoids cuSOLVER)
+   - `_solve_box_qp_2`: Cramer's rule + clamping (avoids 50-sweep Gauss-Seidel)
+   - Dispatched automatically by `_psd_batch` and `_solve_box_qp_batch` when K==2
+
+3. **Auto batch sizing** (`_types.py:auto_batch_size`): Calculates optimal GPU batch size from available VRAM using per-pixel memory footprint estimation. Used by `run_rctd(batch_size="auto")` (default).
+
+**Important**: The Triton kernel uses `tl.constexpr` for K_val and N_X. When modifying the spline evaluation logic, keep the eager `_calc_q_all_impl` in sync — it serves as the CPU/fallback and the ground truth for tests.
+
 ## CLI
 
 Entry point `rctd` is registered in `pyproject.toml` via `[project.scripts]`. Three subcommands:
@@ -65,9 +80,28 @@ Tests use `torch.compile(dynamic=True)` which has a ~60s JIT warmup on first run
 - `@pytest.mark.slow`: CLI integration tests that run full RCTD pipeline (~30s each)
 - `@pytest.mark.performance`: benchmarking tests (excluded by default via `addopts`)
 
+### CLI test notes
+
+- `CliRunner` mixes stderr into stdout by default (`mix_stderr` was removed in Click 8.2+)
+- When testing `--json` output, extract the JSON block from mixed output (`output.index("{")` to `output.rindex("}") + 1`) rather than parsing `result.output` directly
+- CLI tests import synthetic data helpers via `from conftest import ...` (not `from tests.conftest` — `tests/` is not a package)
+
 ### Known tolerance notes
 
 - `test_batch_matches_single` uses `atol=5e-5` — batch vs single-pixel IRWLS can differ slightly due to floating-point convergence order
+
+## CI
+
+CI runs `ruff check src/ tests/` AND `ruff format --check src/ tests/`. Both must pass. Always run both locally before pushing:
+
+```bash
+uv run ruff check src/ tests/
+uv run ruff format src/ tests/
+```
+
+### PyTorch API compatibility
+
+PyTorch renamed `cuda.get_device_properties().total_mem` → `total_memory` in 2.10+. Use `getattr` fallback pattern (see `cli.py:59`). CI runs an older PyTorch than the GPU nodes — test both paths.
 
 ## Benchmarking
 
@@ -100,5 +134,13 @@ Autonomous optimization framework inspired by [karpathy/autoresearch](https://gi
 
 ### Profiling hot spots
 
-From CPU profiling (2k pixels): `calc_q_all` 36%, QP solver 27%, eigh (PSD) 14%, bmm 9%.
-GPU profile may differ — run `torch.profiler` to identify GPU-specific bottlenecks.
+Pre-optimization CPU profiling (2k pixels): `calc_q_all` 36%, QP solver 27%, eigh (PSD) 14%, bmm 9%.
+
+Post-optimization: `calc_q_all` is now a fused Triton kernel (single launch), K=2 PSD/QP are analytical (zero cuSOLVER calls in doublet mode). Run `torch.profiler` to identify remaining GPU-specific bottlenecks.
+
+### Benchmarking tips
+
+- **GPU benchmarks must pin to a specific node** via `--nodelist=fgcz-c-056` for reproducible comparisons
+- **Warmup is mandatory**: torch.compile and Triton JIT have ~60s first-call overhead. Run a warmup dataset before the timed benchmarks
+- **A/B comparisons**: Use `benchmarks/SBATCH_compare_optimizations.sh` — checks out baseline vs optimized source files, runs both on the same GPU node back-to-back
+- **Spatial data loading**: Use `sc.read_10x_h5()` (scanpy), NOT `anndata.read_h5()` which doesn't exist
