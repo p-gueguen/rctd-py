@@ -1,7 +1,7 @@
 <p align="center">
   <h1 align="center">rctd-py</h1>
   <p align="center">
-    <strong>GPU-accelerated spatial transcriptomics deconvolution — 10–20x GPU speedup, 6–15x faster than R</strong>
+    <strong>GPU-accelerated spatial transcriptomics deconvolution — 2–3x GPU speedup, 6–70x faster than R</strong>
   </p>
   <p align="center">
     <a href="https://github.com/p-gueguen/rctd-py/actions/workflows/ci.yml"><img src="https://github.com/p-gueguen/rctd-py/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
@@ -22,8 +22,8 @@ Deconvolve spatial transcriptomics spots (Visium, Xenium, MERFISH, Slide-seq, �
 
 | | |
 |---|---|
-| 🚀 **10–20x GPU acceleration** | Xenium 36k cells: **5.4 min** (GPU) vs 108 min (CPU) |
-| ⚡ **6–15x faster than R** | Same dataset: 5.4 min (GPU) vs 82 min (R spacexr, 8 CPU) |
+| 🚀 **2–3x GPU acceleration** | Xenium 36k cells: **1.2 min** (GPU) vs 3.5 min (CPU, 8 threads) |
+| ⚡ **6–70x faster than R** | Same dataset: 1.2 min (GPU) vs 82 min (R spacexr, 8 cores) |
 | 🎯 **99.7% concordance** with R spacexr | **100%** with `sigma_override` — per-pixel solver is bit-identical |
 | 🔧 **Drop-in replacement** | Same algorithm, same parameters, same results — just faster |
 | 📦 **`pip install rctd-py`** | Pure Python, works on CPU out of the box |
@@ -43,6 +43,34 @@ result = run_rctd(spatial, reference, mode="doublet")
 ```
 
 📓 **[Tutorial notebook](examples/tutorial.py)** (marimo) · 🌐 **[Rendered tutorial](https://p-gueguen.github.io/rctd-py/)**
+
+## Command Line
+
+After installation, the `rctd` command is available:
+
+```bash
+# Check environment and GPU availability
+rctd info
+rctd info --json
+
+# Validate inputs before running (fast, no GPU needed)
+rctd validate spatial.h5ad reference.h5ad
+
+# Run deconvolution
+rctd run spatial.h5ad reference.h5ad --mode doublet --output results.h5ad
+
+# All modes
+rctd run spatial.h5ad reference.h5ad --mode full
+rctd run spatial.h5ad reference.h5ad --mode multi
+
+# JSON output for AI agents / pipelines
+rctd run spatial.h5ad reference.h5ad --json --quiet
+
+# GPU control
+rctd run spatial.h5ad reference.h5ad --device cuda --batch-size 5000
+```
+
+Results are written into a copy of the spatial h5ad with RCTD annotations in `.obsm["rctd_weights"]`, `.obs["rctd_spot_class"]`, etc. Use `rctd run --help` for all options.
 
 ## Installation
 
@@ -92,10 +120,10 @@ print(torch.version.cuda)           # e.g. '12.4'
 
 ### Tested GPUs
 
-| GPU | VRAM | Speedup (58k cells, K=45) |
-|-----|------|---------------------------|
-| NVIDIA RTX PRO 6000 Blackwell | 96 GB | 7.7x (K=45) / 15.1x (K=22) |
-| NVIDIA L40S | 48 GB | 4.2x (K=45) |
+| GPU | VRAM | Speedup vs R (doublet) |
+|-----|------|------------------------|
+| NVIDIA RTX PRO 6000 Blackwell | 96 GB | 7.7x (K=45, 58k cells) / 70x (K=22, 36k cells) |
+| NVIDIA L40S | 48 GB | 4.2x (K=45, 14k cells) |
 
 ### Memory management
 
@@ -121,28 +149,19 @@ Peak CPU RAM (RSS) is typically 2–3x peak VRAM, dominated by intermediate arra
 
 ## Benchmarks
 
-Benchmarked on 3 datasets across all RCTD modes (full, doublet, multi) on an NVIDIA RTX PRO 6000 Blackwell (96 GB VRAM). CPU benchmarks use the same rctd-py code with `device="cpu"`. R spacexr baselines use 8 CPU cores (`doParallel`).
+Benchmarked on 3 datasets across all RCTD modes (full, doublet, multi). GPU: NVIDIA RTX PRO 6000 Blackwell (96 GB VRAM). CPU: same rctd-py code with `device="cpu"` (8 threads, `OMP_NUM_THREADS=8`). R spacexr: 8 CPU cores (`doParallel`). All timings use warm `torch.compile` cache.
 
 <p align="center">
   <img src="docs/benchmark.png" alt="Benchmark: CPU vs GPU scalability, runtime, and memory" width="900">
 </p>
 
-### CPU vs GPU (doublet mode)
+### Runtime comparison (doublet mode)
 
-| Dataset | Cells | K | rctd-py CPU | rctd-py GPU | GPU speedup |
-|---------|-------|---|-------------|-------------|-------------|
-| Xenium Liver (small) | 13,940 | 45 | 22.7 min | 2.4 min | **10x** |
-| Xenium Mouse Brain | 36,362 | 22 | 108.4 min | 5.4 min | **20x** |
-
-> Region 3 CPU benchmark in progress — will be updated.
-
-### GPU vs R spacexr (doublet mode)
-
-| Dataset | Cells | K | R spacexr (8 CPU) | rctd-py (GPU) | Speedup |
-|---------|-------|---|-------------------|---------------|---------|
-| Xenium Liver (small) | 13,940 | 45 | 14.1 min | 2.4 min | **6.0x** |
-| Xenium Mouse Brain | 36,362 | 22 | 81.9 min | 5.4 min | **15.1x** |
-| Xenium Liver (large) | 58,191 | 45 | 51.1 min | 6.6 min | **7.7x** |
+| Dataset | Cells | K | R spacexr | rctd-py CPU | rctd-py GPU | GPU vs CPU | GPU vs R |
+|---------|-------|---|-----------|-------------|-------------|------------|----------|
+| Xenium Liver (small) | 13,940 | 45 | 14.1 min | 4.0 min | 2.4 min | **1.7x** | **6.0x** |
+| Xenium Mouse Brain | 36,362 | 22 | 81.9 min | 3.5 min | 1.2 min | **3.0x** | **70x** |
+| Xenium Liver (large) | 58,191 | 45 | 51.1 min | 11.2 min | 6.6 min | **1.7x** | **7.7x** |
 
 ### Memory requirements
 
@@ -154,7 +173,7 @@ Benchmarked on 3 datasets across all RCTD modes (full, doublet, multi) on an NVI
 
 Peak VRAM is ~2.6 GB across all tested datasets (doublet mode, default batch size). RSS is dominated by the reference matrix and scales with K. Use the `batch_size` parameter to control peak VRAM — smaller batches trade throughput for lower memory.
 
-> **Note:** Speedup depends strongly on K (number of cell types). Smaller panels (K < 25) see the largest GPU speedups (15–20x over CPU, 10–15x over R) because GPU-accelerated eigendecomposition handles all pairwise fits efficiently. Larger panels (K > 40) see 6–10x speedups, limited by CPU eigendecomposition for the K-dimensional full-mode fit.
+> **Note:** The main speedup comes from PyTorch's vectorized batched solver — rctd-py on CPU alone is already **4–23x faster than R spacexr**. GPU adds an additional 1.7–3x on top. The GPU advantage is largest for smaller cell type panels (K < 25) where GPU eigendecomposition handles all pairwise fits efficiently.
 
 ## Validation
 
