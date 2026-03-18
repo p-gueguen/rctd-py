@@ -124,3 +124,187 @@ def test_validate_no_gene_overlap(tmp_path):
     )
     assert result.exit_code == 0
     assert "fail" in result.output.lower() or "0 common" in result.output.lower()
+
+
+# ── run tests ────────────────────────────────────────────────────────
+
+
+@pytest.fixture
+def h5ad_pair_for_run(tmp_path):
+    """Synthetic data that actually works with RCTD (enough UMI, good profiles)."""
+    from conftest import _make_synthetic_reference, _make_synthetic_spatial
+
+    ref_adata, profiles, cell_type_names = _make_synthetic_reference(
+        n_genes=200, n_cells=500, n_types=5, seed=42
+    )
+    spatial_adata, true_weights = _make_synthetic_spatial(
+        profiles, n_pixels=100, n_types=5, seed=123
+    )
+
+    ref_path = tmp_path / "reference.h5ad"
+    sp_path = tmp_path / "spatial.h5ad"
+    ref_adata.write_h5ad(ref_path)
+    spatial_adata.write_h5ad(sp_path)
+    return sp_path, ref_path
+
+
+@pytest.mark.slow
+def test_run_doublet(h5ad_pair_for_run, tmp_path):
+    """rctd run writes output h5ad with doublet results."""
+    sp_path, ref_path = h5ad_pair_for_run
+    out_path = tmp_path / "output.h5ad"
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "run",
+            str(sp_path),
+            str(ref_path),
+            "--mode",
+            "doublet",
+            "--output",
+            str(out_path),
+            "--device",
+            "cpu",
+        ],
+    )
+    assert result.exit_code == 0, f"CLI failed: {result.output}"
+    assert out_path.exists()
+
+    out = anndata.read_h5ad(out_path)
+    assert "rctd_weights" in out.obsm
+    assert "rctd_spot_class" in out.obs.columns
+    assert "rctd_first_type" in out.obs.columns
+    assert "rctd_dominant_type" in out.obs.columns
+    assert out.obsm["rctd_weights"].shape[0] == out.n_obs
+    assert out.uns["rctd_mode"] == "doublet"
+
+
+@pytest.mark.slow
+def test_run_full(h5ad_pair_for_run, tmp_path):
+    """rctd run --mode full writes full-mode results."""
+    sp_path, ref_path = h5ad_pair_for_run
+    out_path = tmp_path / "output_full.h5ad"
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "run",
+            str(sp_path),
+            str(ref_path),
+            "--mode",
+            "full",
+            "--output",
+            str(out_path),
+            "--device",
+            "cpu",
+        ],
+    )
+    assert result.exit_code == 0, f"CLI failed: {result.output}"
+    out = anndata.read_h5ad(out_path)
+    assert "rctd_weights" in out.obsm
+    assert "rctd_converged" in out.obs.columns
+    assert out.uns["rctd_mode"] == "full"
+
+
+@pytest.mark.slow
+def test_run_multi(h5ad_pair_for_run, tmp_path):
+    """rctd run --mode multi writes multi-mode results."""
+    sp_path, ref_path = h5ad_pair_for_run
+    out_path = tmp_path / "output_multi.h5ad"
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "run",
+            str(sp_path),
+            str(ref_path),
+            "--mode",
+            "multi",
+            "--output",
+            str(out_path),
+            "--device",
+            "cpu",
+        ],
+    )
+    assert result.exit_code == 0, f"CLI failed: {result.output}"
+    out = anndata.read_h5ad(out_path)
+    assert "rctd_weights" in out.obsm
+    assert "rctd_n_types" in out.obs.columns
+    assert out.uns["rctd_mode"] == "multi"
+
+
+@pytest.mark.slow
+def test_run_json_output(h5ad_pair_for_run, tmp_path):
+    """rctd run --json prints structured JSON summary."""
+    sp_path, ref_path = h5ad_pair_for_run
+    out_path = tmp_path / "output_json.h5ad"
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "run",
+            str(sp_path),
+            str(ref_path),
+            "--output",
+            str(out_path),
+            "--device",
+            "cpu",
+            "--json",
+        ],
+    )
+    assert result.exit_code == 0, f"CLI failed: {result.output}"
+    # CliRunner mixes stderr with stdout; extract JSON block from output
+    output = result.output
+    json_start = output.index("{")
+    json_end = output.rindex("}") + 1
+    data = json.loads(output[json_start:json_end])
+    assert data["status"] == "success"
+    assert data["mode"] == "doublet"
+    assert "input" in data
+    assert "results" in data
+    assert "summary" in data
+
+
+@pytest.mark.slow
+def test_run_default_output_path(h5ad_pair_for_run):
+    """rctd run without --output writes to <spatial_stem>_rctd.h5ad."""
+    sp_path, ref_path = h5ad_pair_for_run
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "run",
+            str(sp_path),
+            str(ref_path),
+            "--device",
+            "cpu",
+        ],
+    )
+    assert result.exit_code == 0, f"CLI failed: {result.output}"
+    expected_out = sp_path.parent / "spatial_rctd.h5ad"
+    assert expected_out.exists()
+
+
+@pytest.mark.slow
+def test_run_pixel_mask_expansion(h5ad_pair_for_run, tmp_path):
+    """Output h5ad has same n_obs as input; filtered pixels have NaN weights."""
+    sp_path, ref_path = h5ad_pair_for_run
+    out_path = tmp_path / "output_mask.h5ad"
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "run",
+            str(sp_path),
+            str(ref_path),
+            "--output",
+            str(out_path),
+            "--device",
+            "cpu",
+        ],
+    )
+    assert result.exit_code == 0, f"CLI failed: {result.output}"
+    sp_in = anndata.read_h5ad(sp_path)
+    out = anndata.read_h5ad(out_path)
+    assert out.n_obs == sp_in.n_obs

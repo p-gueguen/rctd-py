@@ -1,7 +1,7 @@
 <p align="center">
   <h1 align="center">rctd-py</h1>
   <p align="center">
-    <strong>GPU-accelerated spatial transcriptomics deconvolution — 2–3x GPU speedup, 6–70x faster than R</strong>
+    <strong>Spatial transcriptomics deconvolution — 6–70x faster than R spacexr, optional GPU acceleration</strong>
   </p>
   <p align="center">
     <a href="https://github.com/p-gueguen/rctd-py/actions/workflows/ci.yml"><img src="https://github.com/p-gueguen/rctd-py/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
@@ -22,8 +22,8 @@ Deconvolve spatial transcriptomics spots (Visium, Xenium, MERFISH, Slide-seq, �
 
 | | |
 |---|---|
-| 🚀 **2–3x GPU acceleration** | Xenium 36k cells: **1.2 min** (GPU) vs 3.5 min (CPU, 8 threads) |
-| ⚡ **6–70x faster than R** | Same dataset: 1.2 min (GPU) vs 82 min (R spacexr, 8 cores) |
+| ⚡ **6–70x faster than R on CPU alone** | Xenium 36k cells: **3.5 min** (rctd-py CPU) vs 82 min (R spacexr) |
+| 🚀 **Up to 3x more with GPU** | Same dataset: **1.2 min** (rctd-py GPU) — 70x vs R total |
 | 🎯 **99.7% concordance** with R spacexr | **100%** with `sigma_override` — per-pixel solver is bit-identical |
 | 🔧 **Drop-in replacement** | Same algorithm, same parameters, same results — just faster |
 | 📦 **`pip install rctd-py`** | Pure Python, works on CPU out of the box |
@@ -46,31 +46,89 @@ result = run_rctd(spatial, reference, mode="doublet")
 
 ## Command Line
 
-After installation, the `rctd` command is available:
+After installation, the `rctd` command is available with three subcommands:
 
 ```bash
-# Check environment and GPU availability
+# Check environment, versions, and GPU availability
 rctd info
-rctd info --json
+rctd info --json          # machine-readable output
 
-# Validate inputs before running (fast, no GPU needed)
+# Validate inputs before a long run (fast, no GPU needed)
 rctd validate spatial.h5ad reference.h5ad
+rctd validate spatial.h5ad reference.h5ad --json
 
-# Run deconvolution
-rctd run spatial.h5ad reference.h5ad --mode doublet --output results.h5ad
-
-# All modes
+# Run deconvolution (default: doublet mode)
+rctd run spatial.h5ad reference.h5ad
 rctd run spatial.h5ad reference.h5ad --mode full
 rctd run spatial.h5ad reference.h5ad --mode multi
 
-# JSON output for AI agents / pipelines
-rctd run spatial.h5ad reference.h5ad --json --quiet
+# Common options
+rctd run spatial.h5ad reference.h5ad \
+    --mode doublet \
+    --output results.h5ad \
+    --device cuda \
+    --batch-size 5000 \
+    --umi-min 20 \
+    --cell-type-col cell_type \
+    --sigma-override 62
 
-# GPU control
-rctd run spatial.h5ad reference.h5ad --device cuda --batch-size 5000
+# JSON output for pipelines / AI agents
+rctd run spatial.h5ad reference.h5ad --json --quiet
 ```
 
-Results are written into a copy of the spatial h5ad with RCTD annotations in `.obsm["rctd_weights"]`, `.obs["rctd_spot_class"]`, etc. Use `rctd run --help` for all options.
+<details>
+<summary><strong>Output format</strong></summary>
+
+Results are written into a copy of the input spatial h5ad. Default output path is `<spatial_stem>_rctd.h5ad`.
+
+| Slot | Content | Modes |
+|------|---------|-------|
+| `.obsm["rctd_weights"]` | Cell type weights (N x K) | all |
+| `.obs["rctd_dominant_type"]` | Top cell type per pixel | all |
+| `.obs["rctd_spot_class"]` | singlet / doublet_certain / doublet_uncertain / reject | doublet |
+| `.obs["rctd_first_type"]` | Primary cell type | doublet |
+| `.obs["rctd_second_type"]` | Secondary cell type | doublet |
+| `.obsm["rctd_weights_doublet"]` | Doublet weights (N x 2) | doublet |
+| `.obs["rctd_converged"]` | Convergence flag | full |
+| `.obs["rctd_n_types"]` | Number of types per pixel | multi |
+| `.obsm["rctd_sub_weights"]` | Per-selected-type weights | multi |
+| `.obsm["rctd_cell_type_indices"]` | Selected type indices | multi |
+| `.uns["rctd_mode"]` | Mode used | all |
+| `.uns["rctd_config"]` | Full config dict | all |
+| `.uns["rctd_cell_type_names"]` | Cell type name list | all |
+
+Filtered pixels (below `--umi-min`) have `NaN` weights and `"filtered"` labels.
+
+</details>
+
+<details>
+<summary><strong>All <code>rctd run</code> options</strong></summary>
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| `--mode` | `doublet` | `full`, `doublet`, or `multi` |
+| `--output` / `-o` | `<stem>_rctd.h5ad` | Output path |
+| `--device` | `auto` | `auto`, `cpu`, or `cuda` |
+| `--batch-size` | `10000` | GPU batch size (lower = less VRAM) |
+| `--cell-type-col` | `cell_type` | Reference obs column for cell types |
+| `--sigma-override` | _(auto)_ | Skip sigma estimation, use this value |
+| `--umi-min` | `100` | Minimum UMI per pixel |
+| `--umi-max` | `20000000` | Maximum UMI per pixel |
+| `--json` | off | Print JSON summary to stdout |
+| `--quiet` / `-q` | off | Suppress progress messages |
+| `--dtype` | `float64` | `float32` or `float64` |
+| `--gene-cutoff` | `0.000125` | Bulk gene expression threshold |
+| `--fc-cutoff` | `0.5` | Bulk fold-change threshold |
+| `--gene-cutoff-reg` | `0.0002` | Reg gene expression threshold |
+| `--fc-cutoff-reg` | `0.75` | Reg fold-change threshold |
+| `--max-multi-types` | `4` | Max types per pixel (multi mode) |
+| `--confidence-threshold` | `5.0` | Singlet confidence threshold |
+| `--doublet-threshold` | `20.0` | Doublet certainty threshold |
+| `--cell-min` | `25` | Min cells per type in reference |
+| `--n-max-cells` | `10000` | Max cells per type (downsampling) |
+| `--min-umi-ref` | `100` | Min UMI for reference cells |
+
+</details>
 
 ## Installation
 

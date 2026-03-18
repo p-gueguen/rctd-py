@@ -52,11 +52,13 @@ def info(use_json):
     if torch.cuda.is_available():
         for i in range(torch.cuda.device_count()):
             props = torch.cuda.get_device_properties(i)
-            data["cuda_devices"].append({
-                "index": i,
-                "name": props.name,
-                "vram_mb": props.total_mem // (1024 * 1024),
-            })
+            data["cuda_devices"].append(
+                {
+                    "index": i,
+                    "name": props.name,
+                    "vram_mb": getattr(props, "total_memory", getattr(props, "total_mem", 0)) // (1024 * 1024),
+                }
+            )
 
     if use_json:
         click.echo(json.dumps(data, indent=2))
@@ -235,6 +237,369 @@ def validate(spatial, reference, cell_type_col, umi_min, cell_min, use_json):
                 f"Genes: {estimates['n_genes']}, "
                 f"Types: {estimates['n_cell_types']}"
             )
+
+
+def _build_summary(result, mode, cell_type_names):
+    """Build mode-specific summary dict for JSON output."""
+    from rctd._types import SPOT_CLASS_NAMES
+
+    summary = {}
+    if mode == "full":
+        converged = result.converged
+        summary["n_converged"] = int(converged.sum())
+        summary["convergence_rate"] = float(converged.mean())
+        dominant_idx = result.weights.argmax(axis=1)
+        dominant_names = [cell_type_names[i] for i in dominant_idx]
+        from collections import Counter
+
+        summary["dominant_type_counts"] = dict(Counter(dominant_names).most_common())
+    elif mode == "doublet":
+        from collections import Counter
+
+        class_names = [SPOT_CLASS_NAMES[i] for i in result.spot_class]
+        summary["spot_class_counts"] = dict(Counter(class_names))
+        first_names = [cell_type_names[i] for i in result.first_type]
+        summary["top_singlet_types"] = dict(
+            Counter(n for n, c in zip(first_names, result.spot_class) if c == 1).most_common(10)
+        )
+    elif mode == "multi":
+        from collections import Counter
+
+        n_types = result.n_types
+        summary["n_types_distribution"] = dict(Counter(int(n) for n in n_types))
+        summary["mean_n_types"] = float(n_types.mean())
+        dominant_idx = result.weights.argmax(axis=1)
+        dominant_names = [cell_type_names[i] for i in dominant_idx]
+        summary["dominant_type_counts"] = dict(Counter(dominant_names).most_common())
+    return summary
+
+
+def _write_results_to_adata(
+    spatial_adata, result, mode, pixel_mask, config_dict, cell_type_names, version
+):
+    """Expand results to full AnnData shape and write slots."""
+    import numpy as np
+    import pandas as pd
+
+    from rctd._types import SPOT_CLASS_NAMES
+
+    adata = spatial_adata.copy()
+    n_total = adata.n_obs
+    n_types = len(cell_type_names)
+
+    # Weights (all modes)
+    full_weights = np.full((n_total, n_types), np.nan, dtype=np.float32)
+    full_weights[pixel_mask] = result.weights
+    adata.obsm["rctd_weights"] = full_weights
+
+    # Dominant type (all modes)
+    dominant = np.full(n_total, "filtered", dtype=object)
+    dominant_idx = result.weights.argmax(axis=1)
+    dominant[pixel_mask] = [cell_type_names[i] for i in dominant_idx]
+    adata.obs["rctd_dominant_type"] = pd.Categorical(dominant)
+
+    if mode == "full":
+        converged = np.full(n_total, False)
+        converged[pixel_mask] = result.converged
+        adata.obs["rctd_converged"] = converged
+
+    elif mode == "doublet":
+        # Spot class
+        spot_class = np.full(n_total, "filtered", dtype=object)
+        spot_class[pixel_mask] = [SPOT_CLASS_NAMES[i] for i in result.spot_class]
+        adata.obs["rctd_spot_class"] = pd.Categorical(spot_class)
+
+        # First/second type
+        first_type = np.full(n_total, "filtered", dtype=object)
+        first_type[pixel_mask] = [cell_type_names[i] for i in result.first_type]
+        adata.obs["rctd_first_type"] = pd.Categorical(first_type)
+
+        second_type = np.full(n_total, "filtered", dtype=object)
+        second_type[pixel_mask] = [cell_type_names[i] for i in result.second_type]
+        adata.obs["rctd_second_type"] = pd.Categorical(second_type)
+
+        # Doublet weights
+        full_wt_doublet = np.full((n_total, 2), np.nan, dtype=np.float32)
+        full_wt_doublet[pixel_mask] = result.weights_doublet
+        adata.obsm["rctd_weights_doublet"] = full_wt_doublet
+
+    elif mode == "multi":
+        n_types_per_pixel = np.zeros(n_total, dtype=np.int32)
+        n_types_per_pixel[pixel_mask] = result.n_types
+        adata.obs["rctd_n_types"] = n_types_per_pixel
+
+        max_multi = result.sub_weights.shape[1]
+        full_sub_wt = np.full((n_total, max_multi), np.nan, dtype=np.float32)
+        full_sub_wt[pixel_mask] = result.sub_weights
+        adata.obsm["rctd_sub_weights"] = full_sub_wt
+
+        full_ct_idx = np.full((n_total, max_multi), -1, dtype=np.int32)
+        full_ct_idx[pixel_mask] = result.cell_type_indices
+        adata.obsm["rctd_cell_type_indices"] = full_ct_idx
+
+    # Metadata
+    adata.uns["rctd_mode"] = mode
+    adata.uns["rctd_config"] = config_dict
+    adata.uns["rctd_version"] = version
+    adata.uns["rctd_cell_type_names"] = cell_type_names
+
+    return adata
+
+
+@main.command()
+@click.argument("spatial", type=click.Path(exists=True, dir_okay=False))
+@click.argument("reference", type=click.Path(exists=True, dir_okay=False))
+@click.option(
+    "--cell-type-col",
+    default="cell_type",
+    show_default=True,
+    help="Column in reference .obs for cell type labels.",
+)
+@click.option(
+    "--mode",
+    type=click.Choice(["full", "doublet", "multi"]),
+    default="doublet",
+    show_default=True,
+    help="Deconvolution mode.",
+)
+@click.option(
+    "--output", "-o", default=None, help="Output h5ad path. [default: <spatial_stem>_rctd.h5ad]"
+)
+@click.option("--json", "use_json", is_flag=True, help="Print structured JSON summary to stdout.")
+@click.option("--quiet", "-q", is_flag=True, help="Suppress progress messages.")
+# RCTDConfig parameters
+@click.option("--gene-cutoff", default=0.000125, show_default=True, type=float)
+@click.option("--fc-cutoff", default=0.5, show_default=True, type=float)
+@click.option("--gene-cutoff-reg", default=0.0002, show_default=True, type=float)
+@click.option("--fc-cutoff-reg", default=0.75, show_default=True, type=float)
+@click.option(
+    "--umi-min", default=100, show_default=True, type=int, help="Minimum UMI count per pixel."
+)
+@click.option("--umi-max", default=20_000_000, show_default=True, type=int)
+@click.option("--umi-min-sigma", default=300, show_default=True, type=int)
+@click.option("--max-multi-types", default=4, show_default=True, type=int)
+@click.option("--confidence-threshold", default=5.0, show_default=True, type=float)
+@click.option("--doublet-threshold", default=20.0, show_default=True, type=float)
+@click.option(
+    "--dtype", type=click.Choice(["float32", "float64"]), default="float64", show_default=True
+)
+@click.option(
+    "--device", type=click.Choice(["auto", "cpu", "cuda"]), default="auto", show_default=True
+)
+# Performance
+@click.option(
+    "--batch-size",
+    default=10000,
+    show_default=True,
+    type=int,
+    help="GPU batch size for pixel processing.",
+)
+@click.option(
+    "--sigma-override",
+    default=None,
+    type=int,
+    help="Skip sigma estimation, use this value directly.",
+)
+# Reference construction
+@click.option(
+    "--cell-min",
+    default=25,
+    show_default=True,
+    type=int,
+    help="Minimum cells per type in reference.",
+)
+@click.option(
+    "--n-max-cells",
+    default=10000,
+    show_default=True,
+    type=int,
+    help="Max cells per type for downsampling.",
+)
+@click.option(
+    "--min-umi-ref",
+    default=100,
+    show_default=True,
+    type=int,
+    help="Minimum UMI for reference cells.",
+)
+def run(
+    spatial,
+    reference,
+    cell_type_col,
+    mode,
+    output,
+    use_json,
+    quiet,
+    gene_cutoff,
+    fc_cutoff,
+    gene_cutoff_reg,
+    fc_cutoff_reg,
+    umi_min,
+    umi_max,
+    umi_min_sigma,
+    max_multi_types,
+    confidence_threshold,
+    doublet_threshold,
+    dtype,
+    device,
+    batch_size,
+    sigma_override,
+    cell_min,
+    n_max_cells,
+    min_umi_ref,
+):
+    """Run RCTD deconvolution on spatial transcriptomics data."""
+    import contextlib
+    import time
+    import traceback
+    from pathlib import Path
+
+    import anndata
+
+    from rctd import __version__
+    from rctd._doublet import run_doublet_mode
+    from rctd._full import run_full_mode
+    from rctd._multi import run_multi_mode
+    from rctd._rctd import RCTD
+    from rctd._reference import Reference
+    from rctd._types import RCTDConfig
+
+    # Default output path
+    if output is None:
+        sp = Path(spatial)
+        output = str(sp.parent / f"{sp.stem}_rctd.h5ad")
+
+    # Build config
+    config = RCTDConfig(
+        gene_cutoff=gene_cutoff,
+        fc_cutoff=fc_cutoff,
+        gene_cutoff_reg=gene_cutoff_reg,
+        fc_cutoff_reg=fc_cutoff_reg,
+        UMI_min=umi_min,
+        UMI_max=umi_max,
+        UMI_min_sigma=umi_min_sigma,
+        MAX_MULTI_TYPES=max_multi_types,
+        CONFIDENCE_THRESHOLD=confidence_threshold,
+        DOUBLET_THRESHOLD=doublet_threshold,
+        dtype=dtype,
+        device=device,
+    )
+    config_dict = config._asdict()
+
+    try:
+        # Redirect stdout to stderr when --json or --quiet
+        if use_json or quiet:
+            redirect = contextlib.redirect_stdout(sys.stderr)
+        else:
+            redirect = contextlib.nullcontext()
+
+        with redirect:
+            t_start = time.time()
+
+            # Load data
+            if not quiet:
+                click.echo("Loading spatial data...", err=True)
+            spatial_adata = anndata.read_h5ad(spatial)
+            if not quiet:
+                click.echo("Loading reference...", err=True)
+            ref_adata = anndata.read_h5ad(reference)
+            ref_obj = Reference(
+                ref_adata,
+                cell_type_col=cell_type_col,
+                cell_min=cell_min,
+                n_max_cells=n_max_cells,
+                min_UMI=min_umi_ref,
+            )
+
+            # Run RCTD
+            rctd_obj = RCTD(spatial_adata, ref_obj, config)
+            rctd_obj.fit_platform_effects(sigma_override=sigma_override)
+
+            cell_type_names = rctd_obj.reference.cell_type_names
+            n_pixels_total = spatial_adata.n_obs
+            n_pixels_filtered = int(rctd_obj._pixel_mask.sum())
+            n_genes_common = len(rctd_obj.common_genes)
+
+            print(f"Running in {mode} mode...")
+
+            kwargs = {
+                "spatial_counts": rctd_obj.counts,
+                "spatial_numi": rctd_obj.nUMI,
+                "norm_profiles": rctd_obj.norm_profiles,
+                "cell_type_names": cell_type_names,
+                "q_mat": rctd_obj.q_mat,
+                "sq_mat": rctd_obj.sq_mat,
+                "x_vals": rctd_obj.x_vals,
+                "batch_size": batch_size,
+                "device": config.device,
+            }
+
+            if mode == "full":
+                result = run_full_mode(**kwargs)
+            elif mode == "doublet":
+                result = run_doublet_mode(**kwargs, config=config)
+            elif mode == "multi":
+                result = run_multi_mode(**kwargs, config=config)
+
+            elapsed = time.time() - t_start
+
+            # Write output h5ad
+            out_adata = _write_results_to_adata(
+                spatial_adata,
+                result,
+                mode,
+                rctd_obj._pixel_mask,
+                config_dict,
+                cell_type_names,
+                __version__,
+            )
+            out_adata.write_h5ad(output)
+            print(f"Results written to {output}")
+
+        # JSON output to real stdout
+        if use_json:
+            import torch
+
+            device_used = "cpu"
+            if torch.cuda.is_available() and config.device != "cpu":
+                device_used = torch.cuda.get_device_name(0)
+
+            summary = _build_summary(result, mode, cell_type_names)
+            json_output = {
+                "status": "success",
+                "version": __version__,
+                "mode": mode,
+                "output_path": str(Path(output).resolve()),
+                "input": {
+                    "spatial_path": str(Path(spatial).resolve()),
+                    "reference_path": str(Path(reference).resolve()),
+                    "n_pixels_total": n_pixels_total,
+                    "n_pixels_after_filter": n_pixels_filtered,
+                    "n_genes_common": n_genes_common,
+                    "n_cell_types": len(cell_type_names),
+                    "cell_type_names": cell_type_names,
+                },
+                "config": config_dict,
+                "results": {
+                    "sigma": rctd_obj.sigma,
+                    "elapsed_seconds": round(elapsed, 1),
+                    "device_used": device_used,
+                },
+                "summary": summary,
+            }
+            click.echo(json.dumps(json_output, indent=2, default=str))
+
+    except Exception as e:
+        if use_json:
+            error_output = {
+                "status": "error",
+                "error": str(e),
+                "traceback": traceback.format_exc(),
+            }
+            click.echo(json.dumps(error_output, indent=2))
+            sys.exit(1)
+        else:
+            raise
 
 
 if __name__ == "__main__":
