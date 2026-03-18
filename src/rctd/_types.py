@@ -39,6 +39,40 @@ def resolve_device(device: str = "auto") -> torch.device:
     return torch.device(device)
 
 
+def auto_batch_size(
+    G: int,
+    K: int,
+    dtype_bytes: int = 4,
+    budget_fraction: float = 0.7,
+    default: int = 10000,
+) -> int:
+    """Calculate optimal batch size based on available GPU VRAM.
+
+    Estimates per-pixel memory footprint from all IRWLS intermediates
+    and scales batch size to use ``budget_fraction`` of free VRAM.
+    Falls back to ``default`` on CPU or if CUDA info is unavailable.
+    """
+    if not torch.cuda.is_available():
+        return default
+    try:
+        free_mem, _ = torch.cuda.mem_get_info()
+    except Exception:
+        return default
+
+    budget = int(free_mem * budget_fraction)
+
+    # Per-pixel intermediates in solve_irwls_batch_shared:
+    #   Y_batch(G) + prediction(G) + d1/d2(G) + solution(K) + grad(K)
+    #   + hess(K*K) + D(K*K) + d_vec(K) + delta_w(K) + w_new(K)
+    bytes_per_pixel = (3 * G + 5 * K + 2 * K * K) * dtype_bytes
+
+    if bytes_per_pixel <= 0:
+        return default
+
+    computed = budget // bytes_per_pixel
+    return max(1024, min(computed, 200000))
+
+
 class FullResult(NamedTuple):
     """Result from full mode RCTD."""
 
