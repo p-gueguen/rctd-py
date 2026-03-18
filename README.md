@@ -28,6 +28,34 @@ Deconvolve spatial transcriptomics spots (Visium, Xenium, MERFISH, Slide-seq, �
 | 🔧 **Drop-in replacement** | Same algorithm, same parameters, same results — just faster |
 | 📦 **`pip install rctd-py`** | Pure Python, works on CPU out of the box |
 
+## Benchmarks
+
+Benchmarked on 3 datasets across all RCTD modes (full, doublet, multi). All runs on AMD EPYC 9554 nodes (128 cores, 1.15 TB RAM). GPU: NVIDIA RTX PRO 6000 Blackwell (96 GB VRAM) on the same node class. CPU rctd-py: `device="cpu"`, 8 threads (`OMP_NUM_THREADS=8`). R spacexr: 8 CPU cores (`doParallel`). All rctd-py timings use warm `torch.compile` cache.
+
+<p align="center">
+  <img src="docs/benchmark.png" alt="Benchmark: CPU vs GPU scalability, runtime, and memory" width="900">
+</p>
+
+### Runtime comparison (doublet mode)
+
+| Dataset | Cells | K | R spacexr | rctd-py CPU | rctd-py GPU | GPU vs CPU | GPU vs R |
+|---------|-------|---|-----------|-------------|-------------|------------|----------|
+| Xenium Liver (small) | 13,940 | 45 | 14.1 min | 4.0 min | 2.4 min | **1.7x** | **6.0x** |
+| Xenium Mouse Brain | 36,362 | 22 | 12.4 min | 3.5 min | 1.2 min | **3.0x** | **10.6x** |
+| Xenium Liver (large) | 58,191 | 45 | 51.1 min | 11.2 min | 6.6 min | **1.7x** | **7.7x** |
+
+### Memory requirements
+
+| Dataset | Cells | K | Peak VRAM | Peak RSS |
+|---------|-------|---|-----------|----------|
+| Xenium Liver (small) | 13,940 | 45 | 2.6 GB | 34 GB |
+| Xenium Mouse Brain | 36,362 | 22 | 2.6 GB | 5 GB |
+| Xenium Liver (large) | 58,191 | 45 | 2.6 GB | 34 GB |
+
+Peak VRAM is ~2.6 GB across all tested datasets (doublet mode, default batch size). RSS is dominated by the reference matrix and scales with K. Use the `batch_size` parameter to control peak VRAM — smaller batches trade throughput for lower memory.
+
+> **Note:** The main speedup comes from PyTorch's vectorized batched solver — rctd-py on CPU alone is already **3.5–4.5x faster than R spacexr**. GPU adds an additional 1.7–3x on top. The GPU advantage is largest for smaller cell type panels (K < 25) where GPU eigendecomposition handles all pairwise fits efficiently.
+
 ## Quick Start
 
 ```python
@@ -70,7 +98,7 @@ rctd run spatial.h5ad reference.h5ad \
     --batch-size 5000 \
     --umi-min 20 \
     --cell-type-col cell_type \
-    --sigma-override 62
+    --sigma-override 63
 
 # JSON output for pipelines / AI agents
 rctd run spatial.h5ad reference.h5ad --json --quiet
@@ -180,7 +208,7 @@ print(torch.version.cuda)           # e.g. '12.4'
 
 | GPU | VRAM | Speedup vs R (doublet) |
 |-----|------|------------------------|
-| NVIDIA RTX PRO 6000 Blackwell | 96 GB | 6–11x (see benchmarks below) |
+| NVIDIA RTX PRO 6000 Blackwell | 96 GB | 6–11x (see benchmarks above) |
 | NVIDIA L40S | 48 GB | 4.2x (K=45, 14k cells) |
 
 ### Memory management
@@ -204,34 +232,6 @@ Peak CPU RAM (RSS) is typically 2–3x peak VRAM, dominated by intermediate arra
 | **`full`** | Estimates weights for all K cell types per pixel (constrained IRWLS) | Visium, continuous mixtures |
 | **`doublet`** | Classifies each pixel as singlet or doublet, estimates top 1–2 types | Slide-seq, sparse spatial |
 | **`multi`** | Greedy forward selection of up to 4 cell types per pixel | Xenium, MERFISH, dense platforms |
-
-## Benchmarks
-
-Benchmarked on 3 datasets across all RCTD modes (full, doublet, multi). All runs on AMD EPYC 9554 nodes (128 cores, 1.15 TB RAM). GPU: NVIDIA RTX PRO 6000 Blackwell (96 GB VRAM) on the same node class. CPU rctd-py: `device="cpu"`, 8 threads (`OMP_NUM_THREADS=8`). R spacexr: 8 CPU cores (`doParallel`). All rctd-py timings use warm `torch.compile` cache.
-
-<p align="center">
-  <img src="docs/benchmark.png" alt="Benchmark: CPU vs GPU scalability, runtime, and memory" width="900">
-</p>
-
-### Runtime comparison (doublet mode)
-
-| Dataset | Cells | K | R spacexr | rctd-py CPU | rctd-py GPU | GPU vs CPU | GPU vs R |
-|---------|-------|---|-----------|-------------|-------------|------------|----------|
-| Xenium Liver (small) | 13,940 | 45 | 14.1 min | 4.0 min | 2.4 min | **1.7x** | **6.0x** |
-| Xenium Mouse Brain | 36,362 | 22 | 12.4 min | 3.5 min | 1.2 min | **3.0x** | **10.6x** |
-| Xenium Liver (large) | 58,191 | 45 | 51.1 min | 11.2 min | 6.6 min | **1.7x** | **7.7x** |
-
-### Memory requirements
-
-| Dataset | Cells | K | Peak VRAM | Peak RSS |
-|---------|-------|---|-----------|----------|
-| Xenium Liver (small) | 13,940 | 45 | 2.6 GB | 34 GB |
-| Xenium Mouse Brain | 36,362 | 22 | 2.6 GB | 5 GB |
-| Xenium Liver (large) | 58,191 | 45 | 2.6 GB | 34 GB |
-
-Peak VRAM is ~2.6 GB across all tested datasets (doublet mode, default batch size). RSS is dominated by the reference matrix and scales with K. Use the `batch_size` parameter to control peak VRAM — smaller batches trade throughput for lower memory.
-
-> **Note:** The main speedup comes from PyTorch's vectorized batched solver — rctd-py on CPU alone is already **3.5–4.5x faster than R spacexr**. GPU adds an additional 1.7–3x on top. The GPU advantage is largest for smaller cell type panels (K < 25) where GPU eigendecomposition handles all pairwise fits efficiently.
 
 ## Validation
 
