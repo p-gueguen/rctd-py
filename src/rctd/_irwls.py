@@ -229,15 +229,16 @@ def _get_derivatives_batch(
     return grad, hess
 
 
-@torch.compile(dynamic=True)
 def _psd_2x2(H: torch.Tensor, epsilon: float = 1e-3) -> tuple[torch.Tensor, torch.Tensor]:
     """Analytical PSD projection for 2×2 symmetric matrices. H: (N, 2, 2).
 
     Closed-form eigendecomposition avoids cuSOLVER entirely.
-    torch.compile fuses the elementwise ops into a single Triton kernel,
-    eliminating intermediate tensor allocations.
     For a symmetric [[a, b], [b, d]]:
       eigenvalues = (a+d)/2 ± sqrt(((a-d)/2)² + b²)
+
+    Note: not torch.compiled — this is already a small set of elementwise ops
+    with no loops; compilation overhead outweighs the fusion benefit and adds
+    memory pressure during concurrent compilation of other hot-path functions.
     """
     a = H[:, 0, 0]
     b = H[:, 0, 1]
@@ -375,7 +376,6 @@ def _solve_box_qp_batch_adaptive_jit(
     return x
 
 
-@torch.compile(dynamic=True)
 def _solve_box_qp_2(
     D: torch.Tensor,
     d: torch.Tensor,
@@ -383,8 +383,8 @@ def _solve_box_qp_2(
 ) -> torch.Tensor:
     """Analytical box-constrained QP for K=2 via Cramer's rule + clamping.
 
-    torch.compile fuses all elementwise ops (Cramer's rule, clamping,
-    correction sweep) into a single Triton kernel launch.
+    Not torch.compiled — already a handful of elementwise ops with no loops.
+    Compilation overhead is not justified for this simple analytical path.
     """
     D00 = D[:, 0, 0]
     D01 = D[:, 0, 1]

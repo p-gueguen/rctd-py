@@ -148,9 +148,7 @@ def run_doublet_mode(
             expected_tr = torch.sum(S_pair * weights_batch[:, None, :], dim=-1)  # (bs, G)
             expected_tr = torch.clamp(expected_tr, min=1e-4)
 
-            scores_batch = calc_log_likelihood_batch(
-                B_tr, expected_tr, Q_gpu, SQ_gpu, X_gpu, config.K_val
-            )
+            scores_batch = calc_log_likelihood_batch(B_tr, expected_tr, Q_gpu, SQ_gpu, X_gpu)
 
             all_weights_t.append(weights_batch)
             all_scores_t.append(scores_batch)
@@ -208,9 +206,7 @@ def run_doublet_mode(
             expected_sg = torch.sum(S_sg * weights_batch[:, None, :], dim=-1)
             expected_sg = torch.clamp(expected_sg, min=1e-4)
 
-            scores_batch = calc_log_likelihood_batch(
-                B_sg, expected_sg, Q_gpu, SQ_gpu, X_gpu, config.K_val
-            )
+            scores_batch = calc_log_likelihood_batch(B_sg, expected_sg, Q_gpu, SQ_gpu, X_gpu)
             all_sing_scores_t.append(scores_batch)
 
         # Transfer all results to CPU at once
