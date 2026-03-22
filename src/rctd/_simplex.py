@@ -30,8 +30,8 @@ def project_simplex(v: torch.Tensor) -> torch.Tensor:
     return torch.clamp(v - theta, min=0.0)
 
 
-def project_simplex_batch(v: torch.Tensor) -> torch.Tensor:
-    """Project each row of v onto the probability simplex.
+def _project_simplex_batch_impl(v: torch.Tensor) -> torch.Tensor:
+    """Project each row of v onto the probability simplex (eager implementation).
 
     Batched version of project_simplex for (N, K) input.
 
@@ -51,3 +51,7 @@ def project_simplex_batch(v: torch.Tensor) -> torch.Tensor:
     rho_idx = rho.long() - 1  # 0-indexed
     theta = (cssv[torch.arange(v.shape[0], device=v.device), rho_idx] - 1.0) / rho  # (N,)
     return torch.clamp(v - theta.unsqueeze(1), min=0.0)
+
+
+# Compiled version fuses sort+cumsum+gather into optimized Triton kernels
+project_simplex_batch = torch.compile(_project_simplex_batch_impl, dynamic=True)

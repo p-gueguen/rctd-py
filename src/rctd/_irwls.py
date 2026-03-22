@@ -1,12 +1,13 @@
 """Batched IRWLS solver for RCTD decomposition.
 
 Ports solveIRWLS.weights, solveWLS, get_der_fast, psd from R spacexr.
-Uses PyTorch for GPU acceleration.
+Uses PyTorch for GPU acceleration with CUDA-Agent-inspired kernel fusion.
 """
 
 import torch
 
-from rctd._likelihood import calc_q_all
+from rctd._cuda_ext import fused_predict_and_derivatives_cuda
+from rctd._likelihood import _calc_q_all_impl, calc_q_all
 from rctd._simplex import project_simplex, project_simplex_batch
 
 
@@ -228,10 +229,13 @@ def _get_derivatives_batch(
     return grad, hess
 
 
+@torch.compile(dynamic=True)
 def _psd_2x2(H: torch.Tensor, epsilon: float = 1e-3) -> tuple[torch.Tensor, torch.Tensor]:
     """Analytical PSD projection for 2×2 symmetric matrices. H: (N, 2, 2).
 
     Closed-form eigendecomposition avoids cuSOLVER entirely.
+    torch.compile fuses the elementwise ops into a single Triton kernel,
+    eliminating intermediate tensor allocations.
     For a symmetric [[a, b], [b, d]]:
       eigenvalues = (a+d)/2 ± sqrt(((a-d)/2)² + b²)
     """
@@ -245,13 +249,6 @@ def _psd_2x2(H: torch.Tensor, epsilon: float = 1e-3) -> tuple[torch.Tensor, torc
     lam1 = torch.clamp(half_trace - disc, min=epsilon)
     lam2 = torch.clamp(half_trace + disc, min=epsilon)
 
-    # Reconstruct H_psd = V @ diag(lam) @ V.T analytically
-    # For 2×2 symmetric, H_psd = lam1 * v1 v1^T + lam2 * v2 v2^T
-    # where v1, v2 are normalized eigenvectors.
-    # Direct formula: H_psd[i,j] = f(lam1, lam2, a, b, d)
-    # Faster: just reconstruct from clamped eigenvalues
-    # H_psd = half_trace_new * I + disc_new * [[cos2t, sin2t], [sin2t, -cos2t]]
-    # where cos2t = (a-d)/(2*disc), sin2t = b/disc
     safe_disc = torch.clamp(disc, min=1e-30)
     cos2t = (a - d) * 0.5 / safe_disc
     sin2t = b / safe_disc
@@ -378,6 +375,7 @@ def _solve_box_qp_batch_adaptive_jit(
     return x
 
 
+@torch.compile(dynamic=True)
 def _solve_box_qp_2(
     D: torch.Tensor,
     d: torch.Tensor,
@@ -385,9 +383,8 @@ def _solve_box_qp_2(
 ) -> torch.Tensor:
     """Analytical box-constrained QP for K=2 via Cramer's rule + clamping.
 
-    For 2 variables the unconstrained optimum is D^{-1}d (closed-form).
-    Then clamp to box constraints with one correction sweep to handle
-    cross-variable coupling from the clamp.
+    torch.compile fuses all elementwise ops (Cramer's rule, clamping,
+    correction sweep) into a single Triton kernel launch.
     """
     D00 = D[:, 0, 0]
     D01 = D[:, 0, 1]
@@ -528,6 +525,55 @@ def solve_irwls_batch(
     return w, converged
 
 
+@torch.compile(dynamic=True)
+def _fused_predict_and_derivatives(
+    w_act: torch.Tensor,
+    P_T: torch.Tensor,
+    P: torch.Tensor,
+    P_outer: torch.Tensor,
+    Y_act: torch.Tensor,
+    nUMI_act: torch.Tensor,
+    thresh_act: torch.Tensor,
+    Q_mat: torch.Tensor,
+    SQ_mat: torch.Tensor,
+    x_vals: torch.Tensor,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Fused prediction → spline interpolation → gradient → hessian.
+
+    CUDA-Agent-inspired kernel fusion: torch.compile traces through the
+    entire chain (prediction, calc_q_all, grad, hess) as a single computation
+    graph, enabling the Inductor backend to fuse elementwise operations across
+    what were previously separate function calls. This eliminates intermediate
+    tensor materializations for prediction (N*G), d1_vec (N*G), d2_vec (N*G),
+    and d2_w (N*G) — saving ~4*N*G*8 bytes of memory traffic per iteration.
+    """
+    n_act = w_act.shape[0]
+    G = P.shape[0]
+    K = P.shape[1]
+
+    solution = torch.clamp(w_act, min=0.0)
+
+    # Prediction: S @ w = nUMI * (w @ P.T)
+    prediction = torch.abs(nUMI_act.unsqueeze(1) * (solution @ P_T))
+    prediction = torch.clamp(prediction, min=thresh_act.unsqueeze(1))
+
+    # Spline interpolation (inlined from _calc_q_all_impl for fusion)
+    Y_flat = Y_act.reshape(-1)
+    pred_flat = prediction.reshape(-1)
+    _, d1_flat, d2_flat = _calc_q_all_impl(Y_flat, pred_flat, Q_mat, SQ_mat, x_vals)
+    d1_vec = d1_flat.reshape(n_act, G)
+    d2_vec = d2_flat.reshape(n_act, G)
+
+    # Gradient: -(d1 * nUMI) @ P
+    grad = -((d1_vec * nUMI_act.unsqueeze(1)) @ P)
+
+    # Hessian via P outer product
+    d2_w = (-d2_vec) * (nUMI_act**2).unsqueeze(1)
+    hess = (d2_w @ P_outer).reshape(n_act, K, K)
+
+    return grad, hess
+
+
 @torch.no_grad()
 def solve_irwls_batch_shared(
     P: torch.Tensor,
@@ -598,38 +644,69 @@ def solve_irwls_batch_shared(
     thresh_act = threshold
     w_act = w.clone()
 
+    # Select fused or bulk-mode path
+    use_fused = not bulk_mode and _calc_q_fn is None
+    k_val_int = Q_mat.shape[0] - 3 if not bulk_mode else 0
+
     for it in range(max_iter):
         n_act = active_idx.shape[0]
         if n_act == 0:
             break
 
-        solution = torch.clamp(w_act, min=0.0)
-
-        # Prediction: matmul replaces bmm
-        # S @ w = (nUMI * P) @ w = nUMI * (w @ P.T)
-        prediction = torch.abs(nUMI_act.unsqueeze(1) * (solution @ P_T))
-        prediction = torch.clamp(prediction, min=thresh_act.unsqueeze(1))
-
-        # Derivatives
-        if bulk_mode:
-            d1_vec = -2.0 * (torch.log(prediction) - torch.log(Y_act + 1e-10)) / prediction
-            d2_vec = -2.0 * (1.0 - torch.log(prediction) + torch.log(Y_act + 1e-10)) / prediction**2
+        if use_fused:
+            # Try CUDA C++ fused kernel first (single kernel launch),
+            # fall back to torch.compile fused function
+            cuda_result = None
+            if device.type == "cuda":
+                cuda_result = fused_predict_and_derivatives_cuda(
+                    w_act,
+                    P,
+                    P_T,
+                    Y_act,
+                    nUMI_act,
+                    thresh_act,
+                    Q_mat,
+                    SQ_mat,
+                    x_vals,
+                    k_val_int,
+                )
+            if cuda_result is not None:
+                grad, hess = cuda_result
+            else:
+                grad, hess = _fused_predict_and_derivatives(
+                    w_act,
+                    P_T,
+                    P,
+                    P_outer,
+                    Y_act,
+                    nUMI_act,
+                    thresh_act,
+                    Q_mat,
+                    SQ_mat,
+                    x_vals,
+                )
+            solution = torch.clamp(w_act, min=0.0)
         else:
-            _, d1_flat, d2_flat = _q_fn(
-                Y_act.reshape(-1), prediction.reshape(-1), Q_mat, SQ_mat, x_vals
-            )
-            d1_vec = d1_flat.reshape(n_act, G)
-            d2_vec = d2_flat.reshape(n_act, G)
+            solution = torch.clamp(w_act, min=0.0)
+            prediction = torch.abs(nUMI_act.unsqueeze(1) * (solution @ P_T))
+            prediction = torch.clamp(prediction, min=thresh_act.unsqueeze(1))
 
-        # Gradient: matmul replaces bmm
-        # grad = -(d1 @ S) = -(d1 * nUMI) @ P
-        grad = -((d1_vec * nUMI_act.unsqueeze(1)) @ P)
+            if bulk_mode:
+                d1_vec = -2.0 * (torch.log(prediction) - torch.log(Y_act + 1e-10)) / prediction
+                d2_vec = (
+                    -2.0 * (1.0 - torch.log(prediction) + torch.log(Y_act + 1e-10)) / prediction**2
+                )
+            else:
+                _, d1_flat, d2_flat = _q_fn(
+                    Y_act.reshape(-1), prediction.reshape(-1), Q_mat, SQ_mat, x_vals
+                )
+                d1_vec = d1_flat.reshape(n_act, G)
+                d2_vec = d2_flat.reshape(n_act, G)
 
-        # Hessian via P outer product: matmul replaces bmm
-        # H[n,i,j] = nUMI[n]^2 * sum_g (-d2[n,g]) * P[g,i] * P[g,j]
-        d2_w = (-d2_vec) * (nUMI_act**2).unsqueeze(1)  # (n_act, G)
-        hess = (d2_w @ P_outer).reshape(n_act, K, K)
-        del d2_w, d1_vec, d2_vec, prediction  # free large intermediates
+            grad = -((d1_vec * nUMI_act.unsqueeze(1)) @ P)
+            d2_w = (-d2_vec) * (nUMI_act**2).unsqueeze(1)
+            hess = (d2_w @ P_outer).reshape(n_act, K, K)
+            del d2_w, d1_vec, d2_vec, prediction
 
         hess, norm_factor = _psd_batch(hess)
         norm_factor = torch.clamp(norm_factor, min=1e-10)
@@ -643,6 +720,7 @@ def solve_irwls_batch_shared(
         if constrain:
             w_new = project_simplex_batch(w_new)
 
+        # GPU-side convergence: avoid CPU sync by keeping comparison on device
         change = torch.sum(torch.abs(w_new - w_act), dim=1)
         newly_converged = change <= min_change
         w_act = w_new
@@ -651,11 +729,12 @@ def solve_irwls_batch_shared(
         w[active_idx] = w_act
         converged[active_idx] = converged[active_idx] | newly_converged
 
-        # Compact to still-active pixels
-        still_active = ~newly_converged
-        if newly_converged.all():
+        # Compact to still-active pixels — .any()/.all() sync only once
+        n_newly = newly_converged.sum()
+        if n_newly == n_act:
             break
-        if newly_converged.any():
+        if n_newly > 0:
+            still_active = ~newly_converged
             active_idx = active_idx[still_active]
             w_act = w_act[still_active]
             Y_act = Y_act[still_active]
