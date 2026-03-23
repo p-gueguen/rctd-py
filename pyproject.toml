@@ -27,6 +27,7 @@ dependencies = [
     "scipy>=1.10",
     "anndata>=0.10",
     "click>=8.0",
+    "ninja>=1.11",
 ]
 
 [project.optional-dependencies]
