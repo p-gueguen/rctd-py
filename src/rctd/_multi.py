@@ -18,7 +18,6 @@ def _run_batched_scoring(
     SQ_gpu: torch.Tensor,
     X_gpu: torch.Tensor,
     batch_size: int,
-    K_val: int,
     n_iter: int = 25,
 ) -> np.ndarray:
     """Run batched IRWLS for a set of tasks all having the SAME number of cell types K_sub."""
@@ -69,7 +68,7 @@ def _run_batched_scoring(
         expected_tr = torch.sum(S_sub * weights_batch[:, None, :], dim=-1)  # (bs, G)
         expected_tr = torch.clamp(expected_tr, min=1e-4)
 
-        scores_batch = calc_log_likelihood_batch(B_tr, expected_tr, Q_gpu, SQ_gpu, X_gpu, K_val)
+        scores_batch = calc_log_likelihood_batch(B_tr, expected_tr, Q_gpu, SQ_gpu, X_gpu)
         all_scores.append(scores_batch)
 
     return torch.cat(all_scores).cpu().numpy()
@@ -216,7 +215,6 @@ def run_multi_mode(
             SQ_gpu,
             X_gpu,
             batch_size,
-            config.K_val,
         )
 
         # Aggregate results by pixel
@@ -290,7 +288,6 @@ def run_multi_mode(
             SQ_gpu,
             X_gpu,
             batch_size,
-            config.K_val,
         )
         for i, (n, cur_list, t, newtype) in enumerate(t_list):
             if not conf_lists[n][t]:
