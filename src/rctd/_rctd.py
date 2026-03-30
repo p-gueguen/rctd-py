@@ -164,13 +164,36 @@ class RCTD:
             f"(from {len(self.common_genes)} common)"
         )
 
-        # ── 2. fitBulk on gene_list_bulk ──
+        # ── 2. counts_MIN filter on gene_list_bulk (R: second restrict_counts) ──
+        # R computes colSums(counts[gene_list_bulk, ]) per pixel and removes
+        # pixels where this sum < counts_MIN. A pixel may have high total UMI
+        # but very few counts in the DE gene set.
+        bulk_gene_idx = [self.common_genes.index(g) for g in gene_list_bulk]
+        bulk_counts = self.counts[:, bulk_gene_idx]
+
+        if self.config.counts_MIN > 0:
+            counts_in_bulk = bulk_counts.sum(axis=1)
+            counts_mask = counts_in_bulk >= self.config.counts_MIN
+            n_before = len(counts_mask)
+            n_removed = int((~counts_mask).sum())
+            if n_removed > 0:
+                self.counts = self.counts[counts_mask]
+                self.nUMI = self.nUMI[counts_mask]
+                bulk_counts = bulk_counts[counts_mask]
+                # Update _pixel_mask: narrow the True entries
+                true_indices = np.where(self._pixel_mask)[0]
+                self._pixel_mask[true_indices[~counts_mask]] = False
+                print(
+                    f"counts_MIN filter: removed {n_removed}/{n_before} pixels "
+                    f"with <{self.config.counts_MIN} counts in bulk gene list"
+                )
+
+        # ── 3. fitBulk on gene_list_bulk ──
+        # (Step 2 above may have removed pixels, so bulk_counts is updated)
         # R: fitBulk uses puck@counts (restricted to gene_list_bulk) and
         #    puck@nUMI (total across ALL original genes, never recomputed)
         print("Fitting bulk platform effects...")
         bulk_profiles = self.reference.get_profiles_for_genes(gene_list_bulk)
-        bulk_gene_idx = [self.common_genes.index(g) for g in gene_list_bulk]
-        bulk_counts = self.counts[:, bulk_gene_idx]
 
         bulk_weights, norm_prof_bulk = fit_bulk(
             cell_type_profiles=torch.tensor(bulk_profiles, device=device),
@@ -179,7 +202,7 @@ class RCTD:
             min_change=self.config.MIN_CHANGE_BULK,
         )
 
-        # ── 3. Restrict to gene_list_reg for pixel-level fitting ──
+        # ── 4. Restrict to gene_list_reg for pixel-level fitting ──
         # Subset the bulk-normalized profiles to reg genes (matching R's approach:
         # R normalizes on gene_list_bulk via get_norm_ref, then subsets to gene_list_reg)
         norm_prof_bulk_np = norm_prof_bulk.cpu().numpy()  # (G_bulk, K)
@@ -195,7 +218,7 @@ class RCTD:
         self._gene_list_reg = gene_list_reg
         print(f"Using {len(gene_list_reg)} DE genes for pixel-level fitting")
 
-        # ── 4. choose_sigma on reg genes ──
+        # ── 5. choose_sigma on reg genes ──
         cache = load_cached_q_matrices()
         self.x_vals = cache.pop("X_vals")
         q_matrices = {k.replace("Q_", ""): v for k, v in cache.items()}
