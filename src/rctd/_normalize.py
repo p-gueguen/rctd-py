@@ -1,8 +1,22 @@
 from typing import Tuple
 
+import numpy as np
 import torch
 
 from rctd._irwls import solve_irwls
+
+
+def _longdouble_sum(t: torch.Tensor, dim: int) -> torch.Tensor:
+    """Sum a tensor along a dimension using longdouble accumulation.
+
+    On x86-64, this uses 80-bit extended precision (18 significant digits),
+    matching R's internal sum() which also uses long double on this platform.
+    This eliminates BLAS-order-dependent floating-point divergence between
+    R and Python for large reductions (e.g. summing 135k spatial pixels).
+    """
+    arr = t.detach().cpu().numpy()
+    result = arr.astype(np.longdouble).sum(axis=dim).astype(np.float64)
+    return torch.tensor(result, dtype=t.dtype, device=t.device)
 
 
 def fit_bulk(
@@ -31,10 +45,12 @@ def fit_bulk(
     dtype = cell_type_profiles.dtype
 
     # Sum counts across all pixels (N, G) -> (G,)
-    bulk_Y = torch.sum(spatial_counts, dim=0)
+    # Use longdouble accumulation to match R's long double precision,
+    # eliminating BLAS-order-dependent divergence in platform effects.
+    bulk_Y = _longdouble_sum(spatial_counts, dim=0)
 
     # Total UMI across all pixels
-    bulk_nUMI = torch.sum(spatial_nUMI)
+    bulk_nUMI = _longdouble_sum(spatial_nUMI, dim=0)
 
     # Scale reference profiles to bulk nUMI
     bulk_S = cell_type_profiles * bulk_nUMI

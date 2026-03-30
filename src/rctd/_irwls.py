@@ -268,6 +268,29 @@ def _psd_2x2(H: torch.Tensor, epsilon: float = 1e-3) -> tuple[torch.Tensor, torc
     return H_psd, lam2
 
 
+# cuSOLVER's batched syevBatched has an undocumented batch-size limit on
+# certain GPU architectures (e.g. Blackwell / compute capability 12.0,
+# confirmed with CUDA 12.8 + PyTorch 2.9).  The exact threshold depends on K
+# (e.g. ~31650 for K=3, ~27430 for K=16) but stays above 27000 for K≤16.
+# We sub-batch eigh calls at 25000 to stay safely below the limit for all K.
+_MAX_EIGH_BATCH: int = 25000
+
+
+def _eigh_safe(H: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    """torch.linalg.eigh with sub-batching to avoid cuSOLVER batch-size limits."""
+    N = H.shape[0]
+    if N <= _MAX_EIGH_BATCH or H.device.type != "cuda":
+        return torch.linalg.eigh(H)
+    # Sub-batch to stay under cuSOLVER limit
+    all_evals = []
+    all_evecs = []
+    for start in range(0, N, _MAX_EIGH_BATCH):
+        evals, evecs = torch.linalg.eigh(H[start : start + _MAX_EIGH_BATCH])
+        all_evals.append(evals)
+        all_evecs.append(evecs)
+    return torch.cat(all_evals), torch.cat(all_evecs)
+
+
 def _psd_batch(H: torch.Tensor, epsilon: float = 1e-3) -> tuple[torch.Tensor, torch.Tensor]:
     """Batched PSD projection. H: (N, K, K) → (H_psd (N, K, K), max_eig (N,)).
 
@@ -294,7 +317,7 @@ def _psd_batch(H: torch.Tensor, epsilon: float = 1e-3) -> tuple[torch.Tensor, to
         if nan_mask.any():
             H = H.clone()
             H[nan_mask] = epsilon * torch.eye(K, dtype=H.dtype, device=H.device)
-        eigenvalues, eigenvectors = torch.linalg.eigh(H)
+        eigenvalues, eigenvectors = _eigh_safe(H)
         eigenvalues = torch.clamp(eigenvalues, min=epsilon)
         # Fused reconstruction: V * sqrt(λ) → (V*sqrt(λ)) @ (V*sqrt(λ))^T
         # Equivalent to V @ diag(λ) @ V^T but avoids diag_embed
