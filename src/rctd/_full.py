@@ -17,6 +17,7 @@ def run_full_mode(
     x_vals: np.ndarray,
     batch_size: int = 10000,
     device: str = "auto",
+    pixel_mask: np.ndarray | None = None,
 ) -> FullResult:
     """Run full mode deconvolution across all spatial pixels.
 
@@ -78,4 +79,5 @@ def run_full_mode(
         weights=final_weights,
         cell_type_names=cell_type_names,
         converged=final_converged,
+        pixel_mask=pixel_mask,
     )

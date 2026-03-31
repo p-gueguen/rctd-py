@@ -80,6 +80,7 @@ class FullResult(NamedTuple):
     weights: np.ndarray  # (N, K) float32
     cell_type_names: list[str]
     converged: np.ndarray  # (N,) bool
+    pixel_mask: np.ndarray | None = None  # (N_total,) bool — which pixels passed filtering
 
 
 class DoubletResult(NamedTuple):
@@ -95,6 +96,7 @@ class DoubletResult(NamedTuple):
     min_score: np.ndarray  # (N,) float
     singlet_score: np.ndarray  # (N,) float
     cell_type_names: list[str]
+    pixel_mask: np.ndarray | None = None  # (N_total,) bool — which pixels passed filtering
 
 
 class MultiResult(NamedTuple):
@@ -107,6 +109,7 @@ class MultiResult(NamedTuple):
     conf_list: np.ndarray  # (N, MAX_MULTI_TYPES) bool
     min_score: np.ndarray  # (N,) float
     cell_type_names: list[str]
+    pixel_mask: np.ndarray | None = None  # (N_total,) bool — which pixels passed filtering
 
 
 # Spot class encoding

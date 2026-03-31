@@ -29,6 +29,7 @@ def run_doublet_mode(
     config: RCTDConfig,
     batch_size: int = 10000,
     device: str = "auto",
+    pixel_mask: np.ndarray | None = None,
 ) -> DoubletResult:
     """Run doublet mode deconvolution.
 
@@ -408,4 +409,5 @@ def run_doublet_mode(
         min_score=min_score,
         singlet_score=singlet_score_res,
         cell_type_names=cell_type_names,
+        pixel_mask=pixel_mask,
     )

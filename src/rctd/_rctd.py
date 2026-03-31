@@ -329,6 +329,7 @@ def run_rctd(
         "x_vals": rctd.x_vals,
         "batch_size": batch_size,
         "device": rctd.config.device,
+        "pixel_mask": rctd._pixel_mask,
     }
 
     if mode == "full":

@@ -541,6 +541,7 @@ def run(
                 "x_vals": rctd_obj.x_vals,
                 "batch_size": batch_size,
                 "device": config.device,
+                "pixel_mask": rctd_obj._pixel_mask,
             }
 
             if mode == "full":
@@ -557,7 +558,7 @@ def run(
                 spatial_adata,
                 result,
                 mode,
-                rctd_obj._pixel_mask,
+                result.pixel_mask,
                 config_dict,
                 cell_type_names,
                 __version__,
