@@ -108,11 +108,33 @@ See `docs/plans/100-percent-matching-roadmap.md` for detailed investigation.
 
 ## Tutorial
 
-The tutorial is a marimo notebook at `examples/tutorial.py`, exported to `docs/tutorial.html`.
+The tutorial is a marimo notebook at `examples/tutorial.py`, exported to `examples/tutorial.html`.
 
-**Rendering**: Do NOT use `--no-include-code` — it strips plot outputs (image/png data) from the static HTML:
+### Marimo gotchas
+
+**Figures in static HTML export**: `plt.show()` does NOT produce capturable output in marimo's static export. The figure must be the **last expression** in the cell (like a return value), and it must use a **non-underscore name** (underscore-prefixed variables are cell-private in marimo and won't be rendered):
+
+```python
+# WRONG — no output in static HTML
+_fig, _ax = plt.subplots()
+_ax.plot(x, y)
+plt.show()
+return
+
+# CORRECT — figure rendered in static HTML
+fig_plot, ax_plot = plt.subplots()
+ax_plot.plot(x, y)
+fig_plot  # last expression, non-underscore name
+```
+
+**Underscore-prefixed names are cell-private**: Functions/variables starting with `_` (e.g., `_fig`, `_detect_ct_col`) are NOT exported from a cell to other cells or to static HTML output.
+
+**Deprecated matplotlib API**: Use `plt.colormaps.get_cmap('tab20').resampled(n)` instead of `plt.cm.get_cmap('tab20', n)` (deprecated in matplotlib 3.7+).
+
+### Rendering
+
 ```bash
-uv run marimo export html examples/tutorial.py -o docs/tutorial.html
+uv run marimo export html examples/tutorial.py -o examples/tutorial.html --no-include-code
 ```
 
 **Spot class encoding** is 0-indexed (unlike R spacexr which is 1-indexed):
