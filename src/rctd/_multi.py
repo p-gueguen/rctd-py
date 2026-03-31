@@ -140,6 +140,7 @@ def run_multi_mode(
     config: RCTDConfig,
     batch_size: int = 10000,
     device: str = "auto",
+    pixel_mask: np.ndarray | None = None,
 ) -> MultiResult:
     """Run multi mode deconvolution.
 
@@ -351,4 +352,5 @@ def run_multi_mode(
         conf_list=conf_list_arr,
         min_score=min_score,
         cell_type_names=cell_type_names,
+        pixel_mask=pixel_mask,
     )

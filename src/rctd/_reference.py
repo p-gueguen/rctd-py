@@ -82,12 +82,7 @@ class Reference:
             nUMI = nUMI[keep_valid]
             unique_types = valid_types
 
-        if sparse.issparse(X):
-            X = np.asarray(X.todense())
-        else:
-            X = np.asarray(X, dtype=np.float64)
-
-        # Downsample if needed
+        # Downsample if needed (keep sparse to avoid OOM on large references)
         rng = np.random.default_rng(42)
         keep_idx = []
         for ct in unique_types:
@@ -110,13 +105,19 @@ class Reference:
         # Ports get_cell_type_info from R processRef.R
         # For each cell type: normalize each cell by its UMI count, then average
         profiles = np.zeros((self.n_genes, self.n_types), dtype=np.float64)
+        is_sparse = sparse.issparse(X)
         for k, ct in enumerate(unique_types):
             mask = cell_types == ct
             ct_data = X[mask]  # (n_cells_k, G)
-            ct_nUMI = nUMI[mask]  # (n_cells_k,)
-            # sweep(cell_type_data, 2, cell_type_umi, `/`) then rowSums / ncol
-            normed = ct_data / ct_nUMI[:, None]
-            profiles[:, k] = normed.mean(axis=0)
+            ct_nUMI = nUMI[mask].astype(np.float64)  # (n_cells_k,)
+            if is_sparse:
+                # mean(X / nUMI) = X.T @ (1/nUMI) / n_cells
+                # Sparse mat-vec product avoids materializing a dense matrix.
+                profiles[:, k] = ct_data.T.dot(1.0 / ct_nUMI) / len(ct_nUMI)
+            else:
+                ct_data = np.asarray(ct_data, dtype=np.float64)
+                normed = ct_data / ct_nUMI[:, None]
+                profiles[:, k] = normed.mean(axis=0)
 
         self.profiles = profiles  # (G, K), columns sum to ~1
 

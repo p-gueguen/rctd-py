@@ -30,6 +30,7 @@ class RCTDConfig(NamedTuple):
     K_val: int = 1000
     dtype: str = "float64"  # "float32" or "float64"; float32 saves GPU memory
     device: str = "auto"  # "auto", "cpu", or "cuda"; auto uses GPU if available
+    compile: bool = True  # Use torch.compile; False forces eager mode
 
 
 def resolve_device(device: str = "auto") -> torch.device:
@@ -79,6 +80,7 @@ class FullResult(NamedTuple):
     weights: np.ndarray  # (N, K) float32
     cell_type_names: list[str]
     converged: np.ndarray  # (N,) bool
+    pixel_mask: np.ndarray | None = None  # (N_total,) bool — which pixels passed filtering
 
 
 class DoubletResult(NamedTuple):
@@ -94,6 +96,7 @@ class DoubletResult(NamedTuple):
     min_score: np.ndarray  # (N,) float
     singlet_score: np.ndarray  # (N,) float
     cell_type_names: list[str]
+    pixel_mask: np.ndarray | None = None  # (N_total,) bool — which pixels passed filtering
 
 
 class MultiResult(NamedTuple):
@@ -106,6 +109,7 @@ class MultiResult(NamedTuple):
     conf_list: np.ndarray  # (N, MAX_MULTI_TYPES) bool
     min_score: np.ndarray  # (N,) float
     cell_type_names: list[str]
+    pixel_mask: np.ndarray | None = None  # (N_total,) bool — which pixels passed filtering
 
 
 # Spot class encoding

@@ -88,6 +88,61 @@ Tests use `torch.compile(dynamic=True)` which has a ~60s JIT warmup on first run
 
 - `test_batch_matches_single` uses `atol=5e-5` — batch vs single-pixel IRWLS can differ slightly due to floating-point convergence order
 
+## R spacexr Concordance
+
+### Current: 99.8% dominant type agreement (matched reference)
+
+The per-pixel IRWLS solver is **bit-identical** to R spacexr given the same `norm_profiles` and `sigma`. The remaining ~0.2% gap comes from `fit_bulk()` platform effect estimation producing slightly different normalized profiles.
+
+### Key findings (2026-03-21 comparison with XeniumSeurat SUSHI pipeline)
+
+1. **Reference preparation matters**: Using a different reference (e.g. full Seurat object vs pre-downsampled spacexr Reference) drops agreement to ~95%. Always use the SAME reference cells for fair comparisons.
+2. **Weight normalization**: spacexr stores `normalize_weights()` output (sum=1, clipped [0,1]). rctd-py stores raw full-mode weights in `obsm["rctd_weights"]`. **Always normalize rctd-py weights before comparing.**
+3. **`_longdouble_sum` in `_normalize.py`**: Uses 80-bit extended precision for `bulk_Y`/`bulk_nUMI` sums, matching R's long double accumulation on x86-64. Zero performance impact.
+4. **Cell type naming**: R spacexr/zarr may normalize names (e.g. `L2/3 IT` → `L2_3 IT`). Always normalize names before comparing.
+
+### Concordance testing
+
+Full comparison report and scripts in `paul-scripts/Internal_Dev/rctd_comparison/`.
+See `docs/plans/100-percent-matching-roadmap.md` for detailed investigation.
+
+## Tutorial
+
+The tutorial is a marimo notebook at `examples/tutorial.py`, exported to `examples/tutorial.html`.
+
+### Marimo gotchas
+
+**Figures in static HTML export**: `plt.show()` does NOT produce capturable output in marimo's static export. The figure must be the **last expression** in the cell (like a return value), and it must use a **non-underscore name** (underscore-prefixed variables are cell-private in marimo and won't be rendered):
+
+```python
+# WRONG — no output in static HTML
+_fig, _ax = plt.subplots()
+_ax.plot(x, y)
+plt.show()
+return
+
+# CORRECT — figure rendered in static HTML
+fig_plot, ax_plot = plt.subplots()
+ax_plot.plot(x, y)
+fig_plot  # last expression, non-underscore name
+```
+
+**Underscore-prefixed names are cell-private**: Functions/variables starting with `_` (e.g., `_fig`, `_detect_ct_col`) are NOT exported from a cell to other cells or to static HTML output.
+
+**Deprecated matplotlib API**: Use `plt.colormaps.get_cmap('tab20').resampled(n)` instead of `plt.cm.get_cmap('tab20', n)` (deprecated in matplotlib 3.7+).
+
+### Rendering
+
+```bash
+uv run marimo export html examples/tutorial.py -o examples/tutorial.html --no-include-code
+```
+
+**Spot class encoding** is 0-indexed (unlike R spacexr which is 1-indexed):
+```
+0 = reject, 1 = singlet, 2 = doublet_certain, 3 = doublet_uncertain
+```
+Use `SPOT_CLASS_NAMES` from `rctd._types` (exported in public API) — never hardcode the mapping.
+
 ## CI
 
 CI runs `ruff check src/ tests/` AND `ruff format --check src/ tests/`. Both must pass. Always run both locally before pushing:

@@ -308,22 +308,21 @@ def _(mo):
 @app.cell
 def _(cell_type_names, plt, spatial_adata, t_doublet, t_full, t_multi):
     # --- Plot 1: Runtime comparison ---
-    _fig, _ax = plt.subplots(figsize=(6, 3))
+    fig_runtime, ax_runtime = plt.subplots(figsize=(6, 3))
     modes = ['full', 'doublet', 'multi']
     times = [t_full, t_doublet, t_multi]
     colors = ['#4C78A8', '#F58518', '#54A24B']
-    bars = _ax.barh(modes, times, color=colors, edgecolor='white', height=0.5)
-    _ax.bar_label(bars, fmt='%.1fs', padding=4, fontsize=10)
-    _ax.set_xlabel('Time (seconds)')
+    bars = ax_runtime.barh(modes, times, color=colors, edgecolor='white', height=0.5)
+    ax_runtime.bar_label(bars, fmt='%.1fs', padding=4, fontsize=10)
+    ax_runtime.set_xlabel('Time (seconds)')
     n_beads = spatial_adata.n_obs
     n_genes = spatial_adata.n_vars
     n_types = len(cell_type_names)
-    _ax.set_title(f'RCTD Runtime by Mode\n({n_beads} beads, {n_genes} genes, {n_types} cell types)')
-    _ax.set_xlim(0, max(times) * 1.35)
-    _ax.spines[['top', 'right']].set_visible(False)
+    ax_runtime.set_title(f'RCTD Runtime by Mode\n({n_beads} beads, {n_genes} genes, {n_types} cell types)')
+    ax_runtime.set_xlim(0, max(times) * 1.35)
+    ax_runtime.spines[['top', 'right']].set_visible(False)
     plt.tight_layout()
-    plt.show()
-    return
+    fig_runtime
 
 
 @app.cell(hide_code=True)
@@ -346,20 +345,20 @@ def _(
     result_multi,
     spatial_adata,
 ):
-    _fig, axes = plt.subplots(1, 3, figsize=(16, 5))
+    fig_spatial, axes = plt.subplots(1, 3, figsize=(16, 5))
     x = spatial_adata.obs['x'].values
     y = spatial_adata.obs['y'].values
-    cmap = plt.cm.get_cmap('tab20', len(cell_type_names))
+    cmap = plt.colormaps.get_cmap('tab20').resampled(len(cell_type_names))
     sc = axes[0].scatter(x, y, c=dominant_idx, cmap=cmap, vmin=-0.5, vmax=len(cell_type_names) - 0.5, s=30, alpha=0.9, edgecolors='none')
     axes[0].set_title('Full mode\n(dominant cell type)')
     axes[0].set_aspect('equal')
     axes[0].set_xlabel('x')
     axes[0].set_ylabel('y')
-    _class_colors = {0: '#888888', 1: '#4C78A8', 2: '#F58518', 3: '#E45756'}
-    for _cls, color in _class_colors.items():
-        mask = result_doublet.spot_class == _cls
+    class_colors = {0: '#888888', 1: '#4C78A8', 2: '#F58518', 3: '#E45756'}
+    for cls_id, color in class_colors.items():
+        mask = result_doublet.spot_class == cls_id
         if mask.any():
-            axes[1].scatter(x[mask], y[mask], c=color, s=30, alpha=0.9, edgecolors='none', label=class_labels[_cls])
+            axes[1].scatter(x[mask], y[mask], c=color, s=30, alpha=0.9, edgecolors='none', label=class_labels[cls_id])
     axes[1].set_title('Doublet mode\n(spot class)')
     axes[1].set_aspect('equal')
     axes[1].set_xlabel('x')
@@ -371,8 +370,7 @@ def _(
     plt.colorbar(sc2, ax=axes[2], ticks=[1, 2, 3, 4], label='# types')
     plt.suptitle('RCTD Spatial Deconvolution — Slide-seq Cerebellum', fontsize=13, y=1.01)
     plt.tight_layout()
-    plt.show()
-    return
+    fig_spatial
 
 
 @app.cell(hide_code=True)
@@ -394,16 +392,15 @@ def _(cell_type_names, dominant_idx, np, plt, result_full):
     # Show only cell types with mean weight > 1%
     active_names = [cell_type_names[_i] for _i in range(len(cell_type_names)) if active_mask[_i]]
     active_weights = result_full.weights[order][:, active_mask]
-    _fig, _ax = plt.subplots(figsize=(10, 5))
-    im = _ax.imshow(active_weights.T, aspect='auto', cmap='YlOrRd', vmin=0, vmax=1)
-    _ax.set_yticks(range(len(active_names)))
-    _ax.set_yticklabels(active_names, fontsize=9)
-    _ax.set_xlabel('Beads (sorted by dominant type)')
-    _ax.set_title('Full Mode — Cell Type Weights per Bead')
-    plt.colorbar(im, ax=_ax, label='Weight', shrink=0.8)
+    fig_heatmap, ax_heatmap = plt.subplots(figsize=(10, 5))
+    im = ax_heatmap.imshow(active_weights.T, aspect='auto', cmap='YlOrRd', vmin=0, vmax=1)
+    ax_heatmap.set_yticks(range(len(active_names)))
+    ax_heatmap.set_yticklabels(active_names, fontsize=9)
+    ax_heatmap.set_xlabel('Beads (sorted by dominant type)')
+    ax_heatmap.set_title('Full Mode — Cell Type Weights per Bead')
+    plt.colorbar(im, ax=ax_heatmap, label='Weight', shrink=0.8)
     plt.tight_layout()
-    plt.show()
-    return
+    fig_heatmap
 
 
 @app.cell(hide_code=True)

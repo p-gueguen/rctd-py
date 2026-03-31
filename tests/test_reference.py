@@ -142,3 +142,36 @@ class TestReference:
         # Profiles should still be valid and sum to ~1
         col_sums = ref.profiles.sum(axis=0)
         np.testing.assert_allclose(col_sums, np.ones(ref.n_types), atol=0.02)
+
+    @pytest.mark.parametrize("n_max_cells", [10_000, 50])
+    def test_sparse_matches_dense(self, n_max_cells):
+        """Sparse and dense inputs must produce identical profiles.
+
+        Tests both with and without downsampling (n_max_cells < cells/type).
+        """
+        import anndata
+        from scipy import sparse
+
+        rng = np.random.default_rng(42)
+        n_genes, n_cells = 100, 300
+        counts = rng.poisson(5, size=(n_cells, n_genes)).astype(np.float32)
+        cell_types = ["Type_A"] * 100 + ["Type_B"] * 100 + ["Type_C"] * 100
+
+        adata_dense = anndata.AnnData(
+            X=counts.copy(),
+            obs={"cell_type": cell_types},
+        )
+        adata_dense.var_names = [f"Gene_{i}" for i in range(n_genes)]
+        adata_dense.obs_names = [f"Cell_{i}" for i in range(n_cells)]
+
+        adata_sparse = anndata.AnnData(
+            X=sparse.csr_matrix(counts),
+            obs={"cell_type": cell_types},
+        )
+        adata_sparse.var_names = [f"Gene_{i}" for i in range(n_genes)]
+        adata_sparse.obs_names = [f"Cell_{i}" for i in range(n_cells)]
+
+        ref_dense = Reference(adata_dense, cell_type_col="cell_type", n_max_cells=n_max_cells)
+        ref_sparse = Reference(adata_sparse, cell_type_col="cell_type", n_max_cells=n_max_cells)
+
+        np.testing.assert_allclose(ref_sparse.profiles, ref_dense.profiles, rtol=1e-12)

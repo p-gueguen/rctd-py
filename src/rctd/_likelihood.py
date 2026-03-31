@@ -5,6 +5,7 @@ from prob_model.R.
 """
 
 import urllib.request
+import warnings
 import zipfile
 from pathlib import Path
 
@@ -304,11 +305,52 @@ def _calc_q_all_impl(
     return d0_vec, d1_vec, d2_vec
 
 
-# Compiled version for hot-path deconvolution (IRWLS solver)
-calc_q_all = torch.compile(_calc_q_all_impl, dynamic=True)
-
 # Eager version for sigma estimation (small batches, compilation not amortized)
 calc_q_all_eager = _calc_q_all_impl
+
+# Lazy-compile state: None = not yet attempted, True/False = cached result
+_CALC_Q_USE_COMPILE: bool | None = None
+
+try:
+    _calc_q_all_compiled = torch.compile(_calc_q_all_impl, dynamic=True)
+except Exception:
+    _calc_q_all_compiled = None
+
+
+def calc_q_all(
+    Y: torch.Tensor,
+    lam: torch.Tensor,
+    Q_mat: torch.Tensor,
+    SQ_mat: torch.Tensor,
+    x_vals: torch.Tensor,
+    K_val: int = -1,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """Compute Q derivatives, using torch.compile when available.
+
+    Auto-detects compilation failures on first call and falls back to eager.
+    """
+    global _CALC_Q_USE_COMPILE
+    if _CALC_Q_USE_COMPILE is False or _calc_q_all_compiled is None:
+        return _calc_q_all_impl(Y, lam, Q_mat, SQ_mat, x_vals, K_val)
+
+    if _CALC_Q_USE_COMPILE is True:
+        return _calc_q_all_compiled(Y, lam, Q_mat, SQ_mat, x_vals, K_val)
+
+    # First call: try compiled, fall back to eager
+    try:
+        result = _calc_q_all_compiled(Y, lam, Q_mat, SQ_mat, x_vals, K_val)
+        _CALC_Q_USE_COMPILE = True
+        return result
+    except RuntimeError:
+        _CALC_Q_USE_COMPILE = False
+        warnings.warn(
+            "torch.compile failed for likelihood computation (missing CUDA headers "
+            "or Triton); falling back to eager mode. "
+            "Use RCTDConfig(compile=False) to suppress.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+        return _calc_q_all_impl(Y, lam, Q_mat, SQ_mat, x_vals, K_val)
 
 
 def calc_log_likelihood(
