@@ -2,10 +2,9 @@
 
 import anndata
 import numpy as np
-import pytest
 
-from rctd._reference import Reference
 from rctd._rctd import run_rctd
+from rctd._reference import Reference
 from rctd._types import RCTDConfig
 
 
@@ -17,9 +16,7 @@ def _make_test_data(n_spatial=50, n_ref=80, n_genes=100, n_types=3, seed=42):
     ref_counts = rng.poisson(5, (n_ref, n_genes)).astype(np.float32)
     ref_adata = anndata.AnnData(X=ref_counts)
     ref_adata.var_names = [f"Gene{i}" for i in range(n_genes)]
-    ref_adata.obs["cell_type"] = rng.choice(
-        [f"Type{i}" for i in range(n_types)], n_ref
-    )
+    ref_adata.obs["cell_type"] = rng.choice([f"Type{i}" for i in range(n_types)], n_ref)
     ref = Reference(ref_adata, cell_min=2)
 
     # Spatial — include some low-UMI pixels that will be filtered

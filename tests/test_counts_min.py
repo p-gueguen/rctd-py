@@ -11,7 +11,6 @@ rctd-py must replicate this behavior.
 
 import anndata
 import numpy as np
-import pytest
 
 from rctd._rctd import RCTD
 from rctd._reference import Reference
@@ -198,14 +197,14 @@ class TestCountsMinFilter:
         total_umi_all_genes = np.array(spatial.X.sum(axis=1)).flatten()
         kept_umi = total_umi_all_genes[rctd._pixel_mask]
         np.testing.assert_array_almost_equal(
-            rctd.nUMI, kept_umi,
-            err_msg="nUMI was recomputed after gene restriction (should stay as total UMI)"
+            rctd.nUMI,
+            kept_umi,
+            err_msg="nUMI was recomputed after gene restriction (should stay as total UMI)",
         )
 
     def test_run_rctd_with_counts_min(self):
         """run_rctd() convenience function should also apply counts_MIN."""
         from rctd._rctd import run_rctd
-        from rctd._types import FullResult
 
         spatial, ref_adata, n_normal, n_sparse = _make_counts_min_test_data()
         reference = Reference(ref_adata, cell_min=10, min_UMI=10)
@@ -243,7 +242,7 @@ class TestCountsMinFilter:
 
     def test_cli_output_alignment_after_counts_min(self):
         """CLI _write_results_to_adata should correctly expand filtered results."""
-        from rctd._rctd import RCTD, run_rctd
+        from rctd._rctd import RCTD
         from rctd._types import RCTDConfig
         from rctd.cli import _write_results_to_adata
 
@@ -255,6 +254,7 @@ class TestCountsMinFilter:
         rctd.fit_platform_effects()
 
         from rctd._full import run_full_mode
+
         result = run_full_mode(
             spatial_counts=rctd.counts,
             spatial_numi=rctd.nUMI,
@@ -267,8 +267,13 @@ class TestCountsMinFilter:
         )
 
         out_adata = _write_results_to_adata(
-            spatial, result, "full", rctd._pixel_mask,
-            config._asdict(), rctd.reference.cell_type_names, "test"
+            spatial,
+            result,
+            "full",
+            rctd._pixel_mask,
+            config._asdict(),
+            rctd.reference.cell_type_names,
+            "test",
         )
 
         # Output should have same number of obs as input
@@ -277,9 +282,7 @@ class TestCountsMinFilter:
         # Filtered pixels should have NaN weights
         n_filtered = (~rctd._pixel_mask).sum()
         nan_rows = np.isnan(out_adata.obsm["rctd_weights"]).all(axis=1)
-        assert nan_rows.sum() == n_filtered, (
-            f"Expected {n_filtered} NaN rows, got {nan_rows.sum()}"
-        )
+        assert nan_rows.sum() == n_filtered, f"Expected {n_filtered} NaN rows, got {nan_rows.sum()}"
 
         # Non-filtered pixels should have valid weights
         valid_rows = ~nan_rows

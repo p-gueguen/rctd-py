@@ -5,10 +5,9 @@ from prob_model.R.
 """
 
 import urllib.request
+import warnings
 import zipfile
 from pathlib import Path
-
-import warnings
 
 import numpy as np
 import torch

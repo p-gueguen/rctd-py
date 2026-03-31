@@ -142,7 +142,6 @@ class TestConfigCompileFlag:
     def test_rctd_init_disables_compile(self, monkeypatch):
         """RCTD(config=RCTDConfig(compile=False)) sets module globals."""
         import anndata
-        import numpy as np
 
         from rctd._rctd import RCTD
         from rctd._types import RCTDConfig
