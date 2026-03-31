@@ -43,6 +43,13 @@ class RCTD:
         self.reference = reference
         self.config = config if config is not None else RCTDConfig()
 
+        # Disable torch.compile if requested
+        if not self.config.compile:
+            from rctd import _irwls, _likelihood
+
+            _irwls._USE_COMPILE = False
+            _likelihood._CALC_Q_USE_COMPILE = False
+
         # Internal state
         self.is_normalized = False
         self.norm_profiles = None

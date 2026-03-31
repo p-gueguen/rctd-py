@@ -4,6 +4,8 @@ Ports solveIRWLS.weights, solveWLS, get_der_fast, psd from R spacexr.
 Uses PyTorch for GPU acceleration.
 """
 
+import warnings
+
 import torch
 
 from rctd._likelihood import calc_q_all
@@ -341,19 +343,17 @@ def _psd_batch(H: torch.Tensor, epsilon: float = 1e-3) -> tuple[torch.Tensor, to
         )
 
 
-@torch.compile(dynamic=True)
-def _solve_box_qp_batch_compiled(
+def _solve_box_qp_batch_impl(
     D: torch.Tensor,
     d: torch.Tensor,
     lower_bound: torch.Tensor,
     n_sweeps: int = 50,
 ) -> torch.Tensor:
-    """Compiled Gauss-Seidel coordinate descent for batched box-constrained QP.
+    """Gauss-Seidel coordinate descent for batched box-constrained QP.
 
-    torch.compile with dynamic=True fuses the inner coordinate descent
-    operations into optimized kernels via Triton/Inductor, reducing memory
-    traffic and kernel launch overhead. Dynamic shapes avoid excessive
-    recompilations when batch size N or type count K varies across calls.
+    When compiled via torch.compile(dynamic=True), fuses the inner coordinate
+    descent operations into optimized kernels via Triton/Inductor, reducing
+    memory traffic and kernel launch overhead.
     """
     K = d.shape[1]
     D_diag = torch.diagonal(D, dim1=-2, dim2=-1)  # (N, K)
@@ -366,6 +366,15 @@ def _solve_box_qp_batch_compiled(
             x[:, i] = torch.maximum(residual / D[:, i, i], lower_bound[:, i])
 
     return x
+
+
+# Lazy-compile state: None = not yet attempted, True/False = cached result
+_USE_COMPILE: bool | None = None
+
+try:
+    _solve_box_qp_batch_compiled = torch.compile(_solve_box_qp_batch_impl, dynamic=True)
+except Exception:
+    _solve_box_qp_batch_compiled = None
 
 
 @torch.jit.script
@@ -445,6 +454,7 @@ def _solve_box_qp_batch(
 
     For K=2, uses analytical closed-form (no iterative sweeps needed).
     Otherwise, Gauss-Seidel coordinate descent, vectorized across pixels.
+    Uses torch.compile when available; auto-falls back to eager on failure.
 
     Args:
         D: (N, K, K) PSD matrices
@@ -458,7 +468,28 @@ def _solve_box_qp_batch(
     K = d.shape[1]
     if K == 2:
         return _solve_box_qp_2(D, d, lower_bound)
-    return _solve_box_qp_batch_compiled(D, d, lower_bound, n_sweeps)
+
+    global _USE_COMPILE
+    if _USE_COMPILE is False or _solve_box_qp_batch_compiled is None:
+        return _solve_box_qp_batch_impl(D, d, lower_bound, n_sweeps)
+
+    if _USE_COMPILE is True:
+        return _solve_box_qp_batch_compiled(D, d, lower_bound, n_sweeps)
+
+    # First call: try compiled, fall back to eager
+    try:
+        result = _solve_box_qp_batch_compiled(D, d, lower_bound, n_sweeps)
+        _USE_COMPILE = True
+        return result
+    except RuntimeError:
+        _USE_COMPILE = False
+        warnings.warn(
+            "torch.compile failed for box-QP solver (missing CUDA headers or Triton); "
+            "falling back to eager mode. Use RCTDConfig(compile=False) to suppress.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+        return _solve_box_qp_batch_impl(D, d, lower_bound, n_sweeps)
 
 
 @torch.no_grad()

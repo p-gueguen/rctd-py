@@ -30,6 +30,7 @@ class RCTDConfig(NamedTuple):
     K_val: int = 1000
     dtype: str = "float64"  # "float32" or "float64"; float32 saves GPU memory
     device: str = "auto"  # "auto", "cpu", or "cuda"; auto uses GPU if available
+    compile: bool = True  # Use torch.compile; False forces eager mode
 
 
 def resolve_device(device: str = "auto") -> torch.device:

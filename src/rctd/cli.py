@@ -387,6 +387,12 @@ def _write_results_to_adata(
 @click.option(
     "--device", type=click.Choice(["auto", "cpu", "cuda"]), default="auto", show_default=True
 )
+@click.option(
+    "--no-compile",
+    is_flag=True,
+    default=False,
+    help="Disable torch.compile (for environments without CUDA headers).",
+)
 # Performance
 @click.option(
     "--batch-size",
@@ -443,6 +449,7 @@ def run(
     doublet_threshold,
     dtype,
     device,
+    no_compile,
     batch_size,
     sigma_override,
     cell_min,
@@ -484,6 +491,7 @@ def run(
         DOUBLET_THRESHOLD=doublet_threshold,
         dtype=dtype,
         device=device,
+        compile=not no_compile,
     )
     config_dict = config._asdict()
 
