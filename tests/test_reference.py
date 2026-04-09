@@ -73,13 +73,16 @@ class TestReference:
         assert np.all(renorm >= 0)
 
     def test_de_genes_filters_mt_genes(self):
-        """Mitochondrial genes (mt-*) should be excluded from DE genes."""
+        """Mitochondrial gene filtering matches R spacexr: case-sensitive grep("mt-").
+
+        Mouse-style "mt-*" genes are excluded; human-style "MT-*" genes are kept.
+        R uses case-sensitive grep so only lowercase "mt-" prefix is filtered.
+        """
         import anndata
 
         rng = np.random.default_rng(42)
         n_genes, n_cells = 50, 200
 
-        # Create two distinct types
         counts = np.zeros((n_cells, n_genes), dtype=np.float32)
         cell_types = []
         for i in range(100):
@@ -92,8 +95,9 @@ class TestReference:
             cell_types.append("Type_B")
 
         gene_names = [f"Gene_{i}" for i in range(n_genes)]
-        gene_names[0] = "mt-Co1"
-        gene_names[1] = "MT-ND1"
+        # Gene_0 is highly expressed in Type_A — would be DE if not name-filtered
+        gene_names[0] = "mt-Co1"  # mouse-style: must be filtered (matches R)
+        gene_names[1] = "MT-ND1"  # human-style: must NOT be filtered (matches R)
 
         adata = anndata.AnnData(X=counts, obs={"cell_type": cell_types})
         adata.var_names = gene_names
@@ -102,8 +106,8 @@ class TestReference:
         ref = Reference(adata, cell_type_col="cell_type")
         de_genes = ref.get_de_genes(fc_thresh=0.5, expr_thresh=1e-4)
 
-        assert "mt-Co1" not in de_genes
-        assert "MT-ND1" not in de_genes
+        assert "mt-Co1" not in de_genes, "Mouse-style 'mt-' gene should be filtered"
+        assert "MT-ND1" in de_genes, "Human-style 'MT-' gene should NOT be filtered (matches R)"
 
     def test_missing_column_raises(self, synthetic_reference):
         ref_adata, _, _ = synthetic_reference

@@ -153,8 +153,10 @@ class Reference:
         # Start with all gene indices
         gene_list = list(range(self.n_genes))
 
-        # Filter mitochondrial genes (case-insensitive mt- prefix)
-        gene_list = [g for g in gene_list if not self.gene_names[g].lower().startswith("mt-")]
+        # Filter mitochondrial genes (case-sensitive, matches R spacexr's grep("mt-", ...))
+        # R uses case-sensitive grep so only matches mouse-style "mt-*" (e.g. mt-Co1).
+        # Human "MT-*" genes (e.g. MT-CO1) are intentionally kept to match R behavior.
+        gene_list = [g for g in gene_list if not self.gene_names[g].startswith("mt-")]
 
         # Filter by spatial observation count if provided
         if spatial_bulk is not None:
