@@ -18,7 +18,7 @@ class RCTDConfig(NamedTuple):
     counts_MIN: int = 10
     UMI_min_sigma: int = 300
     N_epoch: int = 8
-    N_fit: int = 100
+    N_fit: int = 1000
     MIN_CHANGE_BULK: float = 0.0001
     MIN_CHANGE_REG: float = 0.001
     MIN_OBS: int = 3
