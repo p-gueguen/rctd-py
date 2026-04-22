@@ -48,6 +48,29 @@ def run_doublet_mode(
     K = norm_profiles.shape[1]
     device = resolve_device(device)
 
+    # Normalize class_df: None -> identity mapping (matches R's create.RCTD default)
+    user_class_df = config.class_df
+    if user_class_df is None:
+        class_of_type = {ct: ct for ct in cell_type_names}
+    else:
+        # Validate
+        missing = [ct for ct in cell_type_names if ct not in user_class_df]
+        if missing:
+            raise ValueError(
+                f"class_df is missing entries for cell types: {missing}. "
+                "Every cell type in the reference must be mapped to a class."
+            )
+        bad_vals = [
+            k
+            for k, v in user_class_df.items()
+            if v is None or (isinstance(v, float) and np.isnan(v))
+        ]
+        if bad_vals:
+            raise ValueError(f"class_df has None/NaN class values for keys: {bad_vals}")
+        class_of_type = user_class_df
+    # Per-index class lookup (K,) str array for hot-loop speed
+    class_of = np.array([class_of_type[ct] for ct in cell_type_names])
+
     import time as _time
 
     # 1. Full fit to get candidates
@@ -253,57 +276,80 @@ def run_doublet_mode(
                     min_p_score = sc
                     best_t1, best_t2 = t1, t2
 
-        # R's check_pairs_type for default class_df (each type = own class):
-        # all_pairs = TRUE if no competing pair (within CONFIDENCE_THRESHOLD
-        # of min_score) exists where NEITHER type is my_type.
-        # i.e., my_type is essential in every competitive pair.
+        # R's check_pairs_type, matching spacexr/R/RCTD_helper.R:44-63 exactly.
+        # Returns (all_pairs, all_pairs_class, singlet_score):
+        #   all_pairs       : my_type is in every pair scoring < min + CONFIDENCE_THRESHOLD
+        #   all_pairs_class : my_type's CLASS is represented in every such pair
+        #   singlet_score   : min across my_type and other same-class types if all_pairs_class
+        #                     but not all_pairs and >1 same-class types compete
+        # With class_df=None (identity mapping), all_pairs_class == all_pairs and the
+        # singlet_score adjustment never fires -- reduces to type-only logic.
         def check_pairs_type(my_type):
             all_pairs = True
-            for i in range(C):
-                for j in range(C):
-                    if i != j:
-                        t1, t2 = cands[i], cands[j]
-                        sc = score_mat.get((t1, t2), INF)
-                        if sc < min_p_score + config.CONFIDENCE_THRESHOLD:
-                            if t1 != my_type and t2 != my_type:
-                                all_pairs = False
-            return all_pairs, sing_scores.get(my_type, INF)
+            all_pairs_class = True
+            my_class = class_of[my_type]
+            other_class = [my_type]  # other types sharing my_type's class
 
-        type1_all_pairs, type1_sing = check_pairs_type(best_t1)
-        type2_all_pairs, type2_sing = check_pairs_type(best_t2)
+            for i in range(C - 1):
+                for j in range(i + 1, C):
+                    t1, t2 = cands[i], cands[j]
+                    sc = score_mat.get((t1, t2), INF)
+                    if sc < min_p_score + config.CONFIDENCE_THRESHOLD:
+                        if t1 != my_type and t2 != my_type:
+                            all_pairs = False
+                        t1_same = class_of[t1] == my_class
+                        t2_same = class_of[t2] == my_class
+                        if not t1_same and not t2_same:
+                            all_pairs_class = False
+                        if t1_same and t1 not in other_class:
+                            other_class.append(t1)
+                        if t2_same and t2 not in other_class:
+                            other_class.append(t2)
 
-        # R classification order:
-        # 1. reject if neither type is uniquely necessary
-        # 2. doublet_uncertain if only one type is necessary
-        # 3. doublet_certain if both types are necessary
-        # 4. singlet override if singlet_score - min_score < DOUBLET_THRESHOLD
-        if not type1_all_pairs and not type2_all_pairs:
+            singlet_score = sing_scores.get(my_type, INF)
+            if all_pairs_class and not all_pairs and len(other_class) > 1:
+                for t in other_class[1:]:  # skip my_type itself at index 0
+                    singlet_score = min(singlet_score, sing_scores.get(t, INF))
+            return all_pairs, all_pairs_class, singlet_score
+
+        type1_all_pairs, type1_all_class, type1_sing = check_pairs_type(best_t1)
+        type2_all_pairs, type2_all_class, type2_sing = check_pairs_type(best_t2)
+
+        # R's 4-branch decision tree (spacexr/R/RCTD_helper.R:129-150).
+        # Branch A (reject)     : neither type viable even at class level
+        # Branch B (uncert)     : only type1 viable at class level
+        # Branch C (uncert+swap): only type2 viable at class level (swap so first_type=type2)
+        # Branch D (certain)    : both viable at class level; swap if type2 has better singlet
+        if not type1_all_class and not type2_all_class:
             s_class = SPOT_CLASS_REJECT
             s_score = min_p_score + 2 * config.DOUBLET_THRESHOLD  # arbitrary, ensures not singlet
             f_class = False
             sc_class = False
-        elif type1_all_pairs and not type2_all_pairs:
+        elif type1_all_class and not type2_all_class:
             s_class = SPOT_CLASS_DOUBLET_UNCERTAIN
-            f_class = False
+            f_class = not type1_all_pairs
             sc_class = False
             s_score = type1_sing
-        elif not type1_all_pairs and type2_all_pairs:
+        elif not type1_all_class and type2_all_class:
             s_class = SPOT_CLASS_DOUBLET_UNCERTAIN
-            # Swap types so first_type is the confident one
+            # Swap: type2 becomes first_type
             best_t1, best_t2 = best_t2, best_t1
             type1_sing, type2_sing = type2_sing, type1_sing
-            f_class = False
+            type1_all_pairs, type2_all_pairs = type2_all_pairs, type1_all_pairs
+            f_class = not type1_all_pairs
             sc_class = False
             s_score = type1_sing
         else:
-            # Both types uniquely necessary
+            # Both types viable at class level
             s_class = SPOT_CLASS_DOUBLET_CERTAIN
             s_score = min(type1_sing, type2_sing)
-            f_class = False
-            sc_class = False
-            # R: order by singlet score (lower = more confident)
+            f_class = not type1_all_pairs
+            sc_class = not type2_all_pairs
+            # R: order by singlet score (lower = more confident first)
             if type2_sing < type1_sing:
                 best_t1, best_t2 = best_t2, best_t1
+                f_class = not type2_all_pairs
+                sc_class = not type1_all_pairs
 
         # Singlet override (R lines 132-133)
         if s_score - min_p_score < config.DOUBLET_THRESHOLD:
@@ -398,6 +444,15 @@ def run_doublet_mode(
     print(f"  [doublet] Step 6 done ({_time.time() - _t6:.1f}s)")
     print(f"  [doublet] Total doublet mode: {_time.time() - _t0:.1f}s")
 
+    # Populate class name arrays only when user provided an explicit class_df.
+    # With class_df=None (internal identity), these stay None for backward compat.
+    if user_class_df is not None:
+        first_class_name = class_of[first_type]
+        second_class_name = class_of[second_type]
+    else:
+        first_class_name = None
+        second_class_name = None
+
     return DoubletResult(
         weights=W_full,
         weights_doublet=weights_doublet,
@@ -410,4 +465,6 @@ def run_doublet_mode(
         singlet_score=singlet_score_res,
         cell_type_names=cell_type_names,
         pixel_mask=pixel_mask,
+        first_class_name=first_class_name,
+        second_class_name=second_class_name,
     )

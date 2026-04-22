@@ -308,3 +308,79 @@ def test_run_pixel_mask_expansion(h5ad_pair_for_run, tmp_path):
     sp_in = anndata.read_h5ad(sp_path)
     out = anndata.read_h5ad(out_path)
     assert out.n_obs == sp_in.n_obs
+
+
+@pytest.mark.slow
+def test_run_doublet_with_class_df(h5ad_pair_for_run, tmp_path):
+    """rctd run --mode doublet --class-df writes class-level columns."""
+    sp_path, ref_path = h5ad_pair_for_run
+
+    # Build a TSV mapping 5 synthetic types into 2 classes
+    class_df_path = tmp_path / "class_df.tsv"
+    with class_df_path.open("w") as f:
+        f.write("cell_type\tclass\n")
+        for i in range(5):
+            f.write(f"Type_{i}\t{'ClassA' if i < 2 else 'ClassB'}\n")
+
+    out_path = tmp_path / "output_cdf.h5ad"
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "run",
+            str(sp_path),
+            str(ref_path),
+            "--mode",
+            "doublet",
+            "--output",
+            str(out_path),
+            "--device",
+            "cpu",
+            "--class-df",
+            str(class_df_path),
+        ],
+    )
+    assert result.exit_code == 0, f"CLI failed: {result.output}"
+
+    out = anndata.read_h5ad(out_path)
+    # Class-level columns must exist
+    assert "rctd_first_class" in out.obs.columns
+    assert "rctd_second_class" in out.obs.columns
+    assert "rctd_first_class_name" in out.obs.columns
+    assert "rctd_second_class_name" in out.obs.columns
+
+    # Every non-filtered class name must be in {ClassA, ClassB, filtered}
+    valid = {"ClassA", "ClassB", "filtered"}
+    assert set(out.obs["rctd_first_class_name"].unique()).issubset(valid)
+    assert set(out.obs["rctd_second_class_name"].unique()).issubset(valid)
+
+
+def test_run_class_df_missing_columns_errors(h5ad_pair_for_run, tmp_path):
+    """--class-df TSV without required columns fails with clear message."""
+    sp_path, ref_path = h5ad_pair_for_run
+
+    class_df_path = tmp_path / "bad_class_df.tsv"
+    with class_df_path.open("w") as f:
+        f.write("wrong_col\tother_col\n")
+        f.write("Type_0\tClassA\n")
+
+    out_path = tmp_path / "output_bad.h5ad"
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "run",
+            str(sp_path),
+            str(ref_path),
+            "--mode",
+            "doublet",
+            "--output",
+            str(out_path),
+            "--device",
+            "cpu",
+            "--class-df",
+            str(class_df_path),
+        ],
+    )
+    assert result.exit_code != 0
+    assert "cell_type" in result.output and "class" in result.output
