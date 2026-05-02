@@ -31,6 +31,7 @@ class RCTDConfig(NamedTuple):
     dtype: str = "float64"  # "float32" or "float64"; float32 saves GPU memory
     device: str = "auto"  # "auto", "cpu", or "cuda"; auto uses GPU if available
     compile: bool = True  # Use torch.compile; False forces eager mode
+    class_df: dict[str, str] | None = None  # Doublet mode: cell_type -> class; None = identity
 
 
 def resolve_device(device: str = "auto") -> torch.device:
@@ -97,6 +98,9 @@ class DoubletResult(NamedTuple):
     singlet_score: np.ndarray  # (N,) float
     cell_type_names: list[str]
     pixel_mask: np.ndarray | None = None  # (N_total,) bool — which pixels passed filtering
+    # (N,) str, class of first/second_type when class_df was provided; else None
+    first_class_name: np.ndarray | None = None
+    second_class_name: np.ndarray | None = None
 
 
 class MultiResult(NamedTuple):

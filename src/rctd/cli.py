@@ -319,6 +319,24 @@ def _write_results_to_adata(
         second_type[pixel_mask] = [cell_type_names[i] for i in result.second_type]
         adata.obs["rctd_second_type"] = pd.Categorical(second_type)
 
+        # Class-level ambiguity flags (True = assignment trustworthy only at class level)
+        first_class_flag = np.zeros(n_total, dtype=bool)
+        first_class_flag[pixel_mask] = result.first_class
+        adata.obs["rctd_first_class"] = first_class_flag
+        second_class_flag = np.zeros(n_total, dtype=bool)
+        second_class_flag[pixel_mask] = result.second_class
+        adata.obs["rctd_second_class"] = second_class_flag
+
+        # Class names (only when class_df was provided)
+        if result.first_class_name is not None:
+            first_cn = np.full(n_total, "filtered", dtype=object)
+            first_cn[pixel_mask] = result.first_class_name
+            adata.obs["rctd_first_class_name"] = pd.Categorical(first_cn)
+        if result.second_class_name is not None:
+            second_cn = np.full(n_total, "filtered", dtype=object)
+            second_cn[pixel_mask] = result.second_class_name
+            adata.obs["rctd_second_class_name"] = pd.Categorical(second_cn)
+
         # Doublet weights
         full_wt_doublet = np.full((n_total, 2), np.nan, dtype=np.float32)
         full_wt_doublet[pixel_mask] = result.weights_doublet
@@ -429,6 +447,16 @@ def _write_results_to_adata(
     type=int,
     help="Minimum UMI for reference cells.",
 )
+@click.option(
+    "--class-df",
+    "class_df_path",
+    default=None,
+    type=click.Path(exists=True, dir_okay=False),
+    help=(
+        "Doublet mode: TSV with 'cell_type' and 'class' columns mapping subtypes to "
+        "higher-level classes for hierarchical fallback. See README for usage."
+    ),
+)
 def run(
     spatial,
     reference,
@@ -455,6 +483,7 @@ def run(
     cell_min,
     n_max_cells,
     min_umi_ref,
+    class_df_path,
 ):
     """Run RCTD deconvolution on spatial transcriptomics data."""
     import contextlib
@@ -477,6 +506,19 @@ def run(
         sp = Path(spatial)
         output = str(sp.parent / f"{sp.stem}_rctd.h5ad")
 
+    # Load class_df TSV if provided
+    class_df_dict = None
+    if class_df_path is not None:
+        import pandas as pd
+
+        df = pd.read_csv(class_df_path, sep="\t")
+        if "cell_type" not in df.columns or "class" not in df.columns:
+            raise click.BadParameter(
+                "--class-df TSV must have 'cell_type' and 'class' columns; "
+                f"found: {list(df.columns)}"
+            )
+        class_df_dict = dict(zip(df["cell_type"], df["class"]))
+
     # Build config
     config = RCTDConfig(
         gene_cutoff=gene_cutoff,
@@ -492,6 +534,7 @@ def run(
         dtype=dtype,
         device=device,
         compile=not no_compile,
+        class_df=class_df_dict,
     )
     config_dict = config._asdict()
 

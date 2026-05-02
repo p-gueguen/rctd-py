@@ -243,6 +243,38 @@ Peak CPU RAM (RSS) is typically 2–3x peak VRAM, dominated by intermediate arra
 | **`doublet`** | Classifies each pixel as singlet or doublet, estimates top 1–2 types | Slide-seq, sparse spatial |
 | **`multi`** | Greedy forward selection of up to 4 cell types per pixel | Xenium, MERFISH, dense platforms |
 
+## Hierarchical cell types (`class_df`)
+
+When your reference has granular subtypes (e.g. `CD4_TH1` vs `CD4_TH2`, or several macrophage subsets), doublet mode may struggle to pick one subtype confidently. R spacexr solves this with a `class_df` parameter that maps each subtype to a higher-level class. If RCTD can't decide the subtype, it still reports the two best subtypes but flags that the call is only trustworthy at the class level. rctd-py v0.4.0 ports this directly.
+
+```python
+from rctd import run_rctd
+from rctd._types import RCTDConfig
+
+class_df = {
+    "CD4_TH1":    "T_cell",
+    "CD4_TH2":    "T_cell",
+    "CD8":        "T_cell",
+    "B_naive":    "B_cell",
+    "B_memory":   "B_cell",
+    "Macrophage": "Macrophage",
+}
+config = RCTDConfig(class_df=class_df)
+result = run_rctd(spatial, reference, mode="doublet", config=config)
+
+# result.first_class[n]      == True  → subtype ambiguous, trust the class label
+# result.first_class_name[n] == "T_cell"  (the parent class)
+# result.first_type[n]       → still the best-scoring subtype
+```
+
+On the CLI, pass a TSV with `cell_type` and `class` columns:
+
+```bash
+rctd run spatial.h5ad reference.h5ad --mode doublet --class-df class_df.tsv -o out.h5ad
+```
+
+The output h5ad adds four new `obs` columns in doublet mode: `rctd_first_class`, `rctd_second_class` (bool), and `rctd_first_class_name`, `rctd_second_class_name` (class strings). With `class_df=None` (the default) the class flags stay False and the class-name columns are omitted — behaviour is identical to pre-v0.4.0. See [GitHub #14](https://github.com/p-gueguen/rctd-py/issues/14) for motivation.
+
 ## Validation
 
 Validated against R spacexr on two Xenium liver datasets (45 cell types, 380 genes, doublet mode, `UMI_min=20`):
