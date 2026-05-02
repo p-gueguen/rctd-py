@@ -190,9 +190,7 @@ def test_psd_batch_gpu_path_at_k78_matches_cpu_offload_within_tol():
     # Reference: explicit CPU offload (the v0.3.0 large-K path)
     eigenvalues, eigenvectors = torch.linalg.eigh(H_cpu_copy)
     eigenvalues = torch.clamp(eigenvalues, min=1e-3)
-    H_ref = (
-        eigenvectors @ torch.diag_embed(eigenvalues) @ eigenvectors.transpose(-1, -2)
-    )
+    H_ref = eigenvectors @ torch.diag_embed(eigenvalues) @ eigenvectors.transpose(-1, -2)
     eig_ref = eigenvalues[:, -1]
 
     # GPU eigh and CPU eigh agree to ~1e-6 in float64; allow some headroom
@@ -254,12 +252,10 @@ def test_full_mode_results_unchanged(synthetic_data):
          implementation by monkey-patching the dispatch function)
     Both must agree within tolerance.
     """
-    from rctd import RCTD, RCTDConfig, Reference, run_rctd
+    from rctd import RCTDConfig, Reference, run_rctd
     from rctd._irwls import _solve_box_qp_batch_impl
 
     spatial = synthetic_data["spatial"]
-    profiles = synthetic_data["profiles"]
-    cell_type_names = synthetic_data["cell_type_names"]
     # Build a Reference adata from raw counts so RCTD wires it correctly
     ref_adata = synthetic_data["reference"]
     ref = Reference(ref_adata, cell_type_col="cell_type")
