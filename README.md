@@ -13,6 +13,8 @@
   </p>
 </p>
 
+> **Latest: v0.3.2** — hierarchical class fallback (`class_df`, #14) and a major perf fix for doublet mode at K>16 on Hopper/Blackwell GPUs (8h+ stall → ~47 min on K=78, 100k pixels). See [CHANGELOG.md](CHANGELOG.md).
+
 ---
 
 A Python reimplementation of the [spacexr](https://github.com/dmcable/spacexr) RCTD algorithm ([Cable et al., *Nature Biotechnology* 2022](https://doi.org/10.1038/s41587-021-00830-w)) with GPU acceleration via [PyTorch](https://pytorch.org/).

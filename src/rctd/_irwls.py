@@ -293,14 +293,33 @@ def _eigh_safe(H: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
     return torch.cat(all_evals), torch.cat(all_evecs)
 
 
+def _cuda_eigh_threshold(device: torch.device) -> int:
+    """Per-arch K threshold for staying on GPU eigh vs offloading to CPU OpenBLAS.
+
+    Benchmarks at K=45 on Ampere/L40S showed CPU OpenBLAS beats cuSOLVER's
+    batched syevj — hence the historical K<=16 cutoff. On Hopper (sm_90+)
+    and Blackwell (sm_100+), cuSOLVER's batched eigh is much faster, and
+    CPU offload causes a major perf cliff (8h+ stalls observed at K=78).
+    Bump the threshold on newer arches.
+    """
+    if device.type != "cuda":
+        return 0
+    try:
+        major, _ = torch.cuda.get_device_capability(device)
+    except Exception:
+        return 16
+    return 128 if major >= 9 else 16
+
+
 def _psd_batch(H: torch.Tensor, epsilon: float = 1e-3) -> tuple[torch.Tensor, torch.Tensor]:
     """Batched PSD projection. H: (N, K, K) → (H_psd (N, K, K), max_eig (N,)).
 
     For K=1, trivial scalar clamp (avoids cuSOLVER entirely).
     For K=2, uses analytical closed-form (no cuSOLVER overhead).
-    For K<=16, runs eigh directly on GPU — avoids costly CPU↔GPU transfer
-    that otherwise dominates runtime. For larger K (e.g. K=45), CPU
-    OpenBLAS is faster than cuSOLVER's batched syevj.
+    For K below the per-arch threshold (see ``_cuda_eigh_threshold``), runs
+    eigh directly on GPU. For larger K on older arches, offloads to CPU
+    OpenBLAS — but **only with OMP_NUM_THREADS bounded**, otherwise BLAS
+    oversubscribes all cores and stalls the IRWLS loop.
     """
     K = H.shape[-1]
     if K == 1:
@@ -310,7 +329,7 @@ def _psd_batch(H: torch.Tensor, epsilon: float = 1e-3) -> tuple[torch.Tensor, to
         return H_psd, max_eig
     if K == 2:
         return _psd_2x2(H, epsilon)
-    if H.device.type == "cuda" and K <= 16:
+    if H.device.type == "cuda" and K <= _cuda_eigh_threshold(H.device):
         # Small matrices: GPU eigh avoids CPU↔GPU transfer overhead
         # Guard: cuSOLVER crashes on NaN input instead of propagating it.
         # Replace NaN with epsilon*I to produce a valid (if meaningless) PSD matrix;
@@ -471,7 +490,11 @@ def _solve_box_qp_batch(
 
     global _USE_COMPILE
     if _USE_COMPILE is False or _solve_box_qp_batch_compiled is None:
-        return _solve_box_qp_batch_impl(D, d, lower_bound, n_sweeps)
+        # TorchScript-fused Gauss-Seidel with batch-level early exit. This
+        # path avoids the millions of small CUDA launches the eager Python
+        # implementation would dispatch at K>16 (50 sweeps × K coords ×
+        # IRWLS iters), which dominates wall time on Hopper/Blackwell.
+        return _solve_box_qp_batch_adaptive_jit(D, d, lower_bound, n_sweeps)
 
     if _USE_COMPILE is True:
         return _solve_box_qp_batch_compiled(D, d, lower_bound, n_sweeps)
