@@ -1,8 +1,6 @@
 name: Publish to PyPI
 
 on:
-  release:
-    types: [published]
   push:
     tags:
       - "v*.*.*"
@@ -13,7 +11,7 @@ jobs:
     environment: pypi
     permissions:
       id-token: write
-      contents: read
+      contents: write
 
     steps:
       - uses: actions/checkout@v4
@@ -33,3 +31,28 @@ jobs:
 
       - name: Publish to PyPI
         run: uv publish --check-url https://pypi.org/simple/rctd-py/
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag="${GITHUB_REF##*/}"
+          if gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release $tag already exists, skipping."
+            exit 0
+          fi
+          # Extract the section for this version from CHANGELOG.md (between "## [x.y.z]" and the next "## [")
+          notes_file="$(mktemp)"
+          awk -v tag="${tag#v}" '
+            $0 ~ "^## \\[" tag "\\]" {flag=1; next}
+            flag && /^## \[/ {exit}
+            flag {print}
+          ' CHANGELOG.md > "$notes_file"
+          if [ ! -s "$notes_file" ]; then
+            echo "No CHANGELOG entry found for $tag; creating release with empty notes."
+          fi
+          gh release create "$tag" \
+            --repo "$GITHUB_REPOSITORY" \
+            --title "$tag" \
+            --notes-file "$notes_file" \
+            ./dist/*

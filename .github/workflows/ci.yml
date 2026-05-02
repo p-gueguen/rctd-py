@@ -63,8 +63,8 @@ jobs:
         run: uv pip install --system ".[dev]"
 
       - name: Run unit tests
-        run: pytest tests/ -v --cov=rctd --cov-report=xml -m "not slow"
+        run: pytest tests/ -v -m "not slow"
 
-      - name: Run R concordance tests
-        run: pytest tests/test_concordance.py -v -m slow
+      - name: Run slow integration + R concordance tests
+        run: pytest tests/ -v -m slow
 
