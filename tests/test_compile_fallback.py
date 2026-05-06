@@ -29,12 +29,17 @@ class TestBoxQPFallback:
         assert result.shape == (10, 3)
         assert torch.isfinite(result).all()
 
-    def test_compile_false_uses_eager(self, monkeypatch):
-        """When _USE_COMPILE is False, eager path is used."""
+    def test_compile_false_uses_jit(self, monkeypatch):
+        """When _USE_COMPILE is False, the TorchScript JIT path is used (v0.3.2+).
+
+        Before v0.3.2 this path returned the eager Python loop result. v0.3.2
+        rerouted compile=False to `_solve_box_qp_batch_adaptive_jit` to close
+        the K>16 kernel-launch storm on Hopper/Blackwell.
+        """
         monkeypatch.setattr(_irwls, "_USE_COMPILE", False)
         D, d, lb = _make_small_qp_problem()
         result = _irwls._solve_box_qp_batch(D, d, lb)
-        expected = _irwls._solve_box_qp_batch_impl(D, d, lb)
+        expected = _irwls._solve_box_qp_batch_adaptive_jit(D, d, lb)
         torch.testing.assert_close(result, expected)
 
     def test_fallback_on_runtime_error(self, monkeypatch):
