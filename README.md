@@ -237,6 +237,57 @@ Peak CPU RAM (RSS) is typically 2–3x peak VRAM, dominated by intermediate arra
 
 </details>
 
+## Known issue: NVRTC missing on Blackwell + CUDA 13 setups
+
+If you are running on an NVIDIA Blackwell GPU (`sm_100` / `sm_120`, e.g. RTX PRO 6000 Blackwell) with CUDA 13.0 driver (`580.x`), the `--no-compile` path that v0.3.2+ uses for the doublet QP solver triggers `nvrtc` runtime compilation of TorchScript-fused kernels. On many such systems, `nvrtc` will then fail to load `libnvrtc-builtins.so.13.0`, with an error like:
+
+```text
+ERROR: nvrtc: error: failed to open libnvrtc-builtins.so.13.0.
+  Make sure that libnvrtc-builtins.so.13.0 is installed correctly.
+nvrtc compilation failed:
+  ... fused_sub_mul_add_div(...) ...
+```
+
+This is a runtime-library mismatch, **not** a `rctd-py` bug: the PyTorch wheel commonly bundles only the CUDA 12-era `libnvrtc-builtins.so.12.x`, and the system `/usr/lib/x86_64-linux-gnu/` typically contains only `.12.x` as well. The CUDA 13.0 nvrtc runtime simply isn't present in either location until you install it explicitly.
+
+### Fix
+
+Install the CUDA 13 nvrtc runtime from PyPI and add its directory to `LD_LIBRARY_PATH`:
+
+```bash
+# 1. Install (provides version 13.0.88+)
+pip install nvidia-cuda-nvrtc                # or: uv pip install nvidia-cuda-nvrtc
+
+# 2. Locate the .so (correct subdir is nvidia/cu13/lib/, NOT nvidia/cuda_nvrtc/lib/)
+find $CONDA_PREFIX -name "libnvrtc-builtins.so.13*"
+# expected:  $CONDA_PREFIX/lib/python3.X/site-packages/nvidia/cu13/lib/libnvrtc-builtins.so.13.0
+
+# 3. Prepend to LD_LIBRARY_PATH
+export LD_LIBRARY_PATH=$CONDA_PREFIX/lib/python3.X/site-packages/nvidia/cu13/lib:$LD_LIBRARY_PATH
+
+# 4. Run rctd-py as usual; nvrtc will now find the matching builtins
+```
+
+### Notes
+
+- The PyPI package name is `nvidia-cuda-nvrtc` (no version suffix). The older alias `nvidia-cuda-nvrtc-cu13` is **deprecated** as of 2025-Q4 and will fail to install (the upload now prints a deprecation notice and exits).
+- The same package keeps both CUDA 12 (`nvidia/cuda_nvrtc/lib/libnvrtc-builtins.so.12.x`) and CUDA 13 (`nvidia/cu13/lib/libnvrtc-builtins.so.13.0`) variants. On a CUDA 13 driver, you must point `LD_LIBRARY_PATH` at `nvidia/cu13/lib/`, not `nvidia/cuda_nvrtc/lib/`.
+- This step is **not needed** on CUDA 11 / 12 deployments, A100 / H100, RTX 40-series, or anywhere the standard PyTorch wheel's bundled nvrtc already matches the system driver. Adding `nvidia-cuda-nvrtc` as a hard dependency to `pyproject.toml` would force an unnecessary download for the majority of users — documenting it here keeps the install slim for everyone else.
+
+### Sanity check after fix
+
+A quick way to confirm the CUDA 13 nvrtc runtime is now reachable:
+
+```bash
+python -c "
+import ctypes
+ctypes.CDLL('libnvrtc-builtins.so.13.0')
+print('nvrtc 13.0 builtins loadable: OK')
+"
+```
+
+If that prints `OK`, run any rctd-py workflow with `--no-compile`; the `[doublet] Step 1/6: full-mode fit` phase should now stay on GPU (`nvidia-smi` Util > 70%) instead of stalling indefinitely.
+
 ## Deconvolution Modes
 
 | Mode | What it does | Best for |
