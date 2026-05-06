@@ -81,7 +81,12 @@ def _align_and_compare(py_weights, py_barcodes, r_fix):
 def rctd_doublet_result(vignette_data):
     """Run rctd-py doublet mode on vignette data (cached per module)."""
     reference = Reference(vignette_data["reference"], cell_type_col="cell_type", cell_min=25)
-    config = RCTDConfig(UMI_min=100)
+    # compile=False routes through the TorchScript JIT path instead of
+    # torch.compile/Inductor C++ codegen. The GitHub Actions ubuntu-24.04
+    # runner intermittently ICEs g++ on Inductor's vec512 output
+    # ("internal compiler error: in gimple_duplicate_bb"), which we cannot
+    # control. The JIT path is the v0.3.2 hot path on Blackwell anyway.
+    config = RCTDConfig(UMI_min=100, compile=False)
     rctd = RCTD(vignette_data["spatial"], reference, config)
     rctd.fit_platform_effects()
 
