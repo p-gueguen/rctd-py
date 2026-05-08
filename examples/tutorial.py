@@ -276,8 +276,24 @@ def _(mo):
     mo.md(r"""
     ## 5. Interpreting Results
 
-    The `result_full.weights` matrix has shape `(n_beads, n_types)`. Each row
-    sums to 1 and represents the estimated cell type composition of that bead.
+    The `result_full.weights` matrix has shape `(n_beads, n_types)`. Following
+    R spacexr's `fitPixels(..., constrain=FALSE)` convention, full-mode weights
+    are the output of a non-negativity-constrained least-squares fit and are
+    **not** projected onto the simplex — rows typically sum to <1 (sparse beads
+    are common in Slide-seq) and individual entries can be slightly negative
+    due to numerical slack.
+
+    For downstream analyses that assume proportions (correlation, Euclidean /
+    cosine distance, JSD, plotting as a stacked bar):
+
+    ```python
+    W = np.maximum(result_full.weights, 0)               # clip slack
+    W_prop = W / np.maximum(W.sum(axis=1, keepdims=True), 1e-10)
+    ```
+
+    Doublet mode (`result_doublet.weights_doublet`) and multi mode
+    (`result_multi.sub_weights[n, :n_types[n]]`) are already normalized to
+    sum to 1.
     """)
     return
 
@@ -434,15 +450,22 @@ def _(mo):
     mo.md(r"""
     ## 7. Configuration
 
-    `RCTDConfig` controls all algorithm hyperparameters:
+    `RCTDConfig` controls all algorithm hyperparameters. The most commonly
+    tuned ones:
 
     | Parameter | Default | Description |
     |-----------|---------|-------------|
     | `UMI_min` | 100 | Minimum UMI count to include a bead |
-    | `N_fit` | 1000 | Number of beads used to estimate sigma |
+    | `UMI_min_sigma` | 300 | Minimum UMI count for beads used in sigma estimation |
+    | `N_fit` | 100 | Number of beads used to estimate sigma |
     | `MAX_MULTI_TYPES` | 4 | Max cell types per bead in multi mode |
     | `max_iter` | 50 | Maximum IRWLS iterations |
-    | `doublet_mode_alpha` | 0.01 | Regularization strength in doublet mode |
+    | `DOUBLET_THRESHOLD` | 20.0 | Singlet-vs-doublet log-likelihood gap (doublet mode) |
+    | `CONFIDENCE_THRESHOLD` | 5.0 | Confidence margin for selected types (doublet/multi) |
+    | `compile` | `True` | Use `torch.compile`; set `False` (or pass `--no-compile`) to fall back to TorchScript JIT (no CUDA dev headers needed) |
+
+    See [`RCTDConfig` in `_types.py`](https://github.com/p-gueguen/rctd-py/blob/main/src/rctd/_types.py)
+    for the full list including bulk-fit cutoffs (`gene_cutoff`, `fc_cutoff`, …).
 
     The `batch_size` argument to `run_rctd` controls how many beads are processed
     per GPU kernel launch. Larger values use more VRAM but may be faster.
@@ -453,7 +476,7 @@ def _(mo):
 @app.cell
 def _(RCTDConfig, reference, run_rctd, spatial_adata):
     # Custom configuration example
-    _config = RCTDConfig(UMI_min=100, N_fit=1000, MAX_MULTI_TYPES=4, max_iter=50)
+    _config = RCTDConfig(UMI_min=100, N_fit=100, MAX_MULTI_TYPES=4, max_iter=50)
     result = run_rctd(spatial_adata, reference, mode='full', config=_config, batch_size=5000)
     print(f'Custom run: {result.weights.shape}')
     return
