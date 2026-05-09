@@ -88,6 +88,32 @@ Tests use `torch.compile(dynamic=True)` which has a ~60s JIT warmup on first run
 
 - `test_batch_matches_single` uses `atol=5e-5` — batch vs single-pixel IRWLS can differ slightly due to floating-point convergence order
 
+### Compile / JIT dispatch dynamics
+
+`_solve_box_qp_batch` (`_irwls.py:466-515`) has three paths:
+
+| `_USE_COMPILE` state | Path | Has fallback? |
+|---|---|---|
+| `False` (or `_solve_box_qp_batch_compiled is None`) | `_solve_box_qp_batch_adaptive_jit` (TorchScript JIT) | n/a |
+| `None` (first call) | try compiled, except RuntimeError → fall back to eager | yes |
+| `True` (after first success) | `_solve_box_qp_batch_compiled` directly | **no** |
+
+**Footgun:** the lazy try/except only protects the *first* call. If a later
+recompile fails (different shape, transient toolchain breakage), there is no
+automatic recovery. For environments with unreliable torch.compile, set
+`compile=False` explicitly via `RCTDConfig`.
+
+**v0.3.2 behavior change:** the `compile=False` path used to return
+`_solve_box_qp_batch_impl` (eager Python loop). It now returns
+`_solve_box_qp_batch_adaptive_jit`. The two paths converge to ~2e-4
+numerical agreement (different op ordering). When writing tests that
+assert equivalence, compare against `_solve_box_qp_batch_adaptive_jit`,
+not `_solve_box_qp_batch_impl`. See commit `c068109`.
+
+**`calc_q_all`** (`_likelihood.py:320-353`) has the same lazy fallback
+pattern but its `compile=False` path still routes to the eager
+`_calc_q_all_impl` — not changed in v0.3.2.
+
 ## R spacexr Concordance
 
 ### Current: 99.8% dominant type agreement (matched reference)
@@ -103,8 +129,9 @@ The per-pixel IRWLS solver is **bit-identical** to R spacexr given the same `nor
 
 ### Concordance testing
 
-Full comparison report and scripts in `paul-scripts/Internal_Dev/rctd_comparison/`.
-See `docs/plans/100-percent-matching-roadmap.md` for detailed investigation.
+See `docs/plans/100-percent-matching-roadmap.md` for the detailed investigation
+plan and the test fixtures in `tests/fixtures/vignette/` for the canonical
+R-vs-Python concordance comparison.
 
 ## Tutorial
 
@@ -137,6 +164,28 @@ fig_plot  # last expression, non-underscore name
 uv run marimo export html examples/tutorial.py -o examples/tutorial.html --no-include-code
 ```
 
+`examples/tutorial.html` is gitignored (local artifact). The tracked,
+GitHub-Pages-served copy is `docs/tutorial.html`. After re-rendering,
+copy `examples/tutorial.html` → `docs/tutorial.html`. Re-render takes
+~13 min (sigma estimation runs 3× because the tutorial calls `run_rctd`
+for full / doublet / multi separately, each from scratch).
+
+### Doc-vs-code drift audits
+
+Tutorial doc strings have drifted from code multiple times (e.g. v0.3.x
+shipped with three errors in `examples/tutorial.py`: a "weights sum to 1"
+claim that was never true under `constrain=FALSE`, a `N_fit` default of
+1000 vs actual 100, and a `doublet_mode_alpha` parameter that has never
+existed in any version — `git log --all -S doublet_mode_alpha` shows it
+only in tutorial commits).
+
+After non-trivial changes to `RCTDConfig` defaults, mode behavior, or
+weight normalization, run a verification script that executes the
+tutorial workflow end-to-end and prints the empirical answer next to the
+documented claim. Reference fix: commit `a05067f` (source) + `428da09`
+(re-rendered HTML). Cross-check parameter names against `RCTDConfig` in
+`_types.py` to catch hallucinated names early.
+
 **Spot class encoding** is 0-indexed (unlike R spacexr which is 1-indexed):
 ```
 0 = reject, 1 = singlet, 2 = doublet_certain, 3 = doublet_uncertain
@@ -155,6 +204,79 @@ uv run ruff format src/ tests/
 ### PyTorch API compatibility
 
 PyTorch renamed `cuda.get_device_properties().total_mem` → `total_memory` in 2.10+. Use `getattr` fallback pattern (see `cli.py:59`). CI runs an older PyTorch than the GPU nodes — test both paths.
+
+### GitHub Actions runner toolchain ICEs
+
+The ubuntu-24.04 runner image periodically rolls forward to a g++ that
+ICEs on Inductor's `vec512.h` C++ codegen:
+
+```
+internal compiler error: in gimple_duplicate_bb, at tree-cfg.cc:6545
+```
+
+This surfaces in `Run slow integration + R concordance tests` and is a
+GCC bug we don't control. **Workaround:** pin slow-test fixtures that
+exercise the box-QP solver to `compile=False` so they take the
+TorchScript JIT path (no g++ involved). Reference: `tests/test_concordance.py`
+fixture comment + commit `b2a206f`. Don't try to "fix" this by upgrading
+actions — it's intermittent and tied to the runner image version.
+
+### Publish workflow runs on tag, not on push
+
+`publish.yml` is gated on tag pushes; `ci.yml` is gated on push to main
+and PRs. A release tag therefore does not run the test workflow on the
+exact tagged commit. Test breakages introduced in release commits will
+only surface on the **first PR after the tag** (this happened with PR
+#17 surfacing the stale `test_compile_false_uses_eager` test).
+
+Before tagging, manually run the full matrix on the release branch.
+`publish.yml` already auto-creates the GitHub Release entity from
+`CHANGELOG.md` (PR #16 / commit `b80ae88`).
+
+## Common User Confusion (issue tracker patterns)
+
+### `result.weights` on `MultiResult` / `DoubletResult` is the **full-mode** matrix
+
+External users (e.g. issue #18) consistently expect `MultiResult.weights`
+to be the multi-mode answer. It's not — it's the full-mode candidate
+matrix used internally for type selection (`_multi.py:173, 348`),
+unnormalized.
+
+The actual multi-mode answer is `sub_weights[n, :n_types[n]]` paired
+with `cell_type_indices[n, :n_types[n]]` and `n_types[n]` — these are
+normalized to sum=1. Same shape for doublet: `weights_doublet` is the
+(N, 2) normalized two-type result; `weights` is the unnormalized
+full-mode candidate matrix.
+
+This is preserved for R spacexr compatibility but it's a footgun. When
+extending the README "Output schema" table or doublet/multi tutorial
+sections, call this out explicitly.
+
+### "R weights are on the simplex" misconception
+
+R `myRCTD@results$weights` is **also** unnormalized — same
+`constrain=FALSE` NNLS output as ours. The R vignette explicitly calls
+`normalize_weights(results$weights)` before stuffing into the Seurat
+Assay. Users reading R Section 6 (about the Assay) easily miss the
+normalize step earlier and assume the raw `results$weights` is on the
+simplex.
+
+When responding to such questions, link to the R source line that does
+the normalize — it's the most convincing evidence. See R spacexr
+reference table below.
+
+## R spacexr Source Reference
+
+For citations and cross-checks (avoid re-grepping each time):
+
+| Topic | R location |
+|-------|------------|
+| IRWLS damping (alpha=0.3 → our `step_size`) | [`R/IRWLS.R:95`](https://github.com/dmcable/spacexr/blob/master/R/IRWLS.R#L95) |
+| Multi candidate threshold (0.01 → our `WEIGHT_THRESHOLD`) | [`R/RCTD_helper.R:76, 153`](https://github.com/dmcable/spacexr/blob/master/R/RCTD_helper.R) |
+| `normalize_weights` definition | [`R/postProcessing.R:135-137`](https://github.com/dmcable/spacexr/blob/master/R/postProcessing.R#L135-L137) |
+| Tutorial Assay construction (the `# normalize the cell type proportions to sum to 1.` line) | [`vignettes/spatial-transcriptomics.Rmd:135-143`](https://github.com/dmcable/spacexr/blob/master/vignettes/spatial-transcriptomics.Rmd#L135-L143) |
+| `solveOLS` / `solveIRWLS.weights` | `R/IRWLS.R:1-50` |
+| `process_bead_doublet` / `check_pairs_type` | `R/RCTD_helper.R:44-168` |
 
 ## Benchmarking
 
