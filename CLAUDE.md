@@ -2,12 +2,10 @@
 
 ## GitHub CLI
 
-`gh` is installed in the conda env `ps_pgueguen`. Always activate it before running `gh`:
-
-```bash
-eval "$(/usr/local/ngseq/miniforge3/bin/conda shell.bash hook)"
-conda activate ps_pgueguen
-```
+`gh` is needed for issue/PR/release management against this repo. Install
+via `conda install -c conda-forge gh` (or your distro package manager) and
+authenticate once with `gh auth login`. If you keep `gh` in a dedicated
+conda env, remember to activate it before running release / CI commands.
 
 ## Architecture
 
@@ -120,7 +118,7 @@ pattern but its `compile=False` path still routes to the eager
 
 The per-pixel IRWLS solver is **bit-identical** to R spacexr given the same `norm_profiles` and `sigma`. The remaining ~0.2% gap comes from `fit_bulk()` platform effect estimation producing slightly different normalized profiles.
 
-### Key findings (2026-03-21 comparison with XeniumSeurat SUSHI pipeline)
+### Key findings (2026-03-21, comparison against an internal R spacexr Xenium pipeline)
 
 1. **Reference preparation matters**: Using a different reference (e.g. full Seurat object vs pre-downsampled spacexr Reference) drops agreement to ~95%. Always use the SAME reference cells for fair comparisons.
 2. **Weight normalization**: spacexr stores `normalize_weights()` output (sum=1, clipped [0,1]). rctd-py stores raw full-mode weights in `obsm["rctd_weights"]`. **Always normalize rctd-py weights before comparing.**
@@ -305,7 +303,7 @@ Autonomous optimization framework inspired by [karpathy/autoresearch](https://gi
 - **Files to modify**: `src/rctd/_irwls.py`, `src/rctd/_likelihood.py`, `src/rctd/_simplex.py`
 - **Read-only**: `benchmarks/bench_gpu.py`, `tests/`
 - **Log results** to `results.tsv` (tab-separated)
-- **GPU partition**: `--partition=GPU` (uppercase), servers fgcz-r-023 (L40S) and fgcz-c-056 (Blackwell)
+- **GPU partition**: target an L40S or Blackwell (sm_100+) node via your scheduler (e.g. `--partition=GPU --gres=gpu:1` for SLURM clusters that expose GPUs as a generic resource)
 
 ### Profiling hot spots
 
@@ -315,7 +313,7 @@ Post-optimization: `calc_q_all` is now a fused Triton kernel (single launch), K=
 
 ### Benchmarking tips
 
-- **GPU benchmarks must pin to a specific node** via `--nodelist=fgcz-c-056` for reproducible comparisons
+- **GPU benchmarks must pin to a specific node** via `--nodelist=<your-node>` for reproducible comparisons (different GPU SKUs and even different nodes of the same SKU produce different timings)
 - **Warmup is mandatory**: torch.compile and Triton JIT have ~60s first-call overhead. Run a warmup dataset before the timed benchmarks
 - **A/B comparisons**: Use `benchmarks/SBATCH_compare_optimizations.sh` — checks out baseline vs optimized source files, runs both on the same GPU node back-to-back
 - **Spatial data loading**: Use `sc.read_10x_h5()` (scanpy), NOT `anndata.read_h5()` which doesn't exist
