@@ -29,10 +29,11 @@ Deconvolve spatial transcriptomics spots (Visium, Xenium, MERFISH, Slide-seq, �
 | 🎯 **99.7% concordance** with R spacexr | **100%** with `sigma_override` — per-pixel solver is bit-identical |
 | 🔧 **Drop-in replacement** | Same algorithm, same parameters, same results — just faster |
 | 📦 **`pip install rctd-py`** | Pure Python, works on CPU out of the box |
+| 🧬 **Whole-transcriptome ready** | Tested on 10x **Atera** WTA (18,028 genes): 718k cells deconvolved in ~10 min on GPU |
 
 ## Benchmarks
 
-Benchmarked on 3 datasets across all RCTD modes (full, doublet, multi). All runs on AMD EPYC 9554 nodes (128 cores, 1.15 TB RAM). GPU: NVIDIA RTX PRO 6000 Blackwell (96 GB VRAM) on the same node class. CPU rctd-py: `device="cpu"`, 8 threads (`OMP_NUM_THREADS=8`). R spacexr: 8 CPU cores (`doParallel`). All rctd-py timings use warm `torch.compile` cache.
+Benchmarked across five datasets — three standard Xenium panels, one VisiumHD run, and two whole-transcriptome **Atera** previews (18,028 genes) — over all RCTD modes (full, doublet, multi). All runs on AMD EPYC 9554 nodes (128 cores, 1.15 TB RAM). GPU: NVIDIA RTX PRO 6000 Blackwell (96 GB VRAM) on the same node class. CPU rctd-py: `device="cpu"`, 8 threads (`OMP_NUM_THREADS=8`). R spacexr: 8 CPU cores (`doParallel`); the Atera datasets have no R baseline (impractical at 18k genes × 170k–718k cells), so they are reported as GPU-vs-CPU. All rctd-py timings use warm `torch.compile` cache.
 
 <p align="center">
   <img src="docs/benchmark.png" alt="Benchmark: CPU vs GPU scalability, runtime, and memory" width="900">
@@ -52,8 +53,16 @@ Benchmarked on 3 datasets across all RCTD modes (full, doublet, multi). All runs
 | | | | doublet | 51.1 min | 3.7 min | **13.8x** |
 | | | | multi | 153.3 min | 3.7 min | **41.4x** |
 | **VisiumHD Mouse Brain (8µm)** | **392,580** | 22 | full | — | **1.0 min** | — |
+| **Atera WTA Breast (FFPE)** | **169,965** | 40 | full | — | 81.7 min | — |
+| | | | doublet | — | 102.8 min | — |
+| | | | multi | — | 101.0 min | — |
+| **Atera WTA Cervical (FFPE)** | **714,535** | 7 | full | — | 3.5 min | — |
+| | | | doublet | — | 10.2 min | — |
+| | | | multi | — | 10.3 min | — |
 
 GPU timings include sigma estimation (25–53s depending on dataset). The VisiumHD benchmark demonstrates scalability to ~400k spots in about a minute (33s deconv + 25s sigma, Blackwell GPU). GPU speedup is highest in **doublet mode** (9–14x) and **multi mode on large datasets** (41x for Region 3) because R spacexr's pairwise fitting and greedy selection are the main bottlenecks — rctd-py batches all C(K,2) pairs into a single tensor operation.
+
+The two **Atera** datasets exercise 10x's whole-transcriptome in-situ platform (18,028 genes, preview release) and are deconvolved against public CZ CELLxGENE references — breast against a breast-cancer atlas (K=40), cervix against a normal uterine-cervix atlas (K=7; no cervical-cancer scRNA-seq exists in CELLxGENE). With no R baseline at this scale, we report **GPU vs rctd-py CPU** (doublet): cervical (714k cells, K=7) runs in **10.2 min on GPU vs 45.1 min on CPU (4.4×)**, while breast (170k cells, K=40) runs in **102.8 min on GPU vs 112.6 min on CPU (1.1×)**. As with the Xenium panels, the GPU advantage is largest at **low K / high N**: at K=40 with ~4,800 informative genes the per-pixel constrained solve dominates and GPU and CPU converge. The key result is that rctd-py runs whole-transcriptome data end-to-end with no code changes.
 
 ### Memory requirements
 
@@ -63,8 +72,10 @@ GPU timings include sigma estimation (25–53s depending on dataset). The Visium
 | Xenium Mouse Brain | 36,362 | 22 | 2.6 GB | 5 GB |
 | Xenium Liver (large) | 58,191 | 45 | 2.6 GB | 34 GB |
 | **VisiumHD Mouse Brain (8µm)** | **392,580** | 22 | 41 GB | 47 GB |
+| **Atera WTA Breast (FFPE)** | **169,965** | 40 | 8.3 GB | 43 GB |
+| **Atera WTA Cervical (FFPE)** | **714,535** | 7 | 12.3 GB | 110 GB |
 
-Peak VRAM for Xenium-scale datasets is ~2.6 GB (doublet mode, default batch size). VisiumHD at 392k spots uses 41 GB VRAM with auto batch sizing (200k spots per batch). RSS is dominated by the reference matrix and scales with K and N. Use the `batch_size` parameter to control peak VRAM — smaller batches trade throughput for lower memory.
+Peak VRAM for Xenium-scale datasets is ~2.6 GB (doublet mode, default batch size). VisiumHD at 392k spots uses 41 GB VRAM with auto batch sizing (200k spots per batch). RSS is dominated by the reference matrix and scales with K and N. Use the `batch_size` parameter to control peak VRAM — smaller batches trade throughput for lower memory. For the whole-transcriptome **Atera** runs the spatial count matrix dominates host RAM instead: the 714k-cell cervical dataset peaks at ~110 GB RSS (18,028 genes × 714k cells plus intermediates) while using only 12.3 GB VRAM at `batch_size=5000`.
 
 > **Note:** The main speedup comes from PyTorch's vectorized batched solver. GPU rctd-py times are nearly identical across modes (~2–7 min) while R spacexr times vary 3–10x between modes, because rctd-py batches pairwise/iterative fits into tensor operations that scale efficiently. The GPU advantage is largest for smaller cell type panels (K < 25) where GPU eigendecomposition handles all pairwise fits on-device.
 
