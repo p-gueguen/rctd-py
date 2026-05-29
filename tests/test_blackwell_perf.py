@@ -96,6 +96,56 @@ def test_psd_batch_cpu_path_unchanged():
     np.testing.assert_allclose(max_eig.numpy(), eig_ref.numpy(), atol=1e-9, rtol=1e-9)
 
 
+# ─── _psd_batch CPU robustness (issue #20) ──────────────────────────────
+
+
+def test_psd_batch_cpu_handles_non_finite():
+    """NaN/Inf in any batch element must not crash the CPU eigh path.
+
+    Reported by @EduardGhemes-ICR in #20: K=49 doublet mode on a 280-gene
+    Xenium panel crashed with LAPACK ``_LinAlgError`` ("error code: 99")
+    inside ``_psd_batch``. The GPU branch already guarded against NaN via
+    ``epsilon*I`` replacement; the CPU branch did not.
+    """
+    K = 49
+    H = _make_psd_batch(N=8, K=K, seed=42)
+    H[3, 0, 0] = float("nan")
+    H[5, 10, 10] = float("inf")
+    H_psd, max_eig = _psd_batch(H)
+    assert torch.isfinite(H_psd).all()
+    assert torch.isfinite(max_eig).all()
+    # All batch elements clamped at epsilon=1e-3
+    assert (max_eig >= 1e-3 - 1e-9).all()
+
+
+def test_psd_batch_cpu_retries_on_linalg_error(monkeypatch):
+    """The CPU branch must recover from a transient LAPACK ``_LinAlgError``
+    via a small-diagonal-jitter retry (issue #20). We can't reliably trip
+    ``syevd``'s "error code: 99" with synthetic inputs across LAPACK builds,
+    so we simulate it by intercepting ``torch.linalg.eigh`` once."""
+    K = 49
+    H = _make_psd_batch(N=8, K=K, seed=7)
+
+    real_eigh = torch.linalg.eigh
+    state = {"calls": 0}
+
+    def flaky_eigh(M):
+        state["calls"] += 1
+        if state["calls"] == 1:
+            raise torch._C._LinAlgError(
+                "linalg.eigh: (Batch element 2): The algorithm failed to converge "
+                "because the input matrix is ill-conditioned or has too many "
+                "repeated eigenvalues (error code: 99)."
+            )
+        return real_eigh(M)
+
+    monkeypatch.setattr(torch.linalg, "eigh", flaky_eigh)
+    H_psd, max_eig = _psd_batch(H)
+    assert torch.isfinite(H_psd).all()
+    assert torch.isfinite(max_eig).all()
+    assert state["calls"] >= 2  # initial + at least one jitter retry
+
+
 # ─── Box-QP equivalence: eager vs JIT ───────────────────────────────────
 
 

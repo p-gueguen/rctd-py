@@ -3,6 +3,11 @@
 All notable changes to rctd-py are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.3] — 2026-05-29
+
+### Fixed
+- **`_LinAlgError` crash in doublet mode at K≈49 on the CPU eigh path** (reported by @EduardGhemes-ICR, #20). `_psd_batch` previously called `torch.linalg.eigh` raw on the CPU branch; a single non-finite or near-degenerate batch element would crash LAPACK `syevd` with "error code: 99" and kill multi-hour Xenium runs. The CPU branch now mirrors the GPU branch's NaN guard (extended to ±Inf) and adds a small-diagonal-jitter retry ladder (1e-6 → 1e-4 → ε·I last resort). Happy-path output is bit-identical to v0.3.2 — only previously-crashing inputs are affected. Triggered most often on older arches (Volta / Turing / Ampere / Ada / L40S) where K > 16 falls through to CPU eigh, but the guard is unconditional and applies to CPU-only deployments as well.
+
 ## [0.3.2] — 2026-05-02
 
 ### Added
