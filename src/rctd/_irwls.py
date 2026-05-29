@@ -351,7 +351,36 @@ def _psd_batch(H: torch.Tensor, epsilon: float = 1e-3) -> tuple[torch.Tensor, to
         orig_device = H.device
         orig_dtype = H.dtype
         H_cpu = H if H.device.type == "cpu" else H.cpu()
-        eigenvalues, eigenvectors = torch.linalg.eigh(H_cpu)
+
+        # Guard: LAPACK syevd raises "_LinAlgError (error code: 99)" on
+        # non-finite or near-degenerate batches (issue #20 — K=49 doublet
+        # mode on Xenium MINOR types). Mirror the GPU branch's NaN guard,
+        # extended to ±Inf.
+        bad_mask = (~torch.isfinite(H_cpu)).any(dim=-1).any(dim=-1)  # (N,)
+        if bad_mask.any():
+            H_cpu = H_cpu.clone()
+            H_cpu[bad_mask] = epsilon * torch.eye(K, dtype=H_cpu.dtype)
+
+        try:
+            eigenvalues, eigenvectors = torch.linalg.eigh(H_cpu)
+        except torch._C._LinAlgError:
+            # Add a tiny diagonal jitter and retry. Jitter << epsilon clamp
+            # (1e-3), so well-conditioned batch elements are unaffected after
+            # the clamp below.
+            I_K = torch.eye(K, dtype=H_cpu.dtype)
+            for jitter in (1e-6, 1e-4):
+                try:
+                    eigenvalues, eigenvectors = torch.linalg.eigh(H_cpu + jitter * I_K)
+                    break
+                except torch._C._LinAlgError:
+                    continue
+            else:
+                # Last resort: replace the whole batch with epsilon*I. The IRWLS
+                # outer loop handles the resulting near-zero delta_w gracefully
+                # (same contract as the GPU NaN path above).
+                H_safe = (epsilon * I_K).expand_as(H_cpu).contiguous()
+                eigenvalues, eigenvectors = torch.linalg.eigh(H_safe)
+
         eigenvalues = torch.clamp(eigenvalues, min=epsilon)
         H_psd = eigenvectors @ torch.diag_embed(eigenvalues) @ eigenvectors.transpose(-1, -2)
         max_eig = eigenvalues[:, -1]
