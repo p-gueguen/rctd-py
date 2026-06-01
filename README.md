@@ -347,8 +347,12 @@ Validated against R spacexr on two Xenium liver datasets (45 cell types, 380 gen
 |---------|--------|------------------------|-----------------------|
 | Xenium Liver (small) | 13,940 | **99.73%** | **100%** |
 | Xenium Liver (large) | 58,191 | **99.71%** | — |
+| Atera WTA Breast (FFPE, subsample) | 4,998 | **99.22%** | — |
+| Atera WTA Cervical (FFPE, subsample) | 5,977 | **99.26%** | — |
 
 The tiny default gap (0.27%) traces entirely to platform-effect estimation (`fit_bulk`), not the per-pixel solver — which is bit-identical to R. All disagreeing pixels are genuinely ambiguous (margin < 0.05 between top two types).
+
+Concordance also holds at **whole transcriptome**: on Atera subsamples (18,028-gene panel, deconvolved against public CZ CELLxGENE references) rctd-py reproduces R spacexr's dominant-type calls at **99.2%** for both breast (K=40) and cervix (K=7), with median per-pixel weight correlation ≥ 0.9996. These are measured on subsamples because a full-data R baseline is impractical at this gene count (R spacexr takes ~31 min on 5k breast cells vs ~5 min for rctd-py).
 
 **`sigma_override` is not needed for normal use.** The default Python-estimated sigma is valid and produces near-identical results. It exists for specific scenarios:
 
