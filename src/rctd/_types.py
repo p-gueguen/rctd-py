@@ -32,6 +32,11 @@ class RCTDConfig(NamedTuple):
     device: str = "auto"  # "auto", "cpu", or "cuda"; auto uses GPU if available
     compile: bool = True  # Use torch.compile; False forces eager mode
     class_df: dict[str, str] | None = None  # Doublet mode: cell_type -> class; None = identity
+    # Override the per-arch K cutoff for staying on GPU eigh in _psd_batch.
+    # None = use arch-based default (K<=16 on sm_<9, K<=128 on sm_>=9). Set
+    # higher to force GPU eigh on older arches when the CPU offload is the
+    # bottleneck (issue #22 — K=38 on V100/L20). Ignored on CPU runs.
+    eigh_threshold: int | None = None
 
 
 def resolve_device(device: str = "auto") -> torch.device:

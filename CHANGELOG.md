@@ -3,6 +3,11 @@
 All notable changes to rctd-py are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **`--eigh-threshold` CLI flag and `RCTDConfig.eigh_threshold`** (reported by @meisproject, #22). Manually override the K cutoff for staying on GPU eigh inside `_psd_batch`. The arch-based default (`K≤16` on sm_<9, `K≤128` on sm_≥9) was derived from L40S benchmarks at K=45 where CPU OpenBLAS won — but only with `OMP_NUM_THREADS` capped. Users on Volta (V100, sm_70), Turing, Ampere, or Ada (L20/L40S, sm_89) who hit Step 1 perf cliffs at K∈[17, 64] (e.g. K=38 reported at 3086 s for 6113 pixels) can now force GPU eigh via `--eigh-threshold 64` without waiting on a per-arch benchmark / release. Setting `--eigh-threshold 0` forces CPU eigh on every arch (diagnostic counter-case). Default `None` preserves v0.3.3 arch-gated behavior bit-for-bit.
+
 ## [0.3.3] — 2026-05-29
 
 ### Fixed

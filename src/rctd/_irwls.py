@@ -293,6 +293,11 @@ def _eigh_safe(H: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
     return torch.cat(all_evals), torch.cat(all_evecs)
 
 
+# User override for the GPU-eigh K cutoff. None = arch-based default.
+# Set by RCTD.__init__ from RCTDConfig.eigh_threshold (issue #22).
+_EIGH_THRESHOLD_OVERRIDE: int | None = None
+
+
 def _cuda_eigh_threshold(device: torch.device) -> int:
     """Per-arch K threshold for staying on GPU eigh vs offloading to CPU OpenBLAS.
 
@@ -301,9 +306,15 @@ def _cuda_eigh_threshold(device: torch.device) -> int:
     and Blackwell (sm_100+), cuSOLVER's batched eigh is much faster, and
     CPU offload causes a major perf cliff (8h+ stalls observed at K=78).
     Bump the threshold on newer arches.
+
+    If ``_EIGH_THRESHOLD_OVERRIDE`` is set, it wins over the arch default —
+    e.g. ``--eigh-threshold 64`` on V100/L20 to force GPU eigh at K=38
+    instead of falling into the (often slower) CPU offload path.
     """
     if device.type != "cuda":
         return 0
+    if _EIGH_THRESHOLD_OVERRIDE is not None:
+        return _EIGH_THRESHOLD_OVERRIDE
     try:
         major, _ = torch.cuda.get_device_capability(device)
     except Exception:

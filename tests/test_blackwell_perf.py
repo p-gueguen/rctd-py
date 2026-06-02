@@ -75,6 +75,65 @@ def test_cuda_eigh_threshold_falls_back_safely_on_capability_error():
         assert _cuda_eigh_threshold(fake_cuda) == 16
 
 
+# ─── User override via RCTDConfig.eigh_threshold (issue #22) ─────────────
+
+
+@pytest.fixture
+def _reset_eigh_override():
+    """Restore the module-level override after each override test."""
+    from rctd import _irwls
+
+    original = _irwls._EIGH_THRESHOLD_OVERRIDE
+    yield
+    _irwls._EIGH_THRESHOLD_OVERRIDE = original
+
+
+def test_eigh_threshold_override_wins_over_arch_default(_reset_eigh_override):
+    """When ``_EIGH_THRESHOLD_OVERRIDE`` is set, it must replace the arch-based
+    return value on CUDA devices (issue #22 — bump K cutoff on Volta/Ada)."""
+    from rctd import _irwls
+
+    fake_cuda = torch.device("cuda")
+    # Pretend we're on Ampere A100 (arch default would be 16).
+    with patch("torch.cuda.get_device_capability", return_value=(8, 0)):
+        assert _cuda_eigh_threshold(fake_cuda) == 16
+        _irwls._EIGH_THRESHOLD_OVERRIDE = 64
+        assert _cuda_eigh_threshold(fake_cuda) == 64
+        _irwls._EIGH_THRESHOLD_OVERRIDE = 0  # 0 = force CPU eigh always
+        assert _cuda_eigh_threshold(fake_cuda) == 0
+
+
+def test_eigh_threshold_override_ignored_on_cpu(_reset_eigh_override):
+    """CPU device must still return 0 even with an override set — there is no
+    GPU dispatch path on CPU, so the override is a no-op there."""
+    from rctd import _irwls
+
+    _irwls._EIGH_THRESHOLD_OVERRIDE = 999
+    assert _cuda_eigh_threshold(torch.device("cpu")) == 0
+
+
+def test_eigh_threshold_override_force_cpu_on_capable_arch(_reset_eigh_override):
+    """Setting override=0 forces CPU eigh even on Hopper/Blackwell (where the
+    arch default of 128 would have kept eigh on GPU). Lets users diagnose
+    suspected cuSOLVER bugs without rebuilding."""
+    from rctd import _irwls
+
+    fake_cuda = torch.device("cuda")
+    with patch("torch.cuda.get_device_capability", return_value=(10, 0)):
+        assert _cuda_eigh_threshold(fake_cuda) == 128
+        _irwls._EIGH_THRESHOLD_OVERRIDE = 0
+        assert _cuda_eigh_threshold(fake_cuda) == 0
+
+
+def test_rctd_config_carries_eigh_threshold_field():
+    """``RCTDConfig`` must expose ``eigh_threshold`` for CLI/API users and
+    default to ``None`` (= arch-based behavior)."""
+    from rctd._types import RCTDConfig
+
+    assert RCTDConfig().eigh_threshold is None
+    assert RCTDConfig(eigh_threshold=64).eigh_threshold == 64
+
+
 # ─── _psd_batch CPU path preservation ───────────────────────────────────
 
 

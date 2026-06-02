@@ -411,6 +411,17 @@ def _write_results_to_adata(
     default=False,
     help="Disable torch.compile (for environments without CUDA headers).",
 )
+@click.option(
+    "--eigh-threshold",
+    default=None,
+    type=int,
+    help=(
+        "Override the K cutoff for GPU eigh in _psd_batch. K<=threshold stays "
+        "on GPU; K>threshold offloads to CPU LAPACK. Default is arch-based "
+        "(16 on sm_<9, 128 on sm_>=9). Bump (e.g. 64) on Volta/Turing/Ampere/"
+        "Ada when the CPU offload is the bottleneck (issue #22)."
+    ),
+)
 # Performance
 @click.option(
     "--batch-size",
@@ -478,6 +489,7 @@ def run(
     dtype,
     device,
     no_compile,
+    eigh_threshold,
     batch_size,
     sigma_override,
     cell_min,
@@ -535,6 +547,7 @@ def run(
         device=device,
         compile=not no_compile,
         class_df=class_df_dict,
+        eigh_threshold=eigh_threshold,
     )
     config_dict = config._asdict()
 
