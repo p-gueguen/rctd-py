@@ -50,6 +50,12 @@ class RCTD:
             _irwls._USE_COMPILE = False
             _likelihood._CALC_Q_USE_COMPILE = False
 
+        # Apply user-supplied GPU-eigh K cutoff override (issue #22).
+        if self.config.eigh_threshold is not None:
+            from rctd import _irwls
+
+            _irwls._EIGH_THRESHOLD_OVERRIDE = int(self.config.eigh_threshold)
+
         # Internal state
         self.is_normalized = False
         self.norm_profiles = None
