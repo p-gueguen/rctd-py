@@ -205,6 +205,59 @@ def test_psd_batch_cpu_retries_on_linalg_error(monkeypatch):
     assert state["calls"] >= 2  # initial + at least one jitter retry
 
 
+# ─── CPU eigh auto-thread-cap (issue #22) ───────────────────────────────
+
+
+def test_psd_batch_cpu_restores_thread_count():
+    """``_psd_batch`` caps intra-op threads to 1 around the CPU eigh call
+    (issue #22 — V100 reported 91× slowdown from OpenBLAS oversubscription)
+    and MUST restore the caller's previous thread count on the way out.
+    Both the happy path and the LinAlgError retry path must restore."""
+    K = 38  # smei's K (matches the V100 reproducer)
+    H = _make_psd_batch(N=8, K=K, seed=11)
+
+    prev = torch.get_num_threads()
+    try:
+        # Set a recognizable non-1 thread count; restore must put it back.
+        torch.set_num_threads(4)
+        assert torch.get_num_threads() == 4
+        _psd_batch(H)
+        assert torch.get_num_threads() == 4, (
+            "thread count not restored after happy-path eigh"
+        )
+    finally:
+        torch.set_num_threads(prev)
+
+
+def test_psd_batch_cpu_restores_thread_count_on_linalg_retry(monkeypatch):
+    """Even when the eigh call raises ``_LinAlgError`` and triggers the
+    jitter retry ladder, the caller's thread count must be restored."""
+    K = 38
+    H = _make_psd_batch(N=8, K=K, seed=13)
+
+    real_eigh = torch.linalg.eigh
+    state = {"calls": 0}
+
+    def flaky_eigh(M):
+        state["calls"] += 1
+        if state["calls"] == 1:
+            raise torch._C._LinAlgError("simulated syevd error code 99")
+        return real_eigh(M)
+
+    monkeypatch.setattr(torch.linalg, "eigh", flaky_eigh)
+
+    prev = torch.get_num_threads()
+    try:
+        torch.set_num_threads(8)
+        _psd_batch(H)
+        assert torch.get_num_threads() == 8, (
+            "thread count not restored after LinAlgError + jitter retry"
+        )
+        assert state["calls"] >= 2  # original + at least one retry
+    finally:
+        torch.set_num_threads(prev)
+
+
 # ─── Box-QP equivalence: eager vs JIT ───────────────────────────────────
 
 

@@ -372,25 +372,37 @@ def _psd_batch(H: torch.Tensor, epsilon: float = 1e-3) -> tuple[torch.Tensor, to
             H_cpu = H_cpu.clone()
             H_cpu[bad_mask] = epsilon * torch.eye(K, dtype=H_cpu.dtype)
 
+        # Cap intra-op threads to 1 around the eigh call (issue #22). On hosts
+        # with many CPU cores, default OpenBLAS thread count oversubscribes
+        # under batched syevd and caused a ~91× stall on V100 at K=38 (smei,
+        # 3086s → 33.8s with OMP_NUM_THREADS=1). torch.set_num_threads(1)
+        # routes through the same OMP layer OpenBLAS uses, so the effect is
+        # equivalent — confirmed locally: 1-thread eigh on (5000, 38, 38) is
+        # 64% faster than 32-thread on a 64-core host.
+        prev_threads = torch.get_num_threads()
+        torch.set_num_threads(1)
         try:
-            eigenvalues, eigenvectors = torch.linalg.eigh(H_cpu)
-        except torch._C._LinAlgError:
-            # Add a tiny diagonal jitter and retry. Jitter << epsilon clamp
-            # (1e-3), so well-conditioned batch elements are unaffected after
-            # the clamp below.
-            I_K = torch.eye(K, dtype=H_cpu.dtype)
-            for jitter in (1e-6, 1e-4):
-                try:
-                    eigenvalues, eigenvectors = torch.linalg.eigh(H_cpu + jitter * I_K)
-                    break
-                except torch._C._LinAlgError:
-                    continue
-            else:
-                # Last resort: replace the whole batch with epsilon*I. The IRWLS
-                # outer loop handles the resulting near-zero delta_w gracefully
-                # (same contract as the GPU NaN path above).
-                H_safe = (epsilon * I_K).expand_as(H_cpu).contiguous()
-                eigenvalues, eigenvectors = torch.linalg.eigh(H_safe)
+            try:
+                eigenvalues, eigenvectors = torch.linalg.eigh(H_cpu)
+            except torch._C._LinAlgError:
+                # Add a tiny diagonal jitter and retry. Jitter << epsilon clamp
+                # (1e-3), so well-conditioned batch elements are unaffected after
+                # the clamp below.
+                I_K = torch.eye(K, dtype=H_cpu.dtype)
+                for jitter in (1e-6, 1e-4):
+                    try:
+                        eigenvalues, eigenvectors = torch.linalg.eigh(H_cpu + jitter * I_K)
+                        break
+                    except torch._C._LinAlgError:
+                        continue
+                else:
+                    # Last resort: replace the whole batch with epsilon*I. The IRWLS
+                    # outer loop handles the resulting near-zero delta_w gracefully
+                    # (same contract as the GPU NaN path above).
+                    H_safe = (epsilon * I_K).expand_as(H_cpu).contiguous()
+                    eigenvalues, eigenvectors = torch.linalg.eigh(H_safe)
+        finally:
+            torch.set_num_threads(prev_threads)
 
         eigenvalues = torch.clamp(eigenvalues, min=epsilon)
         H_psd = eigenvectors @ torch.diag_embed(eigenvalues) @ eigenvectors.transpose(-1, -2)
