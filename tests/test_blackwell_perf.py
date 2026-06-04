@@ -222,9 +222,7 @@ def test_psd_batch_cpu_restores_thread_count():
         torch.set_num_threads(4)
         assert torch.get_num_threads() == 4
         _psd_batch(H)
-        assert torch.get_num_threads() == 4, (
-            "thread count not restored after happy-path eigh"
-        )
+        assert torch.get_num_threads() == 4, "thread count not restored after happy-path eigh"
     finally:
         torch.set_num_threads(prev)
 
