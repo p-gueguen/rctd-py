@@ -1,0 +1,16 @@
+# Run `pre-commit install` once after cloning to enable these hooks locally.
+# They mirror the GitHub Actions CI checks in .github/workflows/ci.yml so
+# format/lint failures are caught before push, not at PR review time.
+#
+# Ruff version is pinned to match the version pyproject.toml's [dev] extra
+# resolves to; bump both together when updating ruff.
+
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.6
+    hooks:
+      - id: ruff-format
+        files: ^(src|tests)/.*\.py$
+      - id: ruff-check
+        files: ^(src|tests)/.*\.py$
+        args: [--fix]
