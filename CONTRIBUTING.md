@@ -18,6 +18,14 @@ Using `uv`, this will automatically create a `.venv`, download strict dependenci
 uv pip install -e ".[dev]"
 ```
 
+3. **Install pre-commit hooks (recommended):**
+We use [pre-commit](https://pre-commit.com/) to mirror the CI lint/format checks locally so that `ruff format --check` failures are caught at commit time, not at PR review:
+```bash
+uv pip install pre-commit
+pre-commit install
+```
+Once installed, `ruff format` and `ruff check --fix` run automatically on every commit against `src/` and `tests/`. To run them manually across the whole tree (e.g. after rebasing): `pre-commit run --all-files`.
+
 ## Running Tests
 
 `rctd-py` heavily relies on `pytest` to guarantee mathematical correctness and exact equivalency against the R `spacexr` reference implementation.

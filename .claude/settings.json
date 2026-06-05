@@ -1,0 +1,15 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "FILE=$(jq -r '.tool_input.file_path // empty' 2>/dev/null); case \"$FILE\" in *.py) cd \"$CLAUDE_PROJECT_DIR\" && uv run --quiet ruff format \"$FILE\" >/dev/null 2>&1; uv run --quiet ruff check --fix \"$FILE\" >/dev/null 2>&1 ;; esac"
+          }
+        ]
+      }
+    ]
+  }
+}

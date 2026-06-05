@@ -52,6 +52,11 @@ src/rctd/data/*
 .vscode/
 .idea/
 
+# Claude Code: ship settings.json (shared hooks like ruff auto-format on edit),
+# ignore settings.local.json (per-user permission allow-lists).
+.claude/settings.local.json
+.claude/.nfs*
+
 # OS
 .DS_Store
 Thumbs.db
