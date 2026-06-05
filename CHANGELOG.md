@@ -3,14 +3,19 @@
 All notable changes to rctd-py are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.3.5] — 2026-06-03
+## [0.3.5] — 2026-06-05
 
 ### Fixed
-- **CPU-eigh thread oversubscription** (issue #22 follow-up, confirmed by @meisproject's V100 benchmark). `_psd_batch` now caps PyTorch's intra-op thread count to 1 around the CPU `torch.linalg.eigh` call and restores it on exit. On hosts with many CPU cores, default OpenBLAS thread count oversubscribed under batched `syevd`: smei reported Step 1 = 3086 s on Tesla V100 + 64 cores at K=38; manually setting `OMP/MKL/OPENBLAS_NUM_THREADS=1` brought it to 33.8 s (~91× speedup). The auto-cap now produces the bounded-threads behavior out of the box — no env vars required. Numerical output is bit-identical to v0.3.4. Local A/B at K=38, batch=5000 on a 128-core host: auto-cap is 31% faster per call than the v0.3.4 32-thread emulation; the IRWLS-loop compounding is what amplified that to ~91× on smei's setup.
+- **CPU-eigh thread oversubscription** (issue #22, reported by @meisproject). `_psd_batch` now caps PyTorch's intra-op thread count to 1 around the CPU `torch.linalg.eigh` call and restores the caller's previous count on exit. On hosts with many CPU cores, default OpenBLAS thread count oversubscribed under batched `syevd` — V100 + 64 cores at K=38 stalled at Step 1 = 3086 s in v0.3.4. The auto-cap now produces the bounded-threads behavior out of the box, no env vars required.
 
-  This obviates the workaround in v0.3.4's CHANGELOG ("`OMP_NUM_THREADS=1` recommended on pre-Hopper"); existing users who already set those env vars see no behavior change. Users on Hopper/Blackwell are unaffected — they stay on GPU eigh and never enter the CPU branch.
+  **Empirically confirmed on Tesla V100** (smei, [#22 comment](https://github.com/p-gueguen/rctd-py/issues/22#issuecomment-4621228332)): with the auto-cap on `main` and **no `OMP_NUM_THREADS` env var and no `--eigh-threshold` flag**, Step 1 = **27.4 s** (down from 3086 s in v0.3.4 with the same bare command — **~113× speedup**). Total doublet-mode wall time on smei's 6113-pixel × K=38 workload: 57.7 s, vs the original ~52 min.
 
-  Note: smei's data also disconfirmed bumping the per-arch K threshold default for sm_<9 — forcing GPU eigh at K=38 on Volta was ~4× *slower* than CPU eigh with bounded threads. The `--eigh-threshold` flag from v0.3.4 remains available as a diagnostic / power-user knob, but the default behavior is now correct on every arch we have data for (Volta + V100, Ada + L40S, Hopper, Blackwell).
+  Numerical output is bit-identical to v0.3.4 (existing K=78 atol=1e-9 equivalence test passes). Users on Hopper/Blackwell are unaffected — they stay on GPU eigh and never enter the CPU branch. Users who already set `OMP/MKL/OPENBLAS_NUM_THREADS=1` see no behavior change.
+
+  Note: smei's earlier A/B also disconfirmed bumping the per-arch K threshold default for `sm_<9` — forcing GPU eigh at K=38 on Volta was 4× *slower* (126.2 s) than CPU eigh with bounded threads (33.8 s). The `--eigh-threshold` flag from v0.3.4 remains as a diagnostic / power-user knob; the default behavior is now correct on every architecture we have empirical data for (Volta + V100, Ada + L40S, Hopper, Blackwell).
+
+### Internal
+- New `.pre-commit-config.yaml` mirroring the CI lint + format checks (`ruff-format` + `ruff-check --fix`, pinned to v0.15.6 matching the dev extra). Install once after cloning: `uv pip install pre-commit && pre-commit install`. CONTRIBUTING.md updated with the workflow.
 
 ## [0.3.4] — 2026-06-02
 
