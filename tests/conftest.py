@@ -69,6 +69,64 @@ def _make_synthetic_spatial(profiles, n_pixels=100, n_types=5, seed=123):
     return adata, true_weights
 
 
+def _make_multimodal_synthetic(n_genes=160, n_types=5, n_pixels=300, n_markers=4, seed=7):
+    """Synthetic RNA + protein data where two cell types are RNA-INDISTINGUISHABLE
+    (identical gene profiles) but SEPARABLE by a single protein marker.
+
+    The SAME ``true_weights`` drive both the Poisson RNA counts and the Gaussian
+    protein intensities, so a correct joint model can recover the split between the
+    two degenerate types while an RNA-only model cannot.
+
+    Returns a dict with normalized RNA ``profiles`` (G, K), ``counts`` (N, G),
+    ``nUMI`` (N,), ``protein`` (N, M) intensities, ``P_prot`` (M, K) profiles,
+    ``true_weights`` (N, K), ``cell_type_names`` and the indices of the two
+    RNA-degenerate types in ``degenerate_pair``.
+    """
+    rng = np.random.default_rng(seed)
+    cell_type_names = [f"Type_{i}" for i in range(n_types)]
+
+    # Distinct RNA marker blocks per type, then collapse Type_1 onto Type_0.
+    profiles = rng.exponential(0.001, size=(n_genes, n_types))
+    mpt = n_genes // n_types
+    for k in range(n_types):
+        profiles[k * mpt : (k + 1) * mpt, k] *= 10.0
+    profiles[:, 1] = profiles[:, 0]  # Type_1 is RNA-identical to Type_0 (no DE genes)
+    profiles = profiles / profiles.sum(axis=0, keepdims=True)
+
+    # Protein profiles (standardized units): marker 0 separates Type_0 (+) vs Type_1 (-);
+    # the other markers/types carry little protein signal.
+    P_prot = rng.standard_normal((n_markers, n_types)) * 0.1
+    P_prot[0, 0] = +3.0
+    P_prot[0, 1] = -3.0
+
+    true_weights = rng.dirichlet(np.ones(n_types) * 0.5, size=n_pixels).astype(np.float32)
+    nUMI = rng.integers(800, 4000, size=n_pixels).astype(np.float32)
+    counts = np.zeros((n_pixels, n_genes), dtype=np.float32)
+    for i in range(n_pixels):
+        counts[i] = rng.poisson((profiles @ true_weights[i]) * nUMI[i])
+
+    tau = 1.0  # standardized protein -> unit variance
+    protein = (true_weights @ P_prot.T) + rng.standard_normal((n_pixels, n_markers)) * tau
+    protein = protein.astype(np.float32)
+
+    return {
+        "profiles": profiles,
+        "counts": counts,
+        "nUMI": nUMI,
+        "protein": protein,
+        "P_prot": P_prot.astype(np.float64),
+        "inv_tau2": np.full(n_markers, 1.0 / tau**2, dtype=np.float64),
+        "true_weights": true_weights,
+        "cell_type_names": cell_type_names,
+        "degenerate_pair": (0, 1),
+    }
+
+
+@pytest.fixture
+def multimodal_synthetic_data():
+    return _make_multimodal_synthetic()
+
+
 _SPACEXR_BASE = "https://raw.githubusercontent.com/dmcable/spacexr/master/inst/extdata"
 
 

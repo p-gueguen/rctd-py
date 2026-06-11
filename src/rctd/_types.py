@@ -38,6 +38,22 @@ class RCTDConfig(NamedTuple):
     # bottleneck (issue #22 — K=38 on V100/L20). Ignored on CPU runs.
     eigh_threshold: int | None = None
 
+    # ── Multi-modal (protein) parameters ──────────────────────────────────
+    # An OPTIONAL second modality (e.g. protein immunofluorescence) added as a
+    # Gaussian/WLS likelihood block sharing the per-pixel cell-type weights.
+    # protein_weight is the master switch: 0.0 (default) => pure RNA, the path
+    # is byte-for-byte identical to the RNA-only solver. "auto" balances the
+    # protein gradient magnitude against RNA at init; a float sets lambda
+    # directly. See _protein.py and the protein blocks in _irwls.py.
+    protein_weight: float | str = 0.0  # lambda; 0.0 = RNA-only (default), "auto", or fixed float
+    protein_obsm_key: str = "protein"  # spatial.obsm key for the (N, M) intensity matrix
+    protein_norm: str = "arcsinh_robust"  # "arcsinh_robust" (default) | "clr"
+    protein_profile_source: str = "bootstrap"  # only "bootstrap" supported initially
+    protein_var_model: str = "wls_pooled"  # "wls_pooled" (1/tau_m) | "unit"
+    protein_arcsinh_cofactor: float = 5.0  # arcsinh cofactor for IF intensity
+    protein_singlet_purity: float = 0.8  # confident-singlet weight gate for the bootstrap
+    protein_tau_floor: float = 1e-3  # floor on per-marker tau to bound 1/tau^2
+
 
 def resolve_device(device: str = "auto") -> torch.device:
     """Resolve device string to torch.device."""

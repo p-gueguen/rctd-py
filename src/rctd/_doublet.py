@@ -6,7 +6,7 @@ import torch
 
 from rctd._full import run_full_mode
 from rctd._irwls import solve_irwls_batch
-from rctd._likelihood import calc_log_likelihood_batch
+from rctd._likelihood import calc_log_likelihood_batch, calc_protein_log_likelihood_batch
 from rctd._types import (
     SPOT_CLASS_DOUBLET_CERTAIN,
     SPOT_CLASS_DOUBLET_UNCERTAIN,
@@ -30,6 +30,11 @@ def run_doublet_mode(
     batch_size: int = 10000,
     device: str = "auto",
     pixel_mask: np.ndarray | None = None,
+    protein_profiles: np.ndarray | None = None,
+    protein_intensity: np.ndarray | None = None,
+    inv_tau2: np.ndarray | None = None,
+    protein_lambda: float = 0.0,
+    protein_mask: np.ndarray | None = None,
 ) -> DoubletResult:
     """Run doublet mode deconvolution.
 
@@ -88,6 +93,11 @@ def run_doublet_mode(
         x_vals=x_vals,
         batch_size=batch_size,
         device=str(device),
+        protein_profiles=protein_profiles,
+        protein_intensity=protein_intensity,
+        inv_tau2=inv_tau2,
+        protein_lambda=protein_lambda,
+        protein_mask=protein_mask,
     )
     W_full = full_res.weights  # (N, K)
     print(f"  [doublet] Step 1 done ({_time.time() - _t0:.1f}s)")
@@ -126,6 +136,26 @@ def run_doublet_mode(
     SQ_gpu = torch.tensor(sq_mat, device=device)
     X_gpu = torch.tensor(x_vals, device=device)
 
+    # Optional protein modality: shared (M, K) profiles, per-pixel (N, M) intensity.
+    use_protein = protein_profiles is not None and protein_lambda != 0.0
+    P_prot_gpu = Yprot_gpu = invtau_gpu = protmask_gpu = None
+    if use_protein:
+        P_prot_gpu = torch.tensor(protein_profiles, device=device, dtype=P_gpu.dtype)  # (M, K)
+        Yprot_gpu = torch.tensor(protein_intensity, device=device, dtype=P_gpu.dtype)  # (N, M)
+        invtau_gpu = torch.tensor(inv_tau2, device=device, dtype=P_gpu.dtype)  # (M,)
+        if protein_mask is not None:
+            protmask_gpu = torch.tensor(protein_mask, device=device, dtype=torch.bool)
+
+    def _gather_protein(type_cols, pix_idx):
+        """Gather (P_prot_sub (bs,M,ksub), Y_prot (bs,M), mask (bs,) or None) for a
+        candidate type subset, mirroring the RNA profile gather column order."""
+        pix_t = torch.as_tensor(pix_idx, dtype=torch.long, device=device)
+        cols = [P_prot_gpu[:, t].T for t in type_cols]  # each (bs, M)
+        P_prot_sub = torch.stack(cols, dim=-1)  # (bs, M, ksub)
+        Yp = Yprot_gpu[pix_t]
+        pm = protmask_gpu[pix_t] if protmask_gpu is not None else None
+        return P_prot_sub, Yp, pm
+
     if triples:
         triples_arr = np.array(triples, dtype=np.int32)
         M_total = len(triples_arr)
@@ -155,6 +185,10 @@ def run_doublet_mode(
 
             S_pair = nUMI_tr[:, None, None] * P_pair
 
+            P_prot_pair = Yp_tr = pm_tr = None
+            if use_protein:
+                P_prot_pair, Yp_tr, pm_tr = _gather_protein([t1_t, t2_t], pix_idx)
+
             weights_batch, conv_batch = solve_irwls_batch(
                 S_batch=S_pair,
                 Y_batch=B_tr,
@@ -166,6 +200,11 @@ def run_doublet_mode(
                 min_change=0.001,
                 constrain=False,
                 bulk_mode=False,
+                P_prot_batch=P_prot_pair,
+                Y_prot_batch=Yp_tr,
+                inv_tau2=invtau_gpu,
+                lam=protein_lambda,
+                prot_mask=pm_tr,
             )
 
             # Score logic: R's calc_log_l_vec returns positive NLL (lower=better)
@@ -173,6 +212,11 @@ def run_doublet_mode(
             expected_tr = torch.clamp(expected_tr, min=1e-4)
 
             scores_batch = calc_log_likelihood_batch(B_tr, expected_tr, Q_gpu, SQ_gpu, X_gpu)
+            if use_protein:
+                mu_prot = torch.sum(P_prot_pair * weights_batch[:, None, :], dim=-1)  # (bs, M)
+                scores_batch = scores_batch + protein_lambda * calc_protein_log_likelihood_batch(
+                    Yp_tr, mu_prot, invtau_gpu, pm_tr
+                )
 
             all_weights_t.append(weights_batch)
             all_scores_t.append(scores_batch)
@@ -214,6 +258,10 @@ def run_doublet_mode(
             P_sg = P_gpu[:, t_t].T.unsqueeze(-1)
             S_sg = nUMI_sg[:, None, None] * P_sg
 
+            P_prot_sg = Yp_sg = pm_sg = None
+            if use_protein:
+                P_prot_sg, Yp_sg, pm_sg = _gather_protein([t_t], pix_idx)
+
             weights_batch, conv_batch = solve_irwls_batch(
                 S_batch=S_sg,
                 Y_batch=B_sg,
@@ -225,12 +273,22 @@ def run_doublet_mode(
                 min_change=0.001,
                 constrain=False,
                 bulk_mode=False,
+                P_prot_batch=P_prot_sg,
+                Y_prot_batch=Yp_sg,
+                inv_tau2=invtau_gpu,
+                lam=protein_lambda,
+                prot_mask=pm_sg,
             )
 
             expected_sg = torch.sum(S_sg * weights_batch[:, None, :], dim=-1)
             expected_sg = torch.clamp(expected_sg, min=1e-4)
 
             scores_batch = calc_log_likelihood_batch(B_sg, expected_sg, Q_gpu, SQ_gpu, X_gpu)
+            if use_protein:
+                mu_prot = torch.sum(P_prot_sg * weights_batch[:, None, :], dim=-1)  # (bs, M)
+                scores_batch = scores_batch + protein_lambda * calc_protein_log_likelihood_batch(
+                    Yp_sg, mu_prot, invtau_gpu, pm_sg
+                )
             all_sing_scores_t.append(scores_batch)
 
         # Transfer all results to CPU at once
@@ -419,6 +477,10 @@ def run_doublet_mode(
         P_pair = torch.stack([P1, P2], dim=-1)  # (bs, G, 2)
         S_pair = nUMI_f[:, None, None] * P_pair
 
+        P_prot_pair = Yp_f = pm_f = None
+        if use_protein:
+            P_prot_pair, Yp_f, pm_f = _gather_protein([ft1_t, ft2_t], pix_idx)
+
         w_final, _ = solve_irwls_batch(
             S_batch=S_pair,
             Y_batch=B_f,
@@ -430,6 +492,11 @@ def run_doublet_mode(
             min_change=0.001,
             constrain=False,
             bulk_mode=False,
+            P_prot_batch=P_prot_pair,
+            Y_prot_batch=Yp_f,
+            inv_tau2=invtau_gpu,
+            lam=protein_lambda,
+            prot_mask=pm_f,
         )
 
         all_final_weights_t.append(w_final)
