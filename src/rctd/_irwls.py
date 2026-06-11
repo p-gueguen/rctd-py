@@ -580,6 +580,11 @@ def solve_irwls_batch(
     step_size: float = 0.3,
     constrain: bool = True,
     bulk_mode: bool = False,
+    P_prot_batch: torch.Tensor | None = None,
+    Y_prot_batch: torch.Tensor | None = None,
+    inv_tau2: torch.Tensor | None = None,
+    lam: float = 0.0,
+    prot_mask: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Solve IRWLS for a batch of pixels, fully vectorized.
 
@@ -595,6 +600,12 @@ def solve_irwls_batch(
         step_size: damping factor
         constrain: project weights onto simplex
         bulk_mode: use Gaussian likelihood
+        P_prot_batch: (N, M, K) protein profiles, SAME K subset/order as S_batch
+            (NOT scaled by nUMI). None or lam == 0 => RNA-only, byte-identical.
+        Y_prot_batch: (N, M) standardized observed protein intensities.
+        inv_tau2: (M,) per-marker precision 1 / tau_m^2.
+        lam: protein balance weight (lambda). 0.0 => RNA-only.
+        prot_mask: (N,) bool, pixels WITH protein (others fall back to RNA-only).
 
     Returns:
         (weights, converged): (N, K) and (N,) bool arrays
@@ -617,6 +628,15 @@ def solve_irwls_batch(
     # Threshold per pixel: max(1e-4, nUMI * 1e-7)
     threshold = torch.clamp(nUMI_batch * 1e-7, min=1e-4)  # (N,)
 
+    # ── Protein (Gaussian/WLS) block — skipped entirely when off ──
+    # hess_prot[n] = lam * P_prot[n]^T Sigma^-1 P_prot[n] is constant in w.
+    use_protein = (P_prot_batch is not None) and (lam != 0.0)
+    if use_protein:
+        # hess_prot = lam * P_prot^T diag(inv_tau2) P_prot via bmm
+        hess_prot = lam * torch.bmm(
+            P_prot_batch.transpose(1, 2) * inv_tau2[None, None, :], P_prot_batch
+        )  # (N, K, K)
+
     for it in range(max_iter):
         # Only process non-converged pixels
         active = ~converged
@@ -632,6 +652,21 @@ def solve_irwls_batch(
         grad, hess = _get_derivatives_batch(
             S_batch, Y_batch, prediction, Q_mat, SQ_mat, x_vals, bulk_mode
         )
+
+        # Protein WLS contribution (no nUMI scaling; mu = P_prot @ w)
+        if use_protein:
+            mu_prot = torch.bmm(P_prot_batch, solution.unsqueeze(2)).squeeze(2)  # (N, M)
+            wresid = (Y_prot_batch - mu_prot) * inv_tau2[None, :]
+            grad_prot = -lam * torch.bmm(P_prot_batch.transpose(1, 2), wresid.unsqueeze(2)).squeeze(
+                2
+            )  # (N, K)
+            if prot_mask is not None:
+                m = prot_mask.unsqueeze(1)
+                grad = grad + torch.where(m, grad_prot, torch.zeros_like(grad_prot))
+                hess = hess + m.unsqueeze(2).to(hess.dtype) * hess_prot
+            else:
+                grad = grad + grad_prot
+                hess = hess + hess_prot
 
         hess, norm_factor = _psd_batch(hess)
         norm_factor = torch.clamp(norm_factor, min=1e-10)
@@ -671,6 +706,11 @@ def solve_irwls_batch_shared(
     constrain: bool = True,
     bulk_mode: bool = False,
     _calc_q_fn=None,
+    P_prot: torch.Tensor | None = None,
+    Y_prot_batch: torch.Tensor | None = None,
+    inv_tau2: torch.Tensor | None = None,
+    lam: float = 0.0,
+    prot_mask: torch.Tensor | None = None,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Optimized IRWLS for shared reference profiles.
 
@@ -688,6 +728,13 @@ def solve_irwls_batch_shared(
         step_size: damping factor
         constrain: project weights onto simplex
         bulk_mode: use Gaussian likelihood
+        P_prot: (M, K) shared standardized protein profiles, columns aligned to P.
+            When None or lam == 0, the protein block is skipped and the solve is
+            byte-for-byte identical to the RNA-only path.
+        Y_prot_batch: (N, M) standardized observed protein intensities.
+        inv_tau2: (M,) per-marker precision 1 / tau_m^2.
+        lam: protein balance weight (lambda). 0.0 => RNA-only.
+        prot_mask: (N,) bool, pixels WITH protein (others fall back to RNA-only).
 
     Returns:
         (weights, converged): (N, K) and (N,) bool arrays
@@ -720,12 +767,24 @@ def solve_irwls_batch_shared(
 
     threshold = torch.clamp(nUMI_batch * 1e-7, min=1e-4)
 
+    # ── Protein (Gaussian/WLS) block — skipped entirely when off ──
+    # hess_prot = lam * P_prot^T Sigma^-1 P_prot is CONSTANT in w, so precompute
+    # it once. When use_protein is False, no protein tensor is touched and the
+    # RNA-only arithmetic below is byte-for-byte unchanged.
+    use_protein = (P_prot is not None) and (lam != 0.0)
+    if use_protein:
+        P_prot_T = P_prot.T.contiguous()  # (K, M)
+        hess_prot = lam * ((P_prot_T * inv_tau2[None, :]) @ P_prot)  # (K, K), shared
+
     # Active pixel state — start with all pixels
     active_idx = torch.arange(N, device=device)
     Y_act = Y_batch
     nUMI_act = nUMI_batch
     thresh_act = threshold
     w_act = w.clone()
+    if use_protein:
+        Y_prot_act = Y_prot_batch
+        prot_mask_act = prot_mask  # may be None => all pixels have protein
 
     for it in range(max_iter):
         n_act = active_idx.shape[0]
@@ -760,6 +819,20 @@ def solve_irwls_batch_shared(
         hess = (d2_w @ P_outer).reshape(n_act, K, K)
         del d2_w, d1_vec, d2_vec, prediction  # free large intermediates
 
+        # ── Protein WLS contribution (shared P_prot, no nUMI scaling) ──
+        # grad_prot = -lam * P_prot^T Sigma^-1 (Y_prot - P_prot w); hess_prot const.
+        if use_protein:
+            mu_prot = solution @ P_prot_T  # (n_act, M)
+            wresid = (Y_prot_act - mu_prot) * inv_tau2[None, :]  # Sigma^-1 (Y - mu)
+            grad_prot = -lam * (wresid @ P_prot)  # (n_act, K)
+            if prot_mask_act is not None:
+                m = prot_mask_act.unsqueeze(1)  # (n_act, 1)
+                grad = grad + torch.where(m, grad_prot, torch.zeros_like(grad_prot))
+                hess = hess + m.unsqueeze(2).to(hess.dtype) * hess_prot.unsqueeze(0)
+            else:
+                grad = grad + grad_prot
+                hess = hess + hess_prot.unsqueeze(0)  # broadcast (1, K, K)
+
         hess, norm_factor = _psd_batch(hess)
         norm_factor = torch.clamp(norm_factor, min=1e-10)
 
@@ -790,5 +863,9 @@ def solve_irwls_batch_shared(
             Y_act = Y_act[still_active]
             nUMI_act = nUMI_act[still_active]
             thresh_act = thresh_act[still_active]
+            if use_protein:
+                Y_prot_act = Y_prot_act[still_active]
+                if prot_mask_act is not None:
+                    prot_mask_act = prot_mask_act[still_active]
 
     return w, converged

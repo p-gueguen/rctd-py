@@ -4,6 +4,7 @@ import json
 
 import anndata
 import numpy as np
+import pandas as pd
 import pytest
 from click.testing import CliRunner
 
@@ -384,3 +385,70 @@ def test_run_class_df_missing_columns_errors(h5ad_pair_for_run, tmp_path):
     )
     assert result.exit_code != 0
     assert "cell_type" in result.output and "class" in result.output
+
+
+@pytest.mark.protein
+def test_run_with_protein_csv(h5ad_pair, tmp_path):
+    """rctd run --protein-csv fuses protein and records provenance in uns."""
+    sp_path, ref_path = h5ad_pair
+    sp = anndata.read_h5ad(sp_path)
+    rng = np.random.default_rng(7)
+    markers = [f"prot_{m}" for m in range(4)]
+    prot = pd.DataFrame(rng.standard_normal((sp.n_obs, 4)), index=sp.obs_names, columns=markers)
+    csv_path = tmp_path / "protein.csv"
+    prot.to_csv(csv_path)
+
+    out_path = tmp_path / "out_protein.h5ad"
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "run",
+            str(sp_path),
+            str(ref_path),
+            "--mode",
+            "doublet",
+            "--output",
+            str(out_path),
+            "--device",
+            "cpu",
+            "--no-compile",
+            "--protein-csv",
+            str(csv_path),
+            "--protein-weight",
+            "1.0",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    out = anndata.read_h5ad(out_path)
+    assert "rctd_weights" in out.obsm
+    assert out.uns["rctd_protein_weight"] == 1.0
+    assert list(out.uns["rctd_protein_feature_names"]) == markers
+
+
+@pytest.mark.protein
+def test_run_protein_weight_zero_is_rna_only(h5ad_pair, tmp_path):
+    """--protein-weight 0 leaves no protein provenance (RNA-only path)."""
+    sp_path, ref_path = h5ad_pair
+    out_path = tmp_path / "out_rna.h5ad"
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "run",
+            str(sp_path),
+            str(ref_path),
+            "--mode",
+            "doublet",
+            "--output",
+            str(out_path),
+            "--device",
+            "cpu",
+            "--no-compile",
+            "--protein-weight",
+            "0.0",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    out = anndata.read_h5ad(out_path)
+    assert "rctd_protein_weight" not in out.uns

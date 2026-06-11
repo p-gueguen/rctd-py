@@ -395,3 +395,39 @@ def calc_log_likelihood_batch(
     N, G = Y.shape
     d0, _, _ = calc_q_all(Y.reshape(-1), lam.reshape(-1), Q_mat, SQ_mat, x_vals, K_val)
     return -d0.reshape(N, G).sum(dim=1)
+
+
+def calc_protein_log_likelihood_batch(
+    Y_prot: torch.Tensor,
+    mu_prot: torch.Tensor,
+    inv_tau2: torch.Tensor,
+    prot_mask: torch.Tensor | None = None,
+) -> torch.Tensor:
+    """Gaussian / weighted-least-squares negative log-likelihood for the protein
+    modality, batched over pixels.
+
+    ``NLL_n = 0.5 * sum_m inv_tau2[m] * (Y_prot[n, m] - mu_prot[n, m]) ** 2``
+
+    The additive normalization constant ``0.5 * sum_m log(2*pi*tau_m^2)`` is
+    OMITTED: it is constant across all cell-type hypotheses for a pixel and
+    cancels in every score comparison (singlet-vs-pair, multi forward-selection
+    delta). Dropping it keeps the protein term on the same "sum of per-feature
+    deviances" footing as the RNA path and lets a missing-protein pixel return
+    exactly 0.0 (so it is RNA-only, preserving the lambda=0 guarantee).
+
+    Args:
+        Y_prot: (N, M) standardized observed protein intensities.
+        mu_prot: (N, M) predicted intensities = (P_prot_sub @ w) per pixel.
+        inv_tau2: (M,) per-marker precision 1 / tau_m^2 (diagonal of Sigma^-1).
+        prot_mask: (N,) bool — pixels WITH protein. Pixels that are False (or NaN
+            rows) contribute 0.0. If None, all pixels are treated as having protein.
+
+    Returns:
+        (N,) protein NLL per pixel (lower = better fit). NOT scaled by lambda;
+        callers apply the lambda weight when summing with the RNA score.
+    """
+    resid = Y_prot - mu_prot
+    nll = 0.5 * (resid * resid * inv_tau2[None, :]).sum(dim=1)
+    if prot_mask is not None:
+        nll = torch.where(prot_mask, nll, torch.zeros_like(nll))
+    return nll

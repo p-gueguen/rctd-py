@@ -468,6 +468,56 @@ def _write_results_to_adata(
         "higher-level classes for hierarchical fallback. See README for usage."
     ),
 )
+# Multi-modal (protein) parameters
+@click.option(
+    "--protein-csv",
+    default=None,
+    type=click.Path(exists=True, dir_okay=False),
+    help=(
+        "Barcode-indexed CSV of protein (e.g. IF) marker intensities (first column = "
+        "barcode, remaining columns = markers). Reindexed to the spatial obs_names and "
+        "stored in obsm; enables the joint RNA+protein deconvolution."
+    ),
+)
+@click.option(
+    "--protein-weight",
+    default="0.0",
+    show_default=True,
+    help="Protein balance weight lambda: 0.0 = RNA-only, 'auto' = per-feature balance, or a float.",
+)
+@click.option(
+    "--protein-norm",
+    type=click.Choice(["arcsinh_robust", "clr"]),
+    default="arcsinh_robust",
+    show_default=True,
+    help="Protein normalization (per-marker arcsinh+robust-z, or per-cell CLR).",
+)
+@click.option(
+    "--protein-var-model",
+    type=click.Choice(["wls_pooled", "unit"]),
+    default="wls_pooled",
+    show_default=True,
+    help="Protein WLS weights: pooled within-type residual variance, or unit variance.",
+)
+@click.option("--protein-obsm-key", default="protein", show_default=True)
+@click.option(
+    "--protein-profile-source",
+    type=click.Choice(["bootstrap", "curated"]),
+    default="bootstrap",
+    show_default=True,
+    help="Per-type protein profile: bootstrap from RNA-confident singlets, or curated gates.",
+)
+@click.option(
+    "--protein-signatures",
+    default=None,
+    type=click.Path(exists=True, dir_okay=False),
+    help=(
+        "JSON of curated signed gates {cell_type: {positive:[markers], negative:[markers]}}; "
+        "overrides those types' profiles (negative markers let protein reject contaminants, e.g. "
+        "NK CD3E-/CD8A-). Pair with a strong --protein-weight (e.g. 4) to override RNA."
+    ),
+)
+@click.option("--protein-signature-magnitude", default=1.5, show_default=True, type=float)
 def run(
     spatial,
     reference,
@@ -496,6 +546,14 @@ def run(
     n_max_cells,
     min_umi_ref,
     class_df_path,
+    protein_csv,
+    protein_weight,
+    protein_norm,
+    protein_var_model,
+    protein_obsm_key,
+    protein_profile_source,
+    protein_signatures,
+    protein_signature_magnitude,
 ):
     """Run RCTD deconvolution on spatial transcriptomics data."""
     import contextlib
@@ -531,6 +589,17 @@ def run(
             )
         class_df_dict = dict(zip(df["cell_type"], df["class"]))
 
+    # Parse protein lambda: "auto" stays a string; everything else is a float.
+    protein_weight_val = (
+        "auto" if str(protein_weight).strip().lower() == "auto" else float(protein_weight)
+    )
+    # Curated signed gates from a JSON {cell_type: {positive:[...], negative:[...]}}.
+    protein_signatures_dict = None
+    if protein_signatures is not None:
+        import json as _json
+
+        protein_signatures_dict = _json.loads(open(protein_signatures).read())
+
     # Build config
     config = RCTDConfig(
         gene_cutoff=gene_cutoff,
@@ -548,6 +617,13 @@ def run(
         compile=not no_compile,
         class_df=class_df_dict,
         eigh_threshold=eigh_threshold,
+        protein_weight=protein_weight_val,
+        protein_obsm_key=protein_obsm_key,
+        protein_norm=protein_norm,
+        protein_var_model=protein_var_model,
+        protein_profile_source=protein_profile_source,
+        protein_signatures=protein_signatures_dict,
+        protein_signature_magnitude=protein_signature_magnitude,
     )
     config_dict = config._asdict()
 
@@ -565,6 +641,21 @@ def run(
             if not quiet:
                 click.echo("Loading spatial data...", err=True)
             spatial_adata = anndata.read_h5ad(spatial)
+            # Optional protein CSV -> obsm, aligned to spatial barcodes.
+            if protein_csv is not None:
+                import pandas as pd
+
+                prot_df = pd.read_csv(protein_csv, index_col=0)
+                aligned = prot_df.reindex(spatial_adata.obs_names)
+                n_missing = int(aligned.isna().all(axis=1).sum())
+                if n_missing:
+                    click.echo(
+                        f"  {n_missing}/{spatial_adata.n_obs} cells lack protein "
+                        "(will run RNA-only for those).",
+                        err=True,
+                    )
+                spatial_adata.obsm[protein_obsm_key] = aligned
+                spatial_adata.uns["protein_feature_names"] = list(prot_df.columns)
             if not quiet:
                 click.echo("Loading reference...", err=True)
             ref_adata = anndata.read_h5ad(reference)
@@ -585,6 +676,12 @@ def run(
             n_pixels_filtered = int(rctd_obj._pixel_mask.sum())
             n_genes_common = len(rctd_obj.common_genes)
 
+            # Resolve protein modality (normalize, bootstrap profiles, lambda).
+            protein_kwargs = rctd_obj.prepare_protein()
+            if protein_kwargs and mode == "multi":
+                print("Warning: protein not wired into multi mode; running RNA-only multi.")
+                protein_kwargs = {}
+
             print(f"Running in {mode} mode...")
 
             kwargs = {
@@ -601,9 +698,9 @@ def run(
             }
 
             if mode == "full":
-                result = run_full_mode(**kwargs)
+                result = run_full_mode(**kwargs, **protein_kwargs)
             elif mode == "doublet":
-                result = run_doublet_mode(**kwargs, config=config)
+                result = run_doublet_mode(**kwargs, **protein_kwargs, config=config)
             elif mode == "multi":
                 result = run_multi_mode(**kwargs, config=config)
 
@@ -619,6 +716,13 @@ def run(
                 cell_type_names,
                 __version__,
             )
+            # Protein provenance (only when protein was actually fused).
+            if protein_kwargs and ref_obj.protein_profiles is not None:
+                out_adata.uns["rctd_protein_weight"] = float(rctd_obj.protein_lambda)
+                out_adata.uns["rctd_protein_norm"] = config.protein_norm
+                out_adata.uns["rctd_protein_feature_names"] = ref_obj.protein_feature_names
+                out_adata.uns["rctd_protein_profile"] = ref_obj.protein_profiles
+                out_adata.uns["rctd_protein_tau"] = ref_obj.protein_tau
             out_adata.write_h5ad(output)
             print(f"Results written to {output}")
 

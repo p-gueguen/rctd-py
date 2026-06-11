@@ -2,6 +2,12 @@ from rctd._doublet import run_doublet_mode
 from rctd._full import run_full_mode
 from rctd._multi import run_multi_mode
 from rctd._normalize import fit_bulk
+from rctd._protein import (
+    bootstrap_protein_profiles,
+    build_signed_profile,
+    normalize_protein,
+    scgate_signatures,
+)
 from rctd._rctd import RCTD, run_rctd
 from rctd._reference import Reference
 from rctd._sigma import choose_sigma
@@ -32,4 +38,8 @@ __all__ = [
     "run_doublet_mode",
     "run_multi_mode",
     "SPOT_CLASS_NAMES",
+    "normalize_protein",
+    "bootstrap_protein_profiles",
+    "build_signed_profile",
+    "scgate_signatures",
 ]

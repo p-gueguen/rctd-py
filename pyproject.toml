@@ -59,6 +59,7 @@ addopts = "-m 'not performance'"
 markers = [
     "slow: R concordance tests (downloads vignette data from GitHub)",
     "performance: Runtime and memory regression tests",
+    "protein: multi-modal (RNA + protein IF) tests",
 ]
 
 [tool.ruff]

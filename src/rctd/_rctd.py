@@ -13,6 +13,7 @@ from rctd._normalize import fit_bulk
 from rctd._reference import Reference
 from rctd._sigma import choose_sigma
 from rctd._types import (
+    SPOT_CLASS_SINGLET,
     DoubletResult,
     FullResult,
     MultiResult,
@@ -20,6 +21,14 @@ from rctd._types import (
     auto_batch_size,
     resolve_device,
 )
+
+
+def _protein_enabled(config: RCTDConfig) -> bool:
+    """True when the protein modality should be activated for this config."""
+    pw = config.protein_weight
+    if isinstance(pw, str):
+        return pw == "auto"
+    return float(pw) != 0.0
 
 
 class RCTD:
@@ -111,6 +120,31 @@ class RCTD:
             counts_sub = counts_sub.toarray()
         self.counts = np.array(counts_sub, dtype=np.float32)
 
+        # ── Optional protein modality: read (N, M) intensity from obsm, aligned to
+        # the SAME pixels (umi_mask) as the counts. It is narrowed again by the
+        # counts_MIN filter in fit_platform_effects so it stays row-aligned to
+        # self.counts / self.nUMI / self._pixel_mask. Skipped when protein is off.
+        self._protein_raw = None
+        self._protein_feature_names = None
+        if _protein_enabled(self.config) and self.config.protein_obsm_key in self.spatial.obsm:
+            prot = self.spatial.obsm[self.config.protein_obsm_key]
+            names = None
+            try:
+                import pandas as pd
+
+                if isinstance(prot, pd.DataFrame):
+                    names = list(prot.columns)
+                    prot = prot.values
+            except Exception:
+                pass
+            prot = np.asarray(prot, dtype=np.float64)
+            if names is None:
+                names = self.spatial.uns.get("protein_feature_names")
+            self._protein_raw = prot[np.where(umi_mask)[0]]
+            self._protein_feature_names = (
+                list(names) if names is not None else [f"protein_{i}" for i in range(prot.shape[1])]
+            )
+
         # Restrict reference profiles to common genes
         self.base_profiles = self.reference.get_profiles_for_genes(self.common_genes)
 
@@ -193,6 +227,8 @@ class RCTD:
                 self.counts = self.counts[counts_mask]
                 self.nUMI = self.nUMI[counts_mask]
                 bulk_counts = bulk_counts[counts_mask]
+                if self._protein_raw is not None:
+                    self._protein_raw = self._protein_raw[counts_mask]
                 # Update _pixel_mask: narrow the True entries
                 true_indices = np.where(self._pixel_mask)[0]
                 self._pixel_mask[true_indices[~counts_mask]] = False
@@ -287,6 +323,163 @@ class RCTD:
 
         self.is_normalized = True
 
+    def prepare_protein(self) -> dict:
+        """Normalize protein, bootstrap per-type profiles from an RNA-only pass,
+        and resolve the lambda balance weight.
+
+        Returns a kwargs dict (``protein_profiles``, ``protein_intensity``,
+        ``inv_tau2``, ``protein_lambda``, ``protein_mask``) to splat into the mode
+        runners, or ``{}`` when the protein modality is off — in which case the
+        downstream solve is byte-for-byte the RNA-only path.
+        """
+        self.protein_lambda = 0.0
+        if not _protein_enabled(self.config) or getattr(self, "_protein_raw", None) is None:
+            return {}
+
+        from rctd._protein import (
+            bootstrap_protein_profiles,
+            build_signed_profile,
+            normalize_protein,
+        )
+
+        cfg = self.config
+        if cfg.protein_profile_source not in ("bootstrap", "curated"):
+            raise ValueError(f"unsupported protein_profile_source: {cfg.protein_profile_source!r}")
+
+        P_std, _tau_norm, valid = normalize_protein(
+            self._protein_raw,
+            method=cfg.protein_norm,
+            cofactor=cfg.protein_arcsinh_cofactor,
+        )
+        M = P_std.shape[1]
+        K = self.norm_profiles.shape[1]
+        tau = np.ones(M)
+        n_boot = 0
+
+        if cfg.protein_profile_source == "bootstrap":
+            # RNA-only doublet pass (protein OFF) to label confident singlets.
+            boot = run_doublet_mode(
+                spatial_counts=self.counts,
+                spatial_numi=self.nUMI,
+                norm_profiles=self.norm_profiles,
+                cell_type_names=self.reference.cell_type_names,
+                q_mat=self.q_mat,
+                sq_mat=self.sq_mat,
+                x_vals=self.x_vals,
+                config=cfg,
+                batch_size=10000,
+                device=str(resolve_device(cfg.device)),
+            )
+            wn = boot.weights / np.maximum(boot.weights.sum(axis=1, keepdims=True), 1e-10)
+            first_w = wn[np.arange(len(wn)), boot.first_type]
+            confident = (
+                (boot.spot_class == SPOT_CLASS_SINGLET)
+                & (first_w > cfg.protein_singlet_purity)
+                & valid
+            )
+            singlet_idx = np.where(confident, boot.first_type, -1)
+            P_prot, tau, n_used = bootstrap_protein_profiles(P_std, singlet_idx, K)
+            n_boot = int((n_used >= 25).sum())
+        else:  # "curated": no bootstrap; uncurated types stay neutral (zero)
+            if not cfg.protein_signatures:
+                raise ValueError(
+                    "protein_profile_source='curated' requires config.protein_signatures"
+                )
+            P_prot = np.zeros((M, K), dtype=np.float64)
+
+        # Curated signed override: replace listed types' columns with curated +/- gates.
+        # Hybrid with "bootstrap" source (bootstrap the rest); full profile with "curated".
+        n_curated = 0
+        if cfg.protein_signatures:
+            signed, cmask = build_signed_profile(
+                self.reference.cell_type_names,
+                self._protein_feature_names,
+                cfg.protein_signatures,
+                magnitude=cfg.protein_signature_magnitude,
+            )
+            P_prot[:, cmask] = signed[:, cmask]
+            n_curated = int(cmask.sum())
+
+        self.reference.protein_profiles = P_prot
+        self.reference.protein_tau = tau
+        self.reference.protein_feature_names = self._protein_feature_names
+
+        if cfg.protein_var_model == "unit":
+            inv_tau2 = np.ones(M)
+        else:
+            inv_tau2 = 1.0 / np.maximum(tau, cfg.protein_tau_floor) ** 2
+
+        if isinstance(cfg.protein_weight, str):  # "auto"
+            lam = self._estimate_protein_lambda(P_std, P_prot, inv_tau2, valid)
+        else:
+            lam = float(cfg.protein_weight)
+        self.protein_lambda = lam
+
+        print(
+            f"Protein modality: M={M} markers, source={cfg.protein_profile_source}, "
+            f"lambda={lam:.4g}, bootstrap-profiled={n_boot}/{K}, curated={n_curated}/{K}"
+        )
+
+        target_dtype = self.norm_profiles.dtype
+        return dict(
+            protein_profiles=P_prot.astype(target_dtype),
+            protein_intensity=P_std.astype(target_dtype),
+            inv_tau2=inv_tau2.astype(target_dtype),
+            protein_lambda=lam,
+            protein_mask=valid,
+        )
+
+    def _estimate_protein_lambda(self, P_std, P_prot, inv_tau2, valid, max_pixels=2000):
+        """Auto-balance lambda so the protein and RNA modalities contribute
+        comparably PER FEATURE at the uniform init w=1/K.
+
+        Matching raw gradient norms would over-weight protein, because the RNA
+        gradient sums coherently over hundreds of genes while protein has only a
+        handful of markers (||grad|| scales ~linearly with feature count). We
+        therefore divide each modality's median ||grad|| by its feature count, so
+        one protein marker carries ~the influence of one gene. This robustly lands
+        in the O(1) regime that the synthetic recovery sweep found optimal,
+        independent of G and M.
+        """
+        from rctd._likelihood import calc_q_all
+
+        idx = np.where(valid)[0]
+        if len(idx) == 0:
+            return 0.0
+        if len(idx) > max_pixels:
+            rng = np.random.default_rng(0)
+            idx = np.sort(rng.choice(idx, max_pixels, replace=False))
+
+        device = resolve_device(self.config.device)
+        P = torch.tensor(self.norm_profiles, device=device)
+        G, K = P.shape
+        Y = torch.tensor(self.counts[idx], device=device, dtype=P.dtype)
+        nUMI = torch.tensor(self.nUMI[idx], device=device, dtype=P.dtype)
+        Q = torch.tensor(self.q_mat, device=device, dtype=P.dtype)
+        SQ = torch.tensor(self.sq_mat, device=device, dtype=P.dtype)
+        X = torch.tensor(self.x_vals, device=device, dtype=P.dtype)
+
+        w0 = torch.full((K,), 1.0 / K, device=device, dtype=P.dtype)
+        pred = torch.clamp(torch.abs(nUMI[:, None] * (w0 @ P.T)), min=1e-4)
+        kval = Q.shape[0] - 3
+        _, d1, _ = calc_q_all(torch.clamp(Y, max=kval).reshape(-1), pred.reshape(-1), Q, SQ, X)
+        grad_rna = -((d1.reshape(len(idx), G) * nUMI[:, None]) @ P)
+        rna_norm = torch.linalg.norm(grad_rna, dim=1)
+
+        Pp = torch.tensor(P_prot, device=device, dtype=P.dtype)
+        Yp = torch.tensor(P_std[idx], device=device, dtype=P.dtype)
+        it2 = torch.tensor(inv_tau2, device=device, dtype=P.dtype)
+        mu = w0 @ Pp.T
+        grad_prot = -(((Yp - mu[None, :]) * it2[None, :]) @ Pp)
+        prot_norm = torch.linalg.norm(grad_prot, dim=1)
+
+        M = Pp.shape[0]
+        med_prot = float(torch.median(prot_norm).item())
+        if med_prot <= 1e-12:
+            return 0.0
+        # Per-feature balance: (||grad_rna|| / G) / (||grad_prot|| / M).
+        return (float(torch.median(rna_norm).item()) / G) / (med_prot / M)
+
 
 def run_rctd(
     spatial: anndata.AnnData,
@@ -323,6 +516,16 @@ def run_rctd(
         batch_size = auto_batch_size(G, K, dtype_bytes)
         print(f"Auto batch size: {batch_size}")
 
+    # Resolve the protein modality (normalize, bootstrap profiles, pick lambda).
+    # Returns {} when protein is off, so the RNA-only path is unchanged.
+    protein_kwargs = rctd.prepare_protein()
+    if protein_kwargs and mode == "multi":
+        print(
+            "Warning: protein modality is not yet wired into multi mode; "
+            "running RNA-only multi. Use doublet or full for protein fusion."
+        )
+        protein_kwargs = {}
+
     print(f"Running in {mode} mode...")
 
     kwargs = {
@@ -339,9 +542,9 @@ def run_rctd(
     }
 
     if mode == "full":
-        res = run_full_mode(**kwargs)
+        res = run_full_mode(**kwargs, **protein_kwargs)
     elif mode == "doublet":
-        res = run_doublet_mode(**kwargs, config=rctd.config)
+        res = run_doublet_mode(**kwargs, **protein_kwargs, config=rctd.config)
     elif mode == "multi":
         res = run_multi_mode(**kwargs, config=rctd.config)
 
