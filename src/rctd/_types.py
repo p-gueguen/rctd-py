@@ -48,7 +48,16 @@ class RCTDConfig(NamedTuple):
     protein_weight: float | str = 0.0  # lambda; 0.0 = RNA-only (default), "auto", or fixed float
     protein_obsm_key: str = "protein"  # spatial.obsm key for the (N, M) intensity matrix
     protein_norm: str = "arcsinh_robust"  # "arcsinh_robust" (default) | "clr"
-    protein_profile_source: str = "bootstrap"  # only "bootstrap" supported initially
+    protein_profile_source: str = "bootstrap"  # "bootstrap" | "curated" (needs protein_signatures)
+    # Optional curated signed gates: {cell_type: {"positive":[markers], "negative":[markers]}}.
+    # When set, these OVERRIDE the per-type profile (negative markers let protein actively reject a
+    # contaminant - e.g. NK = CD16+ / CD3E-/CD8A-, which the bootstrap cannot encode). With
+    # source="bootstrap" only listed types are overridden (hybrid: bootstrap the rest); with
+    # "curated" unlisted types get a neutral (zero) profile. Build from scGate models via
+    # _protein.scgate_signatures. Overriding a wrong RNA call needs a strong protein_weight
+    # (e.g. 4), not the balanced "auto" (which only sharpens).
+    protein_signatures: dict | None = None
+    protein_signature_magnitude: float = 1.5  # +/- z written for positive/negative curated markers
     protein_var_model: str = "wls_pooled"  # "wls_pooled" (1/tau_m) | "unit"
     protein_arcsinh_cofactor: float = 5.0  # arcsinh cofactor for IF intensity
     protein_singlet_purity: float = 0.8  # confident-singlet weight gate for the bootstrap

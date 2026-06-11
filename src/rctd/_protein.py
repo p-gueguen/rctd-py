@@ -131,3 +131,110 @@ def bootstrap_protein_profiles(
     else:
         tau = np.ones(M)
     return P_prot, tau, n_used
+
+
+def build_signed_profile(
+    cell_type_names: list[str],
+    feature_names: list[str],
+    signatures: dict,
+    magnitude: float = 1.5,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Build a curated signed protein profile (M x K, in standardized z-units) from
+    positive/negative marker sets.
+
+    Unlike the bootstrap (which inherits the RNA reference's errors), a curated profile
+    can encode NEGATIVE markers - e.g. NK = CD16 positive but CD3E/CD8A negative - which is
+    what lets protein actively REJECT a contaminant rather than just sharpen.
+
+    Args:
+        cell_type_names: K reference cell types (column order of the profile).
+        feature_names: M protein markers (row order; must match the spatial protein columns).
+        signatures: ``{cell_type: {"positive": [markers], "negative": [markers]}}``. Markers
+            absent from ``feature_names`` are ignored; cell types absent from ``signatures``
+            get an all-zero (neutral) column.
+        magnitude: the +/- z value written for positive / negative markers.
+
+    Returns:
+        ``(P_prot (M, K), curated_mask (K,) bool)`` - ``curated_mask[k]`` is True iff type k had
+        a signature (so a caller can fill the rest from a bootstrap pass: hybrid mode).
+    """
+    M, K = len(feature_names), len(cell_type_names)
+    fidx = {f: i for i, f in enumerate(feature_names)}
+    P = np.zeros((M, K), dtype=np.float64)
+    mask = np.zeros(K, dtype=bool)
+    for k, t in enumerate(cell_type_names):
+        spec = signatures.get(t)
+        if not spec:
+            continue
+        mask[k] = True
+        for mk in spec.get("positive", []):
+            if mk in fidx:
+                P[fidx[mk], k] = magnitude
+        for mk in spec.get("negative", []):
+            if mk in fidx:
+                P[fidx[mk], k] = -magnitude
+    return P, mask
+
+
+def scgate_signatures(
+    master_table_path: str,
+    type_to_model: dict,
+    gene2protein: dict,
+    panel: list[str] | None = None,
+) -> dict:
+    """Derive curated signed PROTEIN signatures from carmonalab/scGate_models gating models.
+
+    scGate models are modular: a per-lineage ``*_scGate_Model.tsv`` references named signatures
+    (positive/negative across hierarchical levels), and ``master_table.tsv`` maps each signature
+    name to genes (a trailing ``-`` marks a NEGATIVE gene). This parses both, nets the signed
+    gene votes per cell type, and maps genes to a protein panel.
+
+    Args:
+        master_table_path: path to the collection's ``master_table.tsv``.
+        type_to_model: ``{cell_type_name: path to that type's *_scGate_Model.tsv}``.
+        gene2protein: ``{gene: protein_marker}`` mapping (drop pan-lineage genes with no specific
+            protein, e.g. LCK/SPI1, so they don't cancel real gates).
+        panel: optional list of protein markers to restrict to.
+
+    Returns:
+        ``{cell_type: {"positive": [markers], "negative": [markers]}}`` for use with
+        :func:`build_signed_profile` / ``RCTDConfig(protein_signatures=...)``.
+    """
+    sig2genes: dict[str, list] = {}
+    with open(master_table_path) as fh:
+        for line in fh:
+            p = line.rstrip("\n").split("\t")
+            if len(p) < 2 or p[0] == "name":
+                continue
+            genes = []
+            for g in p[1].split(";"):
+                g = g.strip()
+                if g:
+                    genes.append((g[:-1], -1) if g.endswith("-") else (g, 1))
+            sig2genes[p[0]] = genes
+
+    out = {}
+    for t, mpath in type_to_model.items():
+        votes: dict[str, int] = {}
+        with open(mpath) as fh:
+            for line in fh:
+                p = line.rstrip("\n").split("\t")
+                if len(p) < 3 or p[0] == "levels":
+                    continue
+                use_as, name = p[1], p[2]
+                for gene, gsign in sig2genes.get(name, []):
+                    if use_as == "positive":
+                        votes[gene] = votes.get(gene, 0) + gsign
+                    elif gsign > 0:  # negative gate -> that lineage's markers should be low
+                        votes[gene] = votes.get(gene, 0) - 1
+        prot: dict[str, int] = {}
+        for gene, v in votes.items():
+            pm = gene2protein.get(gene)
+            if pm is None or (panel is not None and pm not in panel):
+                continue
+            prot[pm] = prot.get(pm, 0) + int(np.sign(v))
+        out[t] = {
+            "positive": [m for m, s in prot.items() if s > 0],
+            "negative": [m for m, s in prot.items() if s < 0],
+        }
+    return out

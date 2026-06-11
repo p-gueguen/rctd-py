@@ -336,10 +336,14 @@ class RCTD:
         if not _protein_enabled(self.config) or getattr(self, "_protein_raw", None) is None:
             return {}
 
-        from rctd._protein import bootstrap_protein_profiles, normalize_protein
+        from rctd._protein import (
+            bootstrap_protein_profiles,
+            build_signed_profile,
+            normalize_protein,
+        )
 
         cfg = self.config
-        if cfg.protein_profile_source != "bootstrap":
+        if cfg.protein_profile_source not in ("bootstrap", "curated"):
             raise ValueError(f"unsupported protein_profile_source: {cfg.protein_profile_source!r}")
 
         P_std, _tau_norm, valid = normalize_protein(
@@ -347,37 +351,63 @@ class RCTD:
             method=cfg.protein_norm,
             cofactor=cfg.protein_arcsinh_cofactor,
         )
+        M = P_std.shape[1]
         K = self.norm_profiles.shape[1]
+        tau = np.ones(M)
+        n_boot = 0
 
-        # RNA-only doublet pass (protein OFF) to label confident singlets.
-        boot = run_doublet_mode(
-            spatial_counts=self.counts,
-            spatial_numi=self.nUMI,
-            norm_profiles=self.norm_profiles,
-            cell_type_names=self.reference.cell_type_names,
-            q_mat=self.q_mat,
-            sq_mat=self.sq_mat,
-            x_vals=self.x_vals,
-            config=cfg,
-            batch_size=10000,
-            device=str(resolve_device(cfg.device)),
-        )
-        wn = boot.weights / np.maximum(boot.weights.sum(axis=1, keepdims=True), 1e-10)
-        first_w = wn[np.arange(len(wn)), boot.first_type]
-        confident = (
-            (boot.spot_class == SPOT_CLASS_SINGLET) & (first_w > cfg.protein_singlet_purity) & valid
-        )
-        singlet_idx = np.where(confident, boot.first_type, -1)
+        if cfg.protein_profile_source == "bootstrap":
+            # RNA-only doublet pass (protein OFF) to label confident singlets.
+            boot = run_doublet_mode(
+                spatial_counts=self.counts,
+                spatial_numi=self.nUMI,
+                norm_profiles=self.norm_profiles,
+                cell_type_names=self.reference.cell_type_names,
+                q_mat=self.q_mat,
+                sq_mat=self.sq_mat,
+                x_vals=self.x_vals,
+                config=cfg,
+                batch_size=10000,
+                device=str(resolve_device(cfg.device)),
+            )
+            wn = boot.weights / np.maximum(boot.weights.sum(axis=1, keepdims=True), 1e-10)
+            first_w = wn[np.arange(len(wn)), boot.first_type]
+            confident = (
+                (boot.spot_class == SPOT_CLASS_SINGLET)
+                & (first_w > cfg.protein_singlet_purity)
+                & valid
+            )
+            singlet_idx = np.where(confident, boot.first_type, -1)
+            P_prot, tau, n_used = bootstrap_protein_profiles(P_std, singlet_idx, K)
+            n_boot = int((n_used >= 25).sum())
+        else:  # "curated": no bootstrap; uncurated types stay neutral (zero)
+            if not cfg.protein_signatures:
+                raise ValueError(
+                    "protein_profile_source='curated' requires config.protein_signatures"
+                )
+            P_prot = np.zeros((M, K), dtype=np.float64)
 
-        P_prot, tau_boot, n_used = bootstrap_protein_profiles(P_std, singlet_idx, K)
+        # Curated signed override: replace listed types' columns with curated +/- gates.
+        # Hybrid with "bootstrap" source (bootstrap the rest); full profile with "curated".
+        n_curated = 0
+        if cfg.protein_signatures:
+            signed, cmask = build_signed_profile(
+                self.reference.cell_type_names,
+                self._protein_feature_names,
+                cfg.protein_signatures,
+                magnitude=cfg.protein_signature_magnitude,
+            )
+            P_prot[:, cmask] = signed[:, cmask]
+            n_curated = int(cmask.sum())
+
         self.reference.protein_profiles = P_prot
-        self.reference.protein_tau = tau_boot
+        self.reference.protein_tau = tau
         self.reference.protein_feature_names = self._protein_feature_names
 
         if cfg.protein_var_model == "unit":
-            inv_tau2 = np.ones(P_std.shape[1])
+            inv_tau2 = np.ones(M)
         else:
-            inv_tau2 = 1.0 / np.maximum(tau_boot, cfg.protein_tau_floor) ** 2
+            inv_tau2 = 1.0 / np.maximum(tau, cfg.protein_tau_floor) ** 2
 
         if isinstance(cfg.protein_weight, str):  # "auto"
             lam = self._estimate_protein_lambda(P_std, P_prot, inv_tau2, valid)
@@ -386,9 +416,8 @@ class RCTD:
         self.protein_lambda = lam
 
         print(
-            f"Protein modality: M={P_std.shape[1]} markers, lambda={lam:.4g}, "
-            f"types with bootstrapped profile={int((n_used >= 25).sum())}/{K}, "
-            f"confident singlets={int(confident.sum())}/{len(confident)}"
+            f"Protein modality: M={M} markers, source={cfg.protein_profile_source}, "
+            f"lambda={lam:.4g}, bootstrap-profiled={n_boot}/{K}, curated={n_curated}/{K}"
         )
 
         target_dtype = self.norm_profiles.dtype

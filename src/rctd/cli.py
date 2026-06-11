@@ -500,6 +500,24 @@ def _write_results_to_adata(
     help="Protein WLS weights: pooled within-type residual variance, or unit variance.",
 )
 @click.option("--protein-obsm-key", default="protein", show_default=True)
+@click.option(
+    "--protein-profile-source",
+    type=click.Choice(["bootstrap", "curated"]),
+    default="bootstrap",
+    show_default=True,
+    help="Per-type protein profile: bootstrap from RNA-confident singlets, or curated gates.",
+)
+@click.option(
+    "--protein-signatures",
+    default=None,
+    type=click.Path(exists=True, dir_okay=False),
+    help=(
+        "JSON of curated signed gates {cell_type: {positive:[markers], negative:[markers]}}; "
+        "overrides those types' profiles (negative markers let protein reject contaminants, e.g. "
+        "NK CD3E-/CD8A-). Pair with a strong --protein-weight (e.g. 4) to override RNA."
+    ),
+)
+@click.option("--protein-signature-magnitude", default=1.5, show_default=True, type=float)
 def run(
     spatial,
     reference,
@@ -533,6 +551,9 @@ def run(
     protein_norm,
     protein_var_model,
     protein_obsm_key,
+    protein_profile_source,
+    protein_signatures,
+    protein_signature_magnitude,
 ):
     """Run RCTD deconvolution on spatial transcriptomics data."""
     import contextlib
@@ -572,6 +593,12 @@ def run(
     protein_weight_val = (
         "auto" if str(protein_weight).strip().lower() == "auto" else float(protein_weight)
     )
+    # Curated signed gates from a JSON {cell_type: {positive:[...], negative:[...]}}.
+    protein_signatures_dict = None
+    if protein_signatures is not None:
+        import json as _json
+
+        protein_signatures_dict = _json.loads(open(protein_signatures).read())
 
     # Build config
     config = RCTDConfig(
@@ -594,6 +621,9 @@ def run(
         protein_obsm_key=protein_obsm_key,
         protein_norm=protein_norm,
         protein_var_model=protein_var_model,
+        protein_profile_source=protein_profile_source,
+        protein_signatures=protein_signatures_dict,
+        protein_signature_magnitude=protein_signature_magnitude,
     )
     config_dict = config._asdict()
 
