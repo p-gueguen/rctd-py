@@ -3,6 +3,19 @@
 All notable changes to rctd-py are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.6] — 2026-06-16
+
+### Changed
+- **Pre-stage `spatial_counts` on the device once** in `_doublet.py` (steps 3/4/6) and `_multi.py` (forward-selection iterations). Previously each batch did `torch.tensor(spatial_counts[pix_idx], device=device)` — a pixel that appears in many triples/tasks was gathered and copied repeatedly. Now both `spatial_counts` and `spatial_numi` move to the device once at the start of each mode and per-batch access is an on-device gather. Numerical output is unchanged: a cross-worktree replay against unmodified `main` reproduced the v0.3.5 output bit-for-bit on a synthetic doublet workload. GPU bench on fgcz-r-023 (L40S, sm_89, N=20000, K=30, G=500): 76.2 s → 75.0 s (1.5% — modest because the H2D was already memcpy-bound).
+
+### Documented (no code change)
+- **fp32 concordance on GPU is now empirically verified.** The fp32 path has been exposed via `RCTDConfig(dtype="float32")` / CLI `--dtype float32` since the initial release, and the perf test suite already times it for all three modes — but no test ever asserted numerical agreement with fp64, and `CLAUDE.md` flagged the spline-index `floor(sqrt(lam/delta))` in `_calc_q_all_impl` as a precision-sensitive site. New `tests/test_fp32_concordance.py` asserts `spot_class` agreement ≥ 99% (observed: 100%), `first_type` agreement ≥ 99% (observed: 100%), and `weights_doublet` max diff < 1e-2 (observed: <1e-6 on the synthetic fixture). On L40S sm_89 at N=20000, K=30 the fp32 doublet run produced an *identical* `spot_class` hash to fp64 (`63dfa94a10f7aa93`) while cutting wall time from 76 s → 39 s (~2×). README now points consumer-GPU users at `float32` with the empirical numbers.
+
+  Caveat: only synthetic data was stress-tested. The `floor(sqrt(...))` spline-index sensitivity could shift on real-world `lam` distributions near integer boundaries; the assertion is set at ≥99% to admit a small drift before failing.
+
+### Internal
+- New `tests/test_doublet_prestage.py` runs doublet mode through the pre-staged path and asserts shape, simplex sums, valid class/type ranges, and that ≥90% of pixels reach a non-degenerate split. Tolerance-based rather than byte-hash — early CI on this branch caught that hash equality across PyTorch/numpy minor versions is too brittle.
+
 ## [0.3.5] — 2026-06-05
 
 ### Fixed
