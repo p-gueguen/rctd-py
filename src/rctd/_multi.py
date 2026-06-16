@@ -41,8 +41,13 @@ def _run_batched_scoring(
         pix_idx = np.array(pix_idx, dtype=np.int32)
         type_idx = np.array(type_idx, dtype=np.int32)  # (bs, K_sub)
 
-        nUMI_tr = torch.tensor(spatial_numi[pix_idx], device=device)
-        B_tr = torch.tensor(spatial_counts[pix_idx], device=device)
+        if isinstance(spatial_counts, torch.Tensor):
+            pix_idx_t = torch.as_tensor(pix_idx, dtype=torch.long, device=device)
+            nUMI_tr = spatial_numi[pix_idx_t]
+            B_tr = spatial_counts[pix_idx_t]
+        else:
+            nUMI_tr = torch.tensor(spatial_numi[pix_idx], device=device)
+            B_tr = torch.tensor(spatial_counts[pix_idx], device=device)
 
         # P_gpu is (G, K). We need (bs, G, K_sub)
         # type_idx is (bs, K_sub) -> convert to long tensor for indexing
@@ -105,8 +110,13 @@ def _run_batched_weights(
         pix_idx = np.array(pix_idx, dtype=np.int32)
         type_idx = np.array(type_idx, dtype=np.int32)
 
-        nUMI_tr = torch.tensor(spatial_numi[pix_idx], device=device)
-        B_tr = torch.tensor(spatial_counts[pix_idx], device=device)
+        if isinstance(spatial_counts, torch.Tensor):
+            pix_idx_t = torch.as_tensor(pix_idx, dtype=torch.long, device=device)
+            nUMI_tr = spatial_numi[pix_idx_t]
+            B_tr = spatial_counts[pix_idx_t]
+        else:
+            nUMI_tr = torch.tensor(spatial_numi[pix_idx], device=device)
+            B_tr = torch.tensor(spatial_counts[pix_idx], device=device)
 
         type_idx_t = torch.tensor(type_idx, dtype=torch.long, device=device)
         P_sub = P_gpu[:, type_idx_t].permute(1, 0, 2)
@@ -187,6 +197,11 @@ def run_multi_mode(
     SQ_gpu = torch.tensor(sq_mat, device=device)
     X_gpu = torch.tensor(x_vals, device=device)
 
+    # Pre-stage spatial data on the device once instead of re-uploading per batch
+    # (same fix as _doublet.py: a pixel appears in many tasks across iterations).
+    spatial_counts_gpu = torch.tensor(spatial_counts, device=device)
+    spatial_numi_gpu = torch.tensor(spatial_numi, device=device)
+
     INF = 1e18
     current_scores = np.full(N, INF, dtype=np.float64)
     cell_type_lists = [[] for _ in range(N)]
@@ -209,8 +224,8 @@ def run_multi_mode(
         # Run scoring for length k
         scores = _run_batched_scoring(
             tasks,
-            spatial_numi,
-            spatial_counts,
+            spatial_numi_gpu,
+            spatial_counts_gpu,
             P_gpu,
             Q_gpu,
             SQ_gpu,
@@ -282,8 +297,8 @@ def run_multi_mode(
         base_tasks = [(item[0], item[1]) for item in t_list]
         scores = _run_batched_scoring(
             base_tasks,
-            spatial_numi,
-            spatial_counts,
+            spatial_numi_gpu,
+            spatial_counts_gpu,
             P_gpu,
             Q_gpu,
             SQ_gpu,
@@ -312,8 +327,8 @@ def run_multi_mode(
     for k_sub, t_list in final_tasks.items():
         w_res = _run_batched_weights(
             t_list,
-            spatial_numi,
-            spatial_counts,
+            spatial_numi_gpu,
+            spatial_counts_gpu,
             P_gpu,
             Q_gpu,
             SQ_gpu,

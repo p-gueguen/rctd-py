@@ -410,8 +410,12 @@ All defaults match R spacexr, so default R results reproduce with default rctd-p
 | `max_iter` | `50` | Max IRWLS iterations per pixel |
 | `step_size` | `0.3` | IRWLS step size |
 | `K_val` | `1000` | Spline discretization points |
-| `dtype` | `"float64"` | `"float32"` saves GPU memory |
+| `dtype` | `"float64"` | `"float32"` saves GPU memory and is much faster on consumer GPUs (see note) |
 | `device` | `"auto"` | `"cpu"`, `"cuda"`, or `"auto"` |
+
+#### `float32` on GPU
+
+The default `"float64"` matches R spacexr arithmetic. On data-center GPUs with high fp64 throughput (A100, H100) the difference is small. On consumer / workstation GPUs with limited fp64 (RTX, L40S, Blackwell sm_120) `dtype="float32"` is roughly **2× faster** on doublet mode at moderate K. Empirically (L40S, sm_89, N=20000, K=30, doublet mode) total runtime drops from 76s to 39s while every cell-type call agrees with the fp64 result; the test that locks this concordance lives at `tests/test_fp32_concordance.py`.
 
 ### Parallelism
 
