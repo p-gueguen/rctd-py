@@ -93,7 +93,7 @@ spatial = anndata.read_h5ad("spatial.h5ad")
 result = run_rctd(spatial, reference, mode="doublet")
 ```
 
-📓 **[Tutorial notebook](examples/tutorial.py)** (marimo) · 🌐 **[Rendered tutorial](https://p-gueguen.github.io/rctd-py/)**
+📓 **[Tutorial notebook](examples/tutorial.py)** (marimo) · 🌐 **[Rendered tutorial](https://p-gueguen.github.io/rctd-py/)** · 🤖 **[Claude Code skill](.claude/skills/rctd-py/SKILL.md)** (drop into `~/.claude/skills/` to get assisted-coding help with rctd-py)
 
 ## Command Line
 
