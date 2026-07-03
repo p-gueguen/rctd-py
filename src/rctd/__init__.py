@@ -1,6 +1,13 @@
 from rctd._doublet import run_doublet_mode
 from rctd._full import run_full_mode
 from rctd._multi import run_multi_mode
+from rctd._multimodal import (
+    adaptive_modality_weights,
+    deconvolution_metrics,
+    jensen_shannon_divergence,
+    solve_irwls_batch_multimodal,
+)
+from rctd._multimodal_api import Modality, MultiModalResult, run_rctd_multimodal
 from rctd._normalize import fit_bulk
 from rctd._protein import (
     bootstrap_protein_profiles,
@@ -42,4 +49,11 @@ __all__ = [
     "bootstrap_protein_profiles",
     "build_signed_profile",
     "scgate_signatures",
+    "run_rctd_multimodal",
+    "Modality",
+    "MultiModalResult",
+    "solve_irwls_batch_multimodal",
+    "adaptive_modality_weights",
+    "jensen_shannon_divergence",
+    "deconvolution_metrics",
 ]
