@@ -136,6 +136,13 @@ def run_doublet_mode(
     SQ_gpu = torch.tensor(sq_mat, device=device)
     X_gpu = torch.tensor(x_vals, device=device)
 
+    # Pre-stage spatial data on the device once instead of re-uploading
+    # spatial_counts[pix_idx] / spatial_numi[pix_idx] per batch in steps 3/4/6.
+    # A pixel appears in every triple/single it contributes to (often dozens of
+    # times), so per-batch H2D was gathering+copying the same counts repeatedly.
+    Y_full_gpu = torch.tensor(spatial_counts, device=device)
+    nUMI_full_gpu = torch.tensor(spatial_numi, device=device)
+
     # Optional protein modality: shared (M, K) profiles, per-pixel (N, M) intensity.
     use_protein = protein_profiles is not None and protein_lambda != 0.0
     P_prot_gpu = Yprot_gpu = invtau_gpu = protmask_gpu = None
@@ -171,8 +178,9 @@ def run_doublet_mode(
             t1_idx = tr[:, 1]
             t2_idx = tr[:, 2]
 
-            nUMI_tr = torch.tensor(spatial_numi[pix_idx], device=device)
-            B_tr = torch.tensor(spatial_counts[pix_idx], device=device)
+            pix_idx_t = torch.as_tensor(pix_idx, dtype=torch.long, device=device)
+            nUMI_tr = nUMI_full_gpu[pix_idx_t]
+            B_tr = Y_full_gpu[pix_idx_t]
 
             # P_pair: (bs, G, 2)
             # P_gpu: (G, K)
@@ -250,8 +258,9 @@ def run_doublet_mode(
             pix_idx = sg[:, 0]
             t_idx = sg[:, 1]
 
-            nUMI_sg = torch.tensor(spatial_numi[pix_idx], device=device)
-            B_sg = torch.tensor(spatial_counts[pix_idx], device=device)
+            pix_idx_t = torch.as_tensor(pix_idx, dtype=torch.long, device=device)
+            nUMI_sg = nUMI_full_gpu[pix_idx_t]
+            B_sg = Y_full_gpu[pix_idx_t]
 
             # P_sg: (bs, G, 1)
             t_t = torch.tensor(t_idx, dtype=torch.long, device=device)
@@ -467,8 +476,9 @@ def run_doublet_mode(
         end = min(start + batch_size, N)
 
         pix_idx = np.arange(start, end)
-        nUMI_f = torch.tensor(spatial_numi[pix_idx], device=device)
-        B_f = torch.tensor(spatial_counts[pix_idx], device=device)
+        pix_idx_t = torch.as_tensor(pix_idx, dtype=torch.long, device=device)
+        nUMI_f = nUMI_full_gpu[pix_idx_t]
+        B_f = Y_full_gpu[pix_idx_t]
 
         ft1_t = torch.tensor(final_t1[pix_idx], dtype=torch.long, device=device)
         ft2_t = torch.tensor(final_t2[pix_idx], dtype=torch.long, device=device)
