@@ -4,6 +4,7 @@ Ports spacexr R functions: get_Q, calc_Q_mat_one, solve_sq, calc_Q_all
 from prob_model.R.
 """
 
+import logging
 import urllib.request
 import warnings
 import zipfile
@@ -13,6 +14,36 @@ import numpy as np
 import torch
 from scipy.special import gammaln
 from scipy.stats import norm as normal_dist
+
+# torch>=2.10 fails inductor codegen for some reductions on certain platforms
+# (e.g. Apple Silicon CPU): it logs a large recoverable dump then silently falls
+# back to eager for every new shape -- noisy and slow (issue #27). The existing
+# RuntimeError fallback below never trips because inductor recovers without
+# raising. Drop that specific record and expose the fact so callers can switch
+# to a quiet fallback path instead.
+_inductor_codegen_failed = False
+
+
+class _InductorCodegenFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        global _inductor_codegen_failed
+        if "Error in codegen" in record.getMessage():
+            _inductor_codegen_failed = True
+            return False  # drop the recoverable dump
+        return True
+
+
+logging.getLogger("torch._inductor.scheduler").addFilter(_InductorCodegenFilter())
+
+
+def _pop_inductor_codegen_failed() -> bool:
+    """Return whether inductor logged a recoverable codegen error since the last
+    call, then reset. Lets callers detect torch.compile silent degradation (#27)."""
+    global _inductor_codegen_failed
+    failed = _inductor_codegen_failed
+    _inductor_codegen_failed = False
+    return failed
+
 
 _Q_MATRICES_URL = "https://github.com/p-gueguen/rctd-py/releases/download/v0.1.1/q_matrices.npz"
 
@@ -339,8 +370,6 @@ def calc_q_all(
     # First call: try compiled, fall back to eager
     try:
         result = _calc_q_all_compiled(Y, lam, Q_mat, SQ_mat, x_vals, K_val)
-        _CALC_Q_USE_COMPILE = True
-        return result
     except RuntimeError:
         _CALC_Q_USE_COMPILE = False
         warnings.warn(
@@ -351,6 +380,15 @@ def calc_q_all(
             stacklevel=2,
         )
         return _calc_q_all_impl(Y, lam, Q_mat, SQ_mat, x_vals, K_val)
+
+    if _pop_inductor_codegen_failed():
+        # Compiled ran but inductor codegen silently degraded to eager (#27) --
+        # use the plain eager impl for all subsequent calls (quiet, same result).
+        _CALC_Q_USE_COMPILE = False
+        return _calc_q_all_impl(Y, lam, Q_mat, SQ_mat, x_vals, K_val)
+
+    _CALC_Q_USE_COMPILE = True
+    return result
 
 
 def calc_log_likelihood(
