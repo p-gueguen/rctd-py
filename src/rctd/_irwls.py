@@ -551,24 +551,26 @@ def _solve_box_qp_batch(
     if _USE_COMPILE is True:
         return _solve_box_qp_batch_compiled(D, d, lower_bound, n_sweeps)
 
-    # First call: try compiled, fall back to the TorchScript JIT path on failure
+    # First call: try compiled, fall back to eager on failure
     try:
         result = _solve_box_qp_batch_compiled(D, d, lower_bound, n_sweeps)
     except RuntimeError:
         _USE_COMPILE = False
         warnings.warn(
             "torch.compile failed for box-QP solver (missing CUDA headers or Triton); "
-            "falling back to TorchScript JIT. Use RCTDConfig(compile=False) to suppress.",
+            "falling back to eager mode. Use RCTDConfig(compile=False) to suppress.",
             RuntimeWarning,
             stacklevel=2,
         )
-        return _solve_box_qp_batch_adaptive_jit(D, d, lower_bound, n_sweeps)
+        return _solve_box_qp_batch_impl(D, d, lower_bound, n_sweeps)
 
     if _pop_inductor_codegen_failed():
         # Compiled ran but inductor codegen silently degraded to eager (#27,
-        # torch>=2.10 on some platforms). Switch to the quiet, fast JIT path.
+        # torch>=2.10 on some platforms). Disable compile so subsequent calls
+        # take the quiet TorchScript JIT path (top of function); return the
+        # eager result for this call.
         _USE_COMPILE = False
-        return _solve_box_qp_batch_adaptive_jit(D, d, lower_bound, n_sweeps)
+        return _solve_box_qp_batch_impl(D, d, lower_bound, n_sweeps)
 
     _USE_COMPILE = True
     return result
