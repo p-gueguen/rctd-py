@@ -18,6 +18,11 @@ def run_full_mode(
     batch_size: int = 10000,
     device: str = "auto",
     pixel_mask: np.ndarray | None = None,
+    protein_profiles: np.ndarray | None = None,
+    protein_intensity: np.ndarray | None = None,
+    inv_tau2: np.ndarray | None = None,
+    protein_lambda: float = 0.0,
+    protein_mask: np.ndarray | None = None,
 ) -> FullResult:
     """Run full mode deconvolution across all spatial pixels.
 
@@ -46,6 +51,16 @@ def run_full_mode(
     Y_gpu = torch.tensor(spatial_counts, device=device)
     nUMI_gpu = torch.tensor(spatial_numi, device=device)
 
+    # Optional protein modality (shared (M, K) profiles, per-pixel (N, M) intensity)
+    use_protein = protein_profiles is not None and protein_lambda != 0.0
+    P_prot_gpu = Yprot_gpu = inv_tau2_gpu = prot_mask_gpu = None
+    if use_protein:
+        P_prot_gpu = torch.tensor(protein_profiles, device=device, dtype=P_gpu.dtype)
+        Yprot_gpu = torch.tensor(protein_intensity, device=device, dtype=P_gpu.dtype)
+        inv_tau2_gpu = torch.tensor(inv_tau2, device=device, dtype=P_gpu.dtype)
+        if protein_mask is not None:
+            prot_mask_gpu = torch.tensor(protein_mask, device=device, dtype=torch.bool)
+
     all_weights = []
     all_converged = []
 
@@ -67,6 +82,11 @@ def run_full_mode(
             min_change=0.001,
             constrain=False,
             bulk_mode=False,
+            P_prot=P_prot_gpu,
+            Y_prot_batch=Yprot_gpu[start:end] if use_protein else None,
+            inv_tau2=inv_tau2_gpu,
+            lam=protein_lambda,
+            prot_mask=prot_mask_gpu[start:end] if prot_mask_gpu is not None else None,
         )
 
         all_weights.append(weights.cpu().numpy())

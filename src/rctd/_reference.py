@@ -121,6 +121,34 @@ class Reference:
 
         self.profiles = profiles  # (G, K), columns sum to ~1
 
+        # ── Optional protein modality (set by the multi-modal pipeline) ──
+        # protein_profiles: (M, K) mean standardized protein per cell type, columns
+        # aligned to self.cell_type_names. protein_tau: (M,) per-marker WLS scale.
+        # Left None for RNA-only references.
+        self.protein_profiles: np.ndarray | None = None
+        self.protein_feature_names: list[str] | None = None
+        self.protein_tau: np.ndarray | None = None
+
+    def get_protein_profiles_for_types(self, type_indices) -> np.ndarray:
+        """Protein profiles restricted to a candidate subset of types.
+
+        Mirrors :meth:`get_profiles_for_genes` but column-wise (protein is M x K),
+        so the same integer type indices used to gather RNA profiles index the
+        protein profiles in the SAME column order.
+
+        Parameters
+        ----------
+        type_indices : sequence of int
+            Cell-type column indices into ``protein_profiles``.
+
+        Returns
+        -------
+        ndarray of shape (M, len(type_indices))
+        """
+        if self.protein_profiles is None:
+            raise ValueError("Reference has no protein_profiles attached")
+        return self.protein_profiles[:, np.asarray(type_indices)]
+
     def get_de_genes(
         self,
         spatial_bulk: np.ndarray | None = None,
