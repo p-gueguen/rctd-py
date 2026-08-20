@@ -91,3 +91,9 @@ secrets/
 src/rctd/_version.py
 docs/plans/
 !docs/plans/100-percent-matching-roadmap.md
+
+# Generated artifacts (benchmark runs, marimo cache, graphify output)
+graphify-out/
+results.tsv
+examples/__marimo__/
+tests/performance_metrics_*.csv

@@ -3,6 +3,11 @@
 All notable changes to rctd-py are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.7] — 2026-07-15
+
+### Fixed
+- **Inductor codegen WARNING spam on Apple Silicon / torch ≥ 2.10** (issue #27). On some platforms inductor fails to codegen the box-QP / likelihood reductions, logs a large recoverable `Error in codegen` dump, then falls back to eager *without raising* — so the existing `except RuntimeError` auto-fallback never tripped and `torch.compile` was re-attempted (re-dumping) for every new batch shape. rctd-py now installs a targeted filter on the `torch._inductor.scheduler` logger that drops those recoverable records and flags the degradation; the first compiled call detects the flag and switches `calc_q_all` / `_solve_box_qp_batch` to their quiet non-compiled paths for the rest of the run. Numerical output is unchanged (inductor was already falling back to eager). Set `RCTDConfig(compile=False)` to skip the compile probe entirely.
+
 ## [0.3.6] — 2026-06-16
 
 ### Changed

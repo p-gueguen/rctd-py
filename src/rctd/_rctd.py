@@ -265,6 +265,7 @@ class RCTD:
         # R's puck@nUMI is never recomputed after gene restriction.
 
         self._gene_list_reg = gene_list_reg
+        self._gene_list_bulk = gene_list_bulk
         print(f"Using {len(gene_list_reg)} DE genes for pixel-level fitting")
 
         # ── 5. choose_sigma on reg genes ──
