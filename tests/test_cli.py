@@ -452,3 +452,49 @@ def test_run_protein_weight_zero_is_rna_only(h5ad_pair, tmp_path):
     assert result.exit_code == 0, result.output
     out = anndata.read_h5ad(out_path)
     assert "rctd_protein_weight" not in out.uns
+
+
+@pytest.mark.protein
+def test_run_persists_confidence_and_conflict(h5ad_pair, tmp_path):
+    """The CLI must keep the continuous confidence it already computes, and the
+    modality-disagreement columns when protein is on. Before this, a CLI run threw
+    min_score / singlet_score away and only the verdict survived."""
+    sp_path, ref_path = h5ad_pair
+    sp = anndata.read_h5ad(sp_path)
+    rng = np.random.default_rng(11)
+    markers = [f"prot_{m}" for m in range(4)]
+    csv_path = tmp_path / "protein.csv"
+    pd.DataFrame(rng.standard_normal((sp.n_obs, 4)), index=sp.obs_names, columns=markers).to_csv(
+        csv_path
+    )
+
+    out_path = tmp_path / "out_conf.h5ad"
+    result = CliRunner().invoke(
+        main,
+        [
+            "run",
+            str(sp_path),
+            str(ref_path),
+            "--mode",
+            "doublet",
+            "--output",
+            str(out_path),
+            "--device",
+            "cpu",
+            "--no-compile",
+            "--protein-csv",
+            str(csv_path),
+            "--protein-weight",
+            "1.0",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    out = anndata.read_h5ad(out_path)
+    for col in ("rctd_min_score", "rctd_singlet_score", "rctd_singlet_gap"):
+        assert col in out.obs, f"{col} was dropped"
+        assert np.isfinite(out.obs[col]).any()
+    assert "rctd_modality_conflict" in out.obs
+    assert "rctd_rna_first_type" in out.obs and "rctd_prot_first_type" in out.obs
+    assert out.uns["rctd_modality_confusion"].shape[0] == len(
+        out.uns["rctd_modality_confusion_types"]
+    )

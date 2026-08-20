@@ -457,8 +457,12 @@ def calc_protein_log_likelihood_batch(
         Y_prot: (N, M) standardized observed protein intensities.
         mu_prot: (N, M) predicted intensities = (P_prot_sub @ w) per pixel.
         inv_tau2: (M,) per-marker precision 1 / tau_m^2 (diagonal of Sigma^-1).
-        prot_mask: (N,) bool — pixels WITH protein. Pixels that are False (or NaN
-            rows) contribute 0.0. If None, all pixels are treated as having protein.
+        prot_mask: (N,) per-pixel protein weight — bool (pixels WITH protein; False
+            or NaN rows contribute 0.0) or float in [0, 1], which additionally
+            scales how far that pixel's protein term is trusted. The same weight
+            MUST be passed to the solver, or the classification and the fit weight
+            protein differently and ``spot_class`` stops matching the weights.
+            If None, all pixels are treated as having protein.
 
     Returns:
         (N,) protein NLL per pixel (lower = better fit). NOT scaled by lambda;
@@ -467,5 +471,5 @@ def calc_protein_log_likelihood_batch(
     resid = Y_prot - mu_prot
     nll = 0.5 * (resid * resid * inv_tau2[None, :]).sum(dim=1)
     if prot_mask is not None:
-        nll = torch.where(prot_mask, nll, torch.zeros_like(nll))
+        nll = nll * prot_mask.to(nll.dtype)
     return nll

@@ -27,7 +27,7 @@ def _protein_enabled(config: RCTDConfig) -> bool:
     """True when the protein modality should be activated for this config."""
     pw = config.protein_weight
     if isinstance(pw, str):
-        return pw == "auto"
+        return pw in ("auto", "landmark")
     return float(pw) != 0.0
 
 
@@ -340,6 +340,9 @@ class RCTD:
         from rctd._protein import (
             bootstrap_protein_profiles,
             build_signed_profile,
+            calibrate_signed_levels,
+            gate_landmarks,
+            neighbour_reliability,
             normalize_protein,
         )
 
@@ -356,6 +359,29 @@ class RCTD:
         K = self.norm_profiles.shape[1]
         tau = np.ones(M)
         n_boot = 0
+
+        # ── Per-cell protein reliability (spillover) ──
+        # A marker value is only credible as cell-intrinsic if it stands above the
+        # same marker in the cell's neighbours. Cells that fail that test get their
+        # protein term downweighted rather than trusted: the solver and the protein
+        # NLL both multiply by this weight, so the fit and the classification stay
+        # consistent.
+        reliability = None
+        if cfg.protein_reliability is not None:
+            if cfg.protein_reliability != "neighbour_ratio":
+                raise ValueError(f"unsupported protein_reliability: {cfg.protein_reliability!r}")
+            coords = self._protein_coords()
+            reliability = neighbour_reliability(
+                P_std,
+                coords,
+                k=cfg.protein_reliability_k,
+                floor=cfg.protein_reliability_floor,
+            )
+            print(
+                f"Protein reliability (neighbour ratio, k={cfg.protein_reliability_k}): "
+                f"median {np.median(reliability):.3f}, "
+                f"{int((reliability < 0.5).sum())}/{len(reliability)} cells below 0.5"
+            )
 
         if cfg.protein_profile_source == "bootstrap":
             # RNA-only doublet pass (protein OFF) to label confident singlets.
@@ -390,13 +416,58 @@ class RCTD:
 
         # Curated signed override: replace listed types' columns with curated +/- gates.
         # Hybrid with "bootstrap" source (bootstrap the rest); full profile with "curated".
+        # ── Landmark cells: protein-gated, unambiguous, used as internal truth ──
+        calibrated = cfg.protein_signature_magnitude == "calibrated"
+        want_landmarks = calibrated or cfg.protein_weight == "landmark"
+        self.protein_landmarks = None
+        self.protein_landmark_info = None
+        if want_landmarks:
+            if not cfg.protein_signatures:
+                raise ValueError(
+                    "protein_signature_magnitude='calibrated' and protein_weight='landmark' "
+                    "both need config.protein_signatures to gate landmark cells"
+                )
+            self.protein_landmarks, self.protein_landmark_info = gate_landmarks(
+                P_std,
+                self._protein_feature_names,
+                cfg.protein_signatures,
+                self.reference.cell_type_names,
+                reliability=reliability,
+                min_cells=cfg.protein_landmark_min_cells,
+            )
+            info = self.protein_landmark_info
+            print(
+                f"Protein landmarks: {info['n_landmarks']} cells, "
+                f"{info['n_conflicts']} dropped as ambiguous"
+                + (
+                    f", underpopulated types: {', '.join(info['underpopulated'])}"
+                    if info["underpopulated"]
+                    else ""
+                )
+            )
+
         n_curated = 0
         if cfg.protein_signatures:
+            levels = None
+            if calibrated:
+                levels = calibrate_signed_levels(
+                    P_std,
+                    self._protein_feature_names,
+                    cfg.protein_signatures,
+                    self.reference.cell_type_names,
+                    self.protein_landmarks,
+                )
+                print(
+                    f"Calibrated marker levels (z): positive median "
+                    f"{np.median(levels[0]):.2f}, negative median {np.median(levels[1]):.2f} "
+                    f"(fixed magnitude would have written +/-1.5)"
+                )
             signed, cmask = build_signed_profile(
                 self.reference.cell_type_names,
                 self._protein_feature_names,
                 cfg.protein_signatures,
-                magnitude=cfg.protein_signature_magnitude,
+                magnitude=1.5 if calibrated else cfg.protein_signature_magnitude,
+                levels=levels,
             )
             P_prot[:, cmask] = signed[:, cmask]
             n_curated = int(cmask.sum())
@@ -410,8 +481,18 @@ class RCTD:
         else:
             inv_tau2 = 1.0 / np.maximum(tau, cfg.protein_tau_floor) ** 2
 
-        if isinstance(cfg.protein_weight, str):  # "auto"
-            lam = self._estimate_protein_lambda(P_std, P_prot, inv_tau2, valid)
+        # Per-cell protein weight handed to both the solver and the protein NLL:
+        # bool "has protein" when no reliability model, float otherwise.
+        protein_mask = valid if reliability is None else valid.astype(np.float64) * reliability
+
+        self.protein_lambda_curve = None
+        if isinstance(cfg.protein_weight, str):
+            if cfg.protein_weight == "landmark":
+                lam, self.protein_lambda_curve = self._select_protein_lambda(
+                    P_std, P_prot, inv_tau2, protein_mask, reliability
+                )
+            else:  # "auto"
+                lam = self._estimate_protein_lambda(P_std, P_prot, inv_tau2, valid)
         else:
             lam = float(cfg.protein_weight)
         self.protein_lambda = lam
@@ -427,7 +508,72 @@ class RCTD:
             protein_intensity=P_std.astype(target_dtype),
             inv_tau2=inv_tau2.astype(target_dtype),
             protein_lambda=lam,
-            protein_mask=valid,
+            protein_mask=(
+                protein_mask
+                if protein_mask.dtype == np.bool_
+                else protein_mask.astype(target_dtype)
+            ),
+        )
+
+    def _protein_coords(self) -> np.ndarray:
+        """(N, 2) spatial coordinates row-aligned to the protein matrix.
+
+        ``_protein_raw`` holds exactly the pixels selected by ``_pixel_mask``
+        (UMI filter, then the counts_MIN narrowing), so the same mask applied to
+        ``obsm["spatial"]`` is aligned by construction.
+        """
+        if "spatial" not in self.spatial.obsm:
+            raise ValueError(
+                "protein_reliability needs spatial coordinates in spatial.obsm['spatial']"
+            )
+        coords = np.asarray(self.spatial.obsm["spatial"], dtype=np.float64)[self._pixel_mask]
+        if coords.shape[0] != self._protein_raw.shape[0]:
+            raise ValueError(
+                f"coords rows ({coords.shape[0]}) != protein rows "
+                f"({self._protein_raw.shape[0]}); pixel mask is out of sync"
+            )
+        return coords[:, :2]
+
+    def _select_protein_lambda(self, P_std, P_prot, inv_tau2, protein_mask, reliability):
+        """Measure lambda against held-out landmark cells (protein_weight="landmark").
+
+        Delegates to ``_protein_eval.select_protein_weight``, which gates truth
+        from one marker fold and fits without that fold. Costs
+        ``len(grid) x n_folds`` doublet runs on a subsample, so it is deliberately
+        capped by ``config.protein_lambda_max_pixels``.
+        """
+        from rctd._protein_eval import select_protein_weight
+
+        cfg = self.config
+        fit_kwargs = dict(
+            spatial_counts=self.counts,
+            spatial_numi=self.nUMI,
+            norm_profiles=self.norm_profiles,
+            cell_type_names=self.reference.cell_type_names,
+            q_mat=self.q_mat,
+            sq_mat=self.sq_mat,
+            x_vals=self.x_vals,
+            config=cfg,
+            batch_size=10000,
+            device=str(resolve_device(cfg.device)),
+        )
+        print(f"Selecting protein lambda from {list(cfg.protein_lambda_grid)} by landmark F1...")
+        return select_protein_weight(
+            run_doublet=run_doublet_mode,
+            fit_kwargs=fit_kwargs,
+            protein_std=P_std,
+            protein_profiles=P_prot,
+            inv_tau2=inv_tau2,
+            protein_mask=protein_mask,
+            feature_names=self._protein_feature_names,
+            signatures=cfg.protein_signatures,
+            cell_type_names=self.reference.cell_type_names,
+            reliability=reliability,
+            lambda_grid=cfg.protein_lambda_grid,
+            n_folds=cfg.protein_landmark_folds,
+            min_cells=cfg.protein_landmark_min_cells,
+            max_pixels=cfg.protein_lambda_max_pixels,
+            n_null=cfg.protein_lambda_nulls,
         )
 
     def _estimate_protein_lambda(self, P_std, P_prot, inv_tau2, valid, max_pixels=2000):

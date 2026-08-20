@@ -151,7 +151,16 @@ def run_doublet_mode(
         Yprot_gpu = torch.tensor(protein_intensity, device=device, dtype=P_gpu.dtype)  # (N, M)
         invtau_gpu = torch.tensor(inv_tau2, device=device, dtype=P_gpu.dtype)  # (M,)
         if protein_mask is not None:
-            protmask_gpu = torch.tensor(protein_mask, device=device, dtype=torch.bool)
+            # bool = "has protein"; float in [0, 1] = has protein AND how far it is
+            # trusted (per-cell reliability, e.g. the neighbour-ratio spillover
+            # score). Preserve whichever was passed — the solver and the protein
+            # NLL both multiply by it, so they must see the same values.
+            pm = np.asarray(protein_mask)
+            protmask_gpu = (
+                torch.tensor(pm, device=device, dtype=torch.bool)
+                if pm.dtype == np.bool_
+                else torch.tensor(pm, device=device, dtype=P_gpu.dtype)
+            )
 
     def _gather_protein(type_cols, pix_idx):
         """Gather (P_prot_sub (bs,M,ksub), Y_prot (bs,M), mask (bs,) or None) for a
@@ -244,12 +253,16 @@ def run_doublet_mode(
     print(f"  [doublet] Step 4: singlet scoring ({len(singles)} singles)...")
     _t4 = _time.time()
     singlet_log_l = {}
+    singlet_rna_log_l = {}  # protein only: RNA component of the singlet score
+    singlet_prot_log_l = {}  # protein only: lambda * protein component
 
     if singles:
         singles_arr = np.array(singles, dtype=np.int32)
         S_total = len(singles_arr)
 
         all_sing_scores_t = []
+        all_sing_rna_t = []
+        all_sing_prot_t = []
 
         for start in range(0, S_total, batch_size):
             end = min(start + batch_size, S_total)
@@ -295,9 +308,16 @@ def run_doublet_mode(
             scores_batch = calc_log_likelihood_batch(B_sg, expected_sg, Q_gpu, SQ_gpu, X_gpu)
             if use_protein:
                 mu_prot = torch.sum(P_prot_sg * weights_batch[:, None, :], dim=-1)  # (bs, M)
-                scores_batch = scores_batch + protein_lambda * calc_protein_log_likelihood_batch(
+                prot_batch = protein_lambda * calc_protein_log_likelihood_batch(
                     Yp_sg, mu_prot, invtau_gpu, pm_sg
                 )
+                # Keep the two terms as well as the sum. Which type each modality
+                # would pick ON ITS OWN is then free (no extra fit), and that
+                # disagreement is the query-by-committee signal: it is what flags
+                # a cell whose protein contradicts its transcriptome.
+                all_sing_rna_t.append(scores_batch)
+                all_sing_prot_t.append(prot_batch)
+                scores_batch = scores_batch + prot_batch
             all_sing_scores_t.append(scores_batch)
 
         # Transfer all results to CPU at once
@@ -305,6 +325,13 @@ def run_doublet_mode(
 
         for i, (n_idx, t) in enumerate(singles):
             singlet_log_l[(n_idx, t)] = all_sing_sc_np[i]
+
+        if use_protein:
+            rna_np = torch.cat(all_sing_rna_t).cpu().numpy()
+            prot_np = torch.cat(all_sing_prot_t).cpu().numpy()
+            for i, (n_idx, t) in enumerate(singles):
+                singlet_rna_log_l[(n_idx, t)] = rna_np[i]
+                singlet_prot_log_l[(n_idx, t)] = prot_np[i]
 
     print(f"  [doublet] Step 4 done ({_time.time() - _t4:.1f}s)")
 
@@ -521,6 +548,45 @@ def run_doublet_mode(
     print(f"  [doublet] Step 6 done ({_time.time() - _t6:.1f}s)")
     print(f"  [doublet] Total doublet mode: {_time.time() - _t0:.1f}s")
 
+    # ── Modality disagreement (protein only, no extra fit) ──
+    # For each pixel, which candidate type the RNA term alone would pick and which
+    # the protein term alone would pick. Both are read off the SAME joint
+    # single-type fits scored above, so this is a decomposition of the joint score
+    # rather than two independent solves — that is what makes it free. A conflict
+    # means the two modalities disagree about this cell: either a wrong call, or a
+    # real type the reference does not contain.
+    rna_first_type = prot_first_type = modality_conflict = modality_confusion = None
+    if use_protein:
+        rna_first_type = np.full(N, -1, dtype=np.int32)
+        prot_first_type = np.full(N, -1, dtype=np.int32)
+        if protein_mask is None:
+            has_prot = np.ones(N, dtype=bool)
+        else:
+            has_prot = np.asarray(protein_mask).astype(np.float64) > 0.0
+        for n, cands in enumerate(candidates_list):
+            if not has_prot[n]:
+                continue
+            prot_sc = np.array([singlet_prot_log_l[(n, t)] for t in cands])
+            if not np.isfinite(prot_sc).any() or np.ptp(prot_sc) == 0.0:
+                continue  # protein says nothing about this cell — not a conflict
+            rna_sc = np.array([singlet_rna_log_l[(n, t)] for t in cands])
+            rna_first_type[n] = cands[int(np.argmin(rna_sc))]
+            prot_first_type[n] = cands[int(np.argmin(prot_sc))]
+        scored = (rna_first_type >= 0) & (prot_first_type >= 0)
+        modality_conflict = scored & (rna_first_type != prot_first_type)
+        modality_confusion = np.zeros((K, K), dtype=np.int64)
+        np.add.at(
+            modality_confusion,
+            (rna_first_type[scored], prot_first_type[scored]),
+            1,
+        )
+        n_conf = int(modality_conflict.sum())
+        print(
+            f"  [doublet] modality disagreement: {n_conf}/{int(scored.sum())} scored pixels "
+            f"({100.0 * n_conf / max(int(scored.sum()), 1):.1f}%) where RNA and protein "
+            f"pick different types"
+        )
+
     # Populate class name arrays only when user provided an explicit class_df.
     # With class_df=None (internal identity), these stay None for backward compat.
     if user_class_df is not None:
@@ -544,4 +610,8 @@ def run_doublet_mode(
         pixel_mask=pixel_mask,
         first_class_name=first_class_name,
         second_class_name=second_class_name,
+        rna_first_type=rna_first_type,
+        prot_first_type=prot_first_type,
+        modality_conflict=modality_conflict,
+        modality_confusion=modality_confusion,
     )

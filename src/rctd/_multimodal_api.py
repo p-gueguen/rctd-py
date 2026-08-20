@@ -57,7 +57,7 @@ def run_rctd_multimodal(
     constrain: bool = True,
     return_uncertainty: bool = False,
     adaptive_weighting: str | None = None,
-    fusion: str = "count",
+    fusion: str = "protein_wls",
     protein_lam: float | str = 1.0,
     protein_norm: str = "arcsinh_robust",
 ) -> MultiModalResult:
@@ -77,6 +77,11 @@ def run_rctd_multimodal(
         return_uncertainty: if True, populate ``result.weights_se`` with a
             per-pixel, per-cell-type standard error from the inverse-Hessian
             (Laplace) approximation at the solution.
+        fusion: ``"protein_wls"`` (default) enters the SECOND modality as a
+            Gaussian/WLS block on standardized values - correct for continuous
+            protein intensity and for protein counts alike. ``"count"`` models every
+            modality as Poisson counts and is only valid for genuine integer count
+            modalities; it raises on continuous input.
         adaptive_weighting: if set to ``"depth_share"`` or ``"sqrt_depth"``,
             replace the fixed per-modality ``beta`` with data-driven per-pixel
             weights derived from each modality's relative sequencing depth
@@ -88,6 +93,26 @@ def run_rctd_multimodal(
     """
     if len(modalities) < 1:
         raise ValueError("need at least one modality")
+    if fusion not in ("protein_wls", "count"):
+        raise ValueError(f"unknown fusion={fusion!r}; expected 'protein_wls' or 'count'")
+    if fusion == "count":
+        # Count fusion models EVERY modality as Poisson counts. Fed continuous
+        # intensity it collapses to one constant weight vector for every pixel
+        # (tests/test_fusion_switch.py asserts exactly that degeneracy), so refuse
+        # non-integer input rather than returning a plausible-looking answer.
+        for mod in modalities:
+            X = mod.spatial.X
+            sample = np.asarray(
+                (X[: min(1000, X.shape[0])]).todense()
+                if hasattr(X, "todense")
+                else X[: min(1000, X.shape[0])]
+            )
+            if sample.size and not np.allclose(sample, np.round(sample)):
+                raise ValueError(
+                    f"fusion='count' requires integer counts, but modality "
+                    f"'{mod.name}' holds continuous values. Use fusion='protein_wls', "
+                    "which enters the second modality as a Gaussian/WLS block."
+                )
     config = config or RCTDConfig()
     device = resolve_device(config.device)
 
@@ -196,7 +221,7 @@ def run_rctd_multimodal(
             all_c[start:end] = c.cpu().numpy()
         # solve_irwls_batch_shared has no uncertainty return; all_se stays None.
     else:
-        # ── count fusion (default): every modality as a Poisson count block ──
+        # ── count fusion (opt-in): every modality as a Poisson count block ──
         for start in range(0, N, batch_size):
             end = min(start + batch_size, N)
             n_batch = [n[start:end] for n in n_list]

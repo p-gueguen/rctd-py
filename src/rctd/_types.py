@@ -45,7 +45,11 @@ class RCTDConfig(NamedTuple):
     # is byte-for-byte identical to the RNA-only solver. "auto" balances the
     # protein gradient magnitude against RNA at init; a float sets lambda
     # directly. See _protein.py and the protein blocks in _irwls.py.
-    protein_weight: float | str = 0.0  # lambda; 0.0 = RNA-only (default), "auto", or fixed float
+    # lambda; 0.0 = RNA-only (default), a fixed float, "auto" (per-feature gradient
+    # balance at init — underweights a deep, informative panel), or "landmark"
+    # (measured: sweep protein_lambda_grid and keep the best macro-F1 against
+    # held-out protein-gated landmark cells).
+    protein_weight: float | str = 0.0
     protein_obsm_key: str = "protein"  # spatial.obsm key for the (N, M) intensity matrix
     protein_norm: str = "arcsinh_robust"  # "arcsinh_robust" (default) | "clr"
     protein_profile_source: str = "bootstrap"  # "bootstrap" | "curated" (needs protein_signatures)
@@ -57,11 +61,33 @@ class RCTDConfig(NamedTuple):
     # _protein.scgate_signatures. Overriding a wrong RNA call needs a strong protein_weight
     # (e.g. 4), not the balanced "auto" (which only sharpens).
     protein_signatures: dict | None = None
-    protein_signature_magnitude: float = 1.5  # +/- z written for positive/negative curated markers
+    # +/- z written for positive/negative curated markers. "calibrated" measures a
+    # per-marker level from landmark cells instead (see _protein.calibrate_signed_levels):
+    # one global magnitude that understates a real separation has to be paid for with a
+    # larger lambda, which over-weights the whole panel rather than that one marker.
+    protein_signature_magnitude: float | str = 1.5
     protein_var_model: str = "wls_pooled"  # "wls_pooled" (1/tau_m) | "unit"
     protein_arcsinh_cofactor: float = 5.0  # arcsinh cofactor for IF intensity
     protein_singlet_purity: float = 0.8  # confident-singlet weight gate for the bootstrap
     protein_tau_floor: float = 1e-3  # floor on per-marker tau to bound 1/tau^2
+    # Per-cell protein reliability. "neighbour_ratio" downweights a cell whose
+    # protein signal does not stand above the same markers in its spatial
+    # neighbours (segmentation bleed-through) instead of trusting it fully.
+    # Needs spatial.obsm["spatial"]; None = every cell with protein weighs 1.
+    protein_reliability: str | None = None  # None | "neighbour_ratio"
+    protein_reliability_k: int = 6  # neighbours per cell for the ratio
+    protein_reliability_floor: float = 0.05  # never strip a cell's protein term entirely
+    # Landmark cells (protein-gated, used when protein_weight="landmark" and by
+    # protein_signature_magnitude="calibrated").
+    protein_landmark_min_cells: int = 20  # per-type target for the gating ladder
+    protein_landmark_folds: int = 2  # marker folds: gate truth with one, fit without it
+    protein_lambda_grid: tuple = (0.0, 0.5, 1.0, 2.0, 4.0, 8.0)  # swept by "landmark"
+    protein_lambda_max_pixels: int = 10000  # subsample for the sweep; final fit uses all
+    # Permutation-null realisations the measured gain must beat (0 = skip, and
+    # accept any gain over lambda=0). Costs (n+1)x the sweep. One is NOT enough:
+    # the null gain is centred at zero but spreads as wide as a real effect when
+    # landmarks are few, so a single shuffled sweep let pure noise win lambda=4.
+    protein_lambda_nulls: int = 6
 
 
 def resolve_device(device: str = "auto") -> torch.device:
@@ -131,6 +157,14 @@ class DoubletResult(NamedTuple):
     # (N,) str, class of first/second_type when class_df was provided; else None
     first_class_name: np.ndarray | None = None
     second_class_name: np.ndarray | None = None
+    # ── Modality disagreement, populated only when the protein modality is on ──
+    # Which type each modality would pick alone, read off the joint single-type
+    # scores (no extra fit). -1 = the pixel has no protein, or protein does not
+    # discriminate between its candidates.
+    rna_first_type: np.ndarray | None = None  # (N,) int
+    prot_first_type: np.ndarray | None = None  # (N,) int
+    modality_conflict: np.ndarray | None = None  # (N,) bool: the two disagree
+    modality_confusion: np.ndarray | None = None  # (K, K) counts, rows RNA / cols protein
 
 
 class MultiResult(NamedTuple):

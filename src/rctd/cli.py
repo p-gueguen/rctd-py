@@ -342,6 +342,33 @@ def _write_results_to_adata(
         full_wt_doublet[pixel_mask] = result.weights_doublet
         adata.obsm["rctd_weights_doublet"] = full_wt_doublet
 
+        # Continuous confidence. Computed on every run since the first release but
+        # dropped by the CLI, so a CLI user could see the reject/singlet VERDICT and
+        # never the margin behind it. singlet_score - min_score is the gap the
+        # DOUBLET_THRESHOLD decision is made on.
+        for name, arr in (("min_score", result.min_score), ("singlet_score", result.singlet_score)):
+            full = np.full(n_total, np.nan, dtype=np.float32)
+            full[pixel_mask] = arr
+            adata.obs[f"rctd_{name}"] = full
+        gap = np.full(n_total, np.nan, dtype=np.float32)
+        gap[pixel_mask] = result.singlet_score - result.min_score
+        adata.obs["rctd_singlet_gap"] = gap
+
+        # Modality disagreement (protein runs only)
+        if result.modality_conflict is not None:
+            for name, arr in (
+                ("rna_first_type", result.rna_first_type),
+                ("prot_first_type", result.prot_first_type),
+            ):
+                names = np.full(n_total, "filtered", dtype=object)
+                names[pixel_mask] = ["unscored" if i < 0 else cell_type_names[i] for i in arr]
+                adata.obs[f"rctd_{name}"] = pd.Categorical(names)
+            conflict = np.zeros(n_total, dtype=bool)
+            conflict[pixel_mask] = result.modality_conflict
+            adata.obs["rctd_modality_conflict"] = conflict
+            adata.uns["rctd_modality_confusion"] = result.modality_confusion
+            adata.uns["rctd_modality_confusion_types"] = list(cell_type_names)
+
     elif mode == "multi":
         n_types_per_pixel = np.zeros(n_total, dtype=np.int32)
         n_types_per_pixel[pixel_mask] = result.n_types
@@ -626,6 +653,10 @@ def run(
         protein_signature_magnitude=protein_signature_magnitude,
     )
     config_dict = config._asdict()
+    # uns has no writer for a tuple, and a tuple-valued config field (e.g.
+    # protein_lambda_grid) otherwise kills the run only at the final write_h5ad,
+    # after all the compute. Normalize here so any future tuple field is safe.
+    config_dict = {k: (list(v) if isinstance(v, tuple) else v) for k, v in config_dict.items()}
 
     try:
         # Redirect stdout to stderr when --json or --quiet

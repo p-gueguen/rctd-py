@@ -12,9 +12,14 @@ from rctd._normalize import fit_bulk
 from rctd._protein import (
     bootstrap_protein_profiles,
     build_signed_profile,
+    calibrate_signed_levels,
+    gate_landmarks,
+    marker_folds,
+    neighbour_reliability,
     normalize_protein,
     scgate_signatures,
 )
+from rctd._protein_eval import landmark_macro_f1, select_protein_weight
 from rctd._rctd import RCTD, run_rctd
 from rctd._reference import Reference
 from rctd._sigma import choose_sigma
@@ -49,6 +54,12 @@ __all__ = [
     "bootstrap_protein_profiles",
     "build_signed_profile",
     "scgate_signatures",
+    "gate_landmarks",
+    "marker_folds",
+    "calibrate_signed_levels",
+    "neighbour_reliability",
+    "landmark_macro_f1",
+    "select_protein_weight",
     "run_rctd_multimodal",
     "Modality",
     "MultiModalResult",

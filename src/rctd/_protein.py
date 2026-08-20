@@ -138,6 +138,7 @@ def build_signed_profile(
     feature_names: list[str],
     signatures: dict,
     magnitude: float = 1.5,
+    levels: tuple[np.ndarray, np.ndarray] | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Build a curated signed protein profile (M x K, in standardized z-units) from
     positive/negative marker sets.
@@ -152,7 +153,11 @@ def build_signed_profile(
         signatures: ``{cell_type: {"positive": [markers], "negative": [markers]}}``. Markers
             absent from ``feature_names`` are ignored; cell types absent from ``signatures``
             get an all-zero (neutral) column.
-        magnitude: the +/- z value written for positive / negative markers.
+        magnitude: the +/- z value written for positive / negative markers. Used
+            only when ``levels`` is None.
+        levels: optional ``(pos_level (M,), neg_level (M,))`` from
+            :func:`calibrate_signed_levels` - PER-MARKER levels measured from
+            landmark cells, which override the single global ``magnitude``.
 
     Returns:
         ``(P_prot (M, K), curated_mask (K,) bool)`` - ``curated_mask[k]`` is True iff type k had
@@ -160,6 +165,15 @@ def build_signed_profile(
     """
     M, K = len(feature_names), len(cell_type_names)
     fidx = {f: i for i, f in enumerate(feature_names)}
+    if levels is None:
+        pos_level = np.full(M, float(magnitude))
+        neg_level = np.full(M, -float(magnitude))
+    else:
+        pos_level, neg_level = (np.asarray(a, dtype=np.float64) for a in levels)
+        if pos_level.shape != (M,) or neg_level.shape != (M,):
+            raise ValueError(
+                f"levels must both be ({M},), got {pos_level.shape} / {neg_level.shape}"
+            )
     P = np.zeros((M, K), dtype=np.float64)
     mask = np.zeros(K, dtype=bool)
     for k, t in enumerate(cell_type_names):
@@ -169,10 +183,10 @@ def build_signed_profile(
         mask[k] = True
         for mk in spec.get("positive", []):
             if mk in fidx:
-                P[fidx[mk], k] = magnitude
+                P[fidx[mk], k] = pos_level[fidx[mk]]
         for mk in spec.get("negative", []):
             if mk in fidx:
-                P[fidx[mk], k] = -magnitude
+                P[fidx[mk], k] = neg_level[fidx[mk]]
     return P, mask
 
 
@@ -238,3 +252,318 @@ def scgate_signatures(
             "negative": [m for m, s in prot.items() if s < 0],
         }
     return out
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Spatial spillover: per-cell protein reliability
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _knn_indices(coords: np.ndarray, k: int = 6) -> np.ndarray:
+    """(N, k_eff) indices of each cell's k nearest OTHER cells.
+
+    Uses ``scipy.spatial.cKDTree`` (scipy is already a hard dependency). Do NOT
+    swap this for the dense pairwise-distance kNN in ``_multimodal._morans_i``:
+    that materializes an N x N matrix and dies on a 60k-cell Xenium section.
+    """
+    from scipy.spatial import cKDTree
+
+    coords = np.asarray(coords, dtype=np.float64)
+    if coords.ndim != 2 or coords.shape[1] < 2:
+        raise ValueError(f"coords must be (N, >=2), got shape {coords.shape}")
+    N = coords.shape[0]
+    if N < 2:
+        raise ValueError(f"need >= 2 cells for a kNN graph, got {N}")
+    k_eff = min(k, N - 1)
+
+    # query k_eff+1 because the point itself is always among its own neighbours
+    _, idx = cKDTree(coords).query(coords, k=k_eff + 1)
+    idx = np.atleast_2d(idx)
+    # Drop the self column. With duplicated coordinates self is not necessarily
+    # column 0, so locate it per row rather than slicing [:, 1:].
+    self_col = idx == np.arange(N)[:, None]
+    first_self = np.argmax(self_col, axis=1)
+    keep = np.ones(idx.shape, dtype=bool)
+    keep[np.arange(N), first_self] = False
+    return idx[keep].reshape(N, -1)[:, :k_eff]
+
+
+def neighbour_reliability(
+    protein_std: np.ndarray,
+    coords: np.ndarray,
+    k: int = 6,
+    high_pct: float = 75.0,
+    floor: float = 0.05,
+) -> np.ndarray:
+    """Per-cell protein reliability in ``[floor, 1]`` from the neighbour-max ratio.
+
+    CellTune's anti-spillover test (Bussi et al., Nat Methods 2026): a marker
+    value is only credible as cell-intrinsic if it stands above the SAME marker
+    in the cell's immediate neighbours - otherwise it is bleed-through from a
+    bright neighbour across an imperfect segmentation boundary.
+
+    Per cell, over the markers it reads high on (above the per-marker
+    ``high_pct`` percentile of the positive part), we take
+    ``own / max(neighbour)`` and reduce with the median. Values are computed on
+    ``max(z, 0)``: a robust-z of 0 is the marker's median, so the positive part
+    is the natural "how far above background" scale, and a ratio in those units
+    separates a source (z=6 beside z=2 -> 0.33) from two genuine neighbouring
+    positives (z=6 beside z=5.5 -> 0.92).
+
+    Cells with no high marker get 1.0 - there is nothing to doubt, and their
+    protein is uninformative anyway.
+
+    Args:
+        protein_std: (N, M) standardized protein, output of :func:`normalize_protein`.
+        coords: (N, 2) spatial coordinates, same row order.
+        k: neighbours per cell.
+        high_pct: percentile (over the positive part of each marker) above which a
+            cell counts as reading high on that marker.
+        floor: lower clamp, so a cell is never fully stripped of its protein term.
+
+    Returns:
+        ``r`` (N,) float64 in ``[floor, 1.0]``. Feed it to
+        ``RCTDConfig(protein_reliability="neighbour_ratio")``, or multiply it into
+        the ``protein_mask`` handed to the solver.
+    """
+    P = np.asarray(protein_std, dtype=np.float64)
+    if P.ndim != 2:
+        raise ValueError(f"protein_std must be 2D (N, M), got {P.shape}")
+    N, M = P.shape
+    if np.asarray(coords).shape[0] != N:
+        raise ValueError(f"coords has {np.asarray(coords).shape[0]} rows, protein_std has {N}")
+
+    x = np.clip(np.where(np.isfinite(P), P, 0.0), 0.0, None)  # (N, M) above-median part
+    nn = _knn_indices(coords, k=k)  # (N, k_eff)
+    nbr_max = x[nn].max(axis=1)  # (N, M) brightest neighbour per marker
+
+    # Per-marker "reads high" cut, taken over the positive part only so a marker
+    # that is off in most cells does not set an absurdly low bar.
+    hi = np.zeros((N, M), dtype=bool)
+    for m in range(M):
+        pos = x[:, m] > 0
+        if pos.sum() < 2:
+            continue
+        hi[:, m] = x[:, m] > np.percentile(x[pos, m], high_pct)
+
+    with np.errstate(divide="ignore", invalid="ignore"):
+        ratio = np.where(nbr_max > 1e-12, x / np.maximum(nbr_max, 1e-12), 1.0)
+    ratio = np.clip(ratio, 0.0, 1.0)
+
+    r = np.ones(N, dtype=np.float64)
+    any_hi = hi.any(axis=1)
+    if any_hi.any():
+        # only rows with at least one high marker — an all-NaN nanmedian slice is
+        # both a warning and meaningless
+        med = np.nanmedian(np.where(hi[any_hi], ratio[any_hi], np.nan), axis=1)
+        r[any_hi] = np.where(np.isfinite(med), med, 1.0)
+    return np.clip(r, floor, 1.0)
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Landmark cells: an internal gold standard gated on protein alone
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _percentile_ranks(P: np.ndarray) -> np.ndarray:
+    """(N, M) per-marker percentile rank in [0, 1] (ties broken by sort order)."""
+    N = P.shape[0]
+    if N < 2:
+        return np.zeros_like(P)
+    order = np.argsort(P, axis=0, kind="stable")
+    ranks = np.empty_like(order, dtype=np.float64)
+    rows = np.arange(N)[:, None]
+    np.put_along_axis(ranks, order, np.broadcast_to(rows, P.shape).astype(np.float64), axis=0)
+    return ranks / (N - 1)
+
+
+def marker_folds(feature_names: list[str], n_folds: int = 2) -> list[np.ndarray]:
+    """Deterministic round-robin partition of marker indices into ``n_folds`` folds.
+
+    Used for leave-markers-out landmark evaluation: gate truth with fold f, fit
+    WITHOUT fold f. Deterministic (no RNG) so a reported score is reproducible.
+    """
+    if n_folds < 2:
+        raise ValueError(f"n_folds must be >= 2, got {n_folds}")
+    idx = np.arange(len(feature_names))
+    return [idx[f::n_folds] for f in range(n_folds)]
+
+
+def gate_landmarks(
+    protein_std: np.ndarray,
+    feature_names: list[str],
+    signatures: dict,
+    cell_type_names: list[str],
+    reliability: np.ndarray | None = None,
+    min_cells: int = 20,
+    t_start: float = 0.95,
+    t_min: float = 0.70,
+    t_step: float = 0.05,
+    min_reliability: float = 0.5,
+    restrict_markers: np.ndarray | None = None,
+) -> tuple[np.ndarray, dict]:
+    """Gate high-confidence landmark cells from protein alone (CellTune's
+    automated landmarking, ported).
+
+    A cell is a landmark for type k when EVERY positive marker of k sits above
+    the threshold and EVERY negative marker sits below its mirror, in per-marker
+    percentiles. Thresholds start strict (0.95) and relax by ``t_step`` until the
+    type reaches ``min_cells`` - CellTune's ladder, which is what keeps rare
+    types representable without loosening the common ones.
+
+    Two things make these labels usable as truth rather than as another
+    prediction: a cell claimed by more than one type is DROPPED (truth must be
+    unambiguous), and when ``reliability`` is supplied a cell whose signal is
+    bleed from a neighbour cannot become truth.
+
+    ``restrict_markers`` limits gating to a subset of marker columns - pass one
+    fold from :func:`marker_folds` and fit without that fold, or the landmarks
+    trivially agree with whatever the protein term already says.
+
+    Args:
+        protein_std: (N, M) standardized protein.
+        feature_names: M marker names (column order).
+        signatures: ``{cell_type: {"positive": [...], "negative": [...]}}``.
+        cell_type_names: K reference type names; labels index into this list.
+        reliability: optional (N,) from :func:`neighbour_reliability`.
+        min_cells: per-type target before the ladder stops relaxing.
+        t_start, t_min, t_step: the relaxation ladder.
+        min_reliability: cells below this are never landmarks.
+        restrict_markers: optional marker-column indices to gate on.
+
+    Returns:
+        ``(labels, info)``. ``labels`` (N,) int: type index, or -1 for "not a
+        landmark". ``info`` carries per-type threshold / count / markers used, the
+        conflict count, and the list of types that never reached ``min_cells`` -
+        report those, never silently drop them.
+    """
+    P = np.asarray(protein_std, dtype=np.float64)
+    N, M = P.shape
+    if len(feature_names) != M:
+        raise ValueError(f"{len(feature_names)} feature names for {M} protein columns")
+
+    u = _percentile_ranks(np.where(np.isfinite(P), P, 0.0))
+    fidx = {f: i for i, f in enumerate(feature_names)}
+    allowed = None if restrict_markers is None else set(np.asarray(restrict_markers).tolist())
+
+    usable = np.ones(N, dtype=bool)
+    if reliability is not None:
+        usable &= np.asarray(reliability, dtype=np.float64) >= min_reliability
+
+    ladder = []
+    t = t_start
+    while t >= t_min - 1e-9:
+        ladder.append(round(t, 4))
+        t -= t_step
+
+    claims = np.zeros((N, len(cell_type_names)), dtype=bool)
+    info: dict = {"per_type": {}, "underpopulated": [], "n_conflicts": 0, "ladder": ladder}
+
+    for k, tname in enumerate(cell_type_names):
+        spec = signatures.get(tname) or {}
+        pos = [fidx[m] for m in spec.get("positive", []) if m in fidx]
+        neg = [fidx[m] for m in spec.get("negative", []) if m in fidx]
+        if allowed is not None:
+            pos = [i for i in pos if i in allowed]
+            neg = [i for i in neg if i in allowed]
+        if not pos:
+            info["per_type"][tname] = {"n": 0, "threshold": None, "reason": "no positive marker"}
+            continue
+
+        chosen = None
+        for t in ladder:
+            ok = usable.copy()
+            for i in pos:
+                ok &= u[:, i] >= t
+            for i in neg:
+                ok &= u[:, i] <= 1.0 - t
+            chosen = (t, ok)
+            if int(ok.sum()) >= min_cells:
+                break
+
+        t_used, ok = chosen
+        n = int(ok.sum())
+        claims[:, k] = ok
+        info["per_type"][tname] = {
+            "n": n,
+            "threshold": t_used,
+            "positive": [feature_names[i] for i in pos],
+            "negative": [feature_names[i] for i in neg],
+        }
+        if n < min_cells:
+            info["underpopulated"].append(tname)
+
+    n_claims = claims.sum(axis=1)
+    labels = np.full(N, -1, dtype=np.int64)
+    single = n_claims == 1
+    labels[single] = np.argmax(claims[single], axis=1)
+    info["n_conflicts"] = int((n_claims > 1).sum())
+    info["n_landmarks"] = int(single.sum())
+    return labels, info
+
+
+def calibrate_signed_levels(
+    protein_std: np.ndarray,
+    feature_names: list[str],
+    signatures: dict,
+    cell_type_names: list[str],
+    labels: np.ndarray,
+    min_cells: int = 10,
+    fallback_pct: tuple[float, float] = (90.0, 10.0),
+) -> tuple[np.ndarray, np.ndarray]:
+    """Per-marker positive / negative levels in standardized units, measured from
+    landmark cells instead of assumed.
+
+    ``protein_signature_magnitude`` writes one global +/- z (1.5 by default) for
+    every marker of every type. Real positive populations sit wherever they sit,
+    and a magnitude that understates the true separation has to be paid for with
+    a larger lambda - which over-weights the whole panel, not just that marker.
+    This is CellTune's per-marker positivity calibration, minus the CNN: the
+    level is the median standardized value of the landmark cells that should be
+    positive (resp. negative) for that marker.
+
+    Markers with too few landmarks on a side fall back to the ``fallback_pct``
+    percentiles of the marker itself.
+
+    Returns:
+        ``(pos_level (M,), neg_level (M,))`` for :func:`build_signed_profile`.
+    """
+    P = np.asarray(protein_std, dtype=np.float64)
+    M = P.shape[1]
+    labels = np.asarray(labels)
+    fidx = {f: i for i, f in enumerate(feature_names)}
+
+    pos_types: dict[int, list[int]] = {}
+    neg_types: dict[int, list[int]] = {}
+    for k, tname in enumerate(cell_type_names):
+        spec = signatures.get(tname) or {}
+        for mk in spec.get("positive", []):
+            if mk in fidx:
+                pos_types.setdefault(fidx[mk], []).append(k)
+        for mk in spec.get("negative", []):
+            if mk in fidx:
+                neg_types.setdefault(fidx[mk], []).append(k)
+
+    hi_fb, lo_fb = fallback_pct
+    pos_level = np.zeros(M)
+    neg_level = np.zeros(M)
+    for m in range(M):
+        col = P[:, m]
+        finite = np.isfinite(col)
+        sel_p = np.isin(labels, pos_types.get(m, [])) & finite
+        sel_n = np.isin(labels, neg_types.get(m, [])) & finite
+        pos_level[m] = (
+            np.median(col[sel_p])
+            if sel_p.sum() >= min_cells
+            else np.percentile(col[finite], hi_fb)
+            if finite.any()
+            else 0.0
+        )
+        neg_level[m] = (
+            np.median(col[sel_n])
+            if sel_n.sum() >= min_cells
+            else np.percentile(col[finite], lo_fb)
+            if finite.any()
+            else 0.0
+        )
+    return pos_level, neg_level

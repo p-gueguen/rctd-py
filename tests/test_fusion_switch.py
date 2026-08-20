@@ -97,7 +97,6 @@ def test_protein_wls_resolves_split_where_count_degenerates():
     PROT = Modality("protein", sp_prot, ref_prot)
 
     rna = run_rctd_multimodal([RNA], config=cfg, fusion="count")
-    cnt = run_rctd_multimodal([RNA, PROT], config=cfg, fusion="count")
     wls = run_rctd_multimodal([RNA, PROT], config=cfg, fusion="protein_wls", protein_lam="auto")
 
     mae_rna = _pair_mae(rna, Wt)
@@ -107,18 +106,23 @@ def test_protein_wls_resolves_split_where_count_degenerates():
     # protein_wls resolves the RNA-degenerate A/B split; RNA-only cannot.
     assert mae_wls < mae_rna, f"protein_wls {mae_wls:.3f} !< rna-only {mae_rna:.3f}"
 
-    # protein_wls output is non-degenerate (per-spot variation), unlike count fusion.
+    # ... and its output varies per spot rather than collapsing to one vector.
     distinct_wls = np.unique(np.round(wls.weights, 6), axis=0).shape[0]
-    distinct_cnt = np.unique(np.round(cnt.weights, 6), axis=0).shape[0]
     assert distinct_wls > n * 0.5, f"protein_wls degenerate: {distinct_wls}/{n} distinct rows"
-    assert distinct_cnt <= max(2, n // 20), (
-        f"count fusion unexpectedly non-degenerate on intensity data: {distinct_cnt}/{n}"
-    )
+
+    # Count fusion on this same continuous panel used to be reachable and produced
+    # exactly that collapse (<= max(2, n/20) distinct rows). It is now refused up
+    # front instead of returning a plausible-looking constant answer.
+    with pytest.raises(ValueError, match="requires integer counts"):
+        run_rctd_multimodal([RNA, PROT], config=cfg, fusion="count")
 
 
 @pytest.mark.protein
-def test_fusion_count_matches_default():
-    """fusion='count' is the documented default path (no behavior change vs omitting it)."""
+def test_default_fusion_is_protein_wls():
+    """The default is protein_wls: correct for continuous intensity AND for protein
+    counts. Count fusion stayed the default long enough to ship a silent collapse
+    to anyone who omitted the argument, which is why omitting it is now the safe
+    path and 'count' is opt-in."""
     ref_rna, ref_prot, sp_rna, sp_prot, _ = _build()
     cfg = RCTDConfig(
         device="cpu",
@@ -135,5 +139,8 @@ def test_fusion_count_matches_default():
     )
     mods = [Modality("RNA", sp_rna, ref_rna), Modality("protein", sp_prot, ref_prot)]
     default = run_rctd_multimodal(mods, config=cfg)
-    explicit = run_rctd_multimodal(mods, config=cfg, fusion="count")
+    explicit = run_rctd_multimodal(mods, config=cfg, fusion="protein_wls")
     np.testing.assert_array_equal(default.weights, explicit.weights)
+
+    with pytest.raises(ValueError, match="unknown fusion"):
+        run_rctd_multimodal(mods, config=cfg, fusion="nonsense")

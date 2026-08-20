@@ -3,6 +3,103 @@
 All notable changes to rctd-py are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] — branch `feat/protein-celltune` (stacks on `feat/multimodal-protein`, PR #25)
+
+Measures the protein modality instead of assuming it, and stops trusting protein
+that looks like bleed-through from a neighbour. The ideas are lifted from CellTune
+(Bussi et al., Nat Methods 2026, doi:10.1038/s41592-026-03162-2), which faced the
+same problem in spatial proteomics: no cell has a label the model did not produce.
+Everything here is additive and off by default; `protein_weight=0.0` remains
+byte-identical to the RNA-only solver.
+
+### Added
+
+- **Landmark cells as internal truth** (`_protein.gate_landmarks`). Strict
+  two-sided gates on the protein channels, relaxed on a ladder from the 95th
+  percentile until each type reaches `protein_landmark_min_cells`. A cell claimed
+  by two types is dropped rather than assigned - truth has to be unambiguous - and
+  types that never reach the target are reported, never silently missing from a
+  macro average.
+- **`protein_weight="landmark"`**: pick lambda by measured accuracy instead of the
+  `"auto"` gradient heuristic (which lands ~0.1 on a 62-plex CosMx panel where 4
+  was best-in-class). Markers are split into folds; truth is gated with fold *f*
+  and the fit for that fold runs with fold *f* removed from both the observation
+  matrix and the profile. Scored on `first_type` with rejects counted as misses,
+  on the landmark cells the RNA-only fit was willing to call. The full curve lands
+  in `RCTD.protein_lambda_curve`.
+- **A permutation null on that choice.** The same sweep runs on
+  `protein_lambda_nulls` (default 6) column-shuffled copies of the panel, and the
+  observed gain must beat the largest null gain. This is not ceremony: on the test
+  fixture a noise panel scored gain +0.039 while a single shuffled sweep drew
+  +0.038, so both "beats lambda=0" and "beats one null" selected lambda=4 on pure
+  noise. The null gain is centred at zero (mean -0.001) but spreads as wide as a
+  real effect when landmarks are few (sd 0.08 at 36 landmarks/fold). Informative
+  panel: gain +0.122, z=2.5, selected. Noise panel: +0.039, z=0.5, rejected.
+- **`protein_signature_magnitude="calibrated"`**: per-marker +/- levels measured
+  from landmark cells (`_protein.calibrate_signed_levels`) instead of one global
+  +/-1.5 z for every marker of every type. On a planted separation of z=6 the
+  calibrated level finds 6.6-7.1; the fixed 1.5 understates it, and a lambda large
+  enough to compensate over-weights the whole panel rather than that one marker.
+  `tests/test_protein_landmarks.py` checks that a correctly scaled profile at
+  lambda=1 does what an understated one needs lambda=4 for.
+- **`protein_reliability="neighbour_ratio"`**: per-cell protein reliability from
+  CellTune's anti-spillover test - a marker value is credible as cell-intrinsic
+  only if it stands above the same marker in the cell's neighbours. There was no
+  spatial term anywhere in the package before this; the only background handling
+  was a global per-marker constant that no config field could even reach. Uses
+  `scipy.spatial.cKDTree` (already a dependency), NOT the dense N x N kNN in
+  `_multimodal._morans_i`, which would OOM on a 60k-cell section.
+- **Per-cell RNA-vs-protein disagreement**, free of any extra fit. `_doublet.py`
+  already formed `score = score_RNA + lambda * score_protein`; it now keeps both
+  terms, so `DoubletResult` carries `rna_first_type`, `prot_first_type`,
+  `modality_conflict` and a `(K, K)` `modality_confusion` matrix. This is
+  CellTune's query-by-committee, and it generalises the dataset-level MECR proxy
+  used in the validation report to a per-cell flag. Caveat stated in the code: both
+  components are read off the same joint single-type fits, so it is a decomposition
+  of the joint score, not two independent solves.
+
+### Changed
+
+- **`prot_mask` is now a per-cell WEIGHT, not just a mask.** It was already
+  multiplied into both the protein gradient and the protein Hessian, so accepting a
+  float in [0, 1] cost one `torch.where` -> `*` swap in each solver and preserves
+  the shared `(K, K)` Hessian precompute (it becomes a broadcast scale). An all-True
+  bool is arithmetically identical to before, and a test asserts an all-ones float
+  matches it exactly. `calc_protein_log_likelihood_batch` applies the same weight,
+  so the fit and the classification cannot disagree about how much protein counts.
+- **`run_rctd_multimodal(fusion=...)` now defaults to `"protein_wls"`, and
+  `"count"` raises on continuous input.** `tests/test_fusion_switch.py` has always
+  asserted that count fusion COLLAPSES on intensity data (one constant weight
+  vector for every pixel); shipping that as the default meant anyone omitting the
+  argument got a plausible-looking constant answer. PR #25 was never released, so
+  nothing downstream depends on the old default.
+- **The CLI keeps the confidence it computes.** `rctd_min_score`,
+  `rctd_singlet_score` and their difference `rctd_singlet_gap` (the margin the
+  reject/singlet decision is actually made on) now reach `obs`, along with the
+  modality-disagreement columns. Before this a CLI user saw the verdict and never
+  the margin.
+
+### Fixed
+
+- **A tuple-valued config field killed a CLI run at the final `write_h5ad`**, after
+  all the compute: `uns` has no writer for a tuple. `config._asdict()` is now
+  normalized on the way out, so future tuple fields are safe too.
+
+### Known limitation (measured, not suspected)
+
+Marker folds stop a marker from scoring itself. They do NOT make landmark truth
+independent of the protein modality as a whole. If a panel is internally consistent
+but attached to the wrong cells - mis-registration, a segmentation offset, protein
+assigned to the neighbour - then the gated truth and the fit read the same wrong
+assignment and agree with each other, and the sweep can still land on lambda > 0.
+Verified both ways on synthetic data: shuffling each marker independently (no
+information at all) correctly selects lambda=0, while shuffling whole rows (a
+mis-assigned panel) does not. What separates them is the ABSOLUTE macro F1 (0.40 vs
+0.85 on that fixture), because a mis-assigned panel's gated truth contradicts the
+RNA the fit also sees. Read the absolute F1, not only the argmax. The only real fix
+is truth that does not come from protein, which is what CellTune buys with human
+labelling.
+
 ## [0.3.7] — 2026-07-15
 
 ### Fixed

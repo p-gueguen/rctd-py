@@ -614,7 +614,11 @@ def solve_irwls_batch(
         Y_prot_batch: (N, M) standardized observed protein intensities.
         inv_tau2: (M,) per-marker precision 1 / tau_m^2.
         lam: protein balance weight (lambda). 0.0 => RNA-only.
-        prot_mask: (N,) bool, pixels WITH protein (others fall back to RNA-only).
+        prot_mask: (N,) per-pixel protein weight. A bool marks pixels WITH protein
+            (others fall back to RNA-only); a FLOAT in [0, 1] additionally scales
+            how much that pixel's protein term is trusted (see
+            ``_protein.neighbour_reliability``). An all-True bool is arithmetically
+            identical to the previous ``torch.where`` gate.
 
     Returns:
         (weights, converged): (N, K) and (N,) bool arrays
@@ -640,11 +644,14 @@ def solve_irwls_batch(
     # ── Protein (Gaussian/WLS) block — skipped entirely when off ──
     # hess_prot[n] = lam * P_prot[n]^T Sigma^-1 P_prot[n] is constant in w.
     use_protein = (P_prot_batch is not None) and (lam != 0.0)
+    prot_w = None
     if use_protein:
         # hess_prot = lam * P_prot^T diag(inv_tau2) P_prot via bmm
         hess_prot = lam * torch.bmm(
             P_prot_batch.transpose(1, 2) * inv_tau2[None, None, :], P_prot_batch
         )  # (N, K, K)
+        # bool mask or float reliability weight — same arithmetic either way
+        prot_w = None if prot_mask is None else prot_mask.to(dtype)
 
     for it in range(max_iter):
         # Only process non-converged pixels
@@ -669,10 +676,10 @@ def solve_irwls_batch(
             grad_prot = -lam * torch.bmm(P_prot_batch.transpose(1, 2), wresid.unsqueeze(2)).squeeze(
                 2
             )  # (N, K)
-            if prot_mask is not None:
-                m = prot_mask.unsqueeze(1)
-                grad = grad + torch.where(m, grad_prot, torch.zeros_like(grad_prot))
-                hess = hess + m.unsqueeze(2).to(hess.dtype) * hess_prot
+            if prot_w is not None:
+                m = prot_w.unsqueeze(1)  # (N, 1)
+                grad = grad + m * grad_prot
+                hess = hess + m.unsqueeze(2) * hess_prot
             else:
                 grad = grad + grad_prot
                 hess = hess + hess_prot
@@ -743,7 +750,9 @@ def solve_irwls_batch_shared(
         Y_prot_batch: (N, M) standardized observed protein intensities.
         inv_tau2: (M,) per-marker precision 1 / tau_m^2.
         lam: protein balance weight (lambda). 0.0 => RNA-only.
-        prot_mask: (N,) bool, pixels WITH protein (others fall back to RNA-only).
+        prot_mask: (N,) per-pixel protein weight — bool (has protein) or float in
+            [0, 1] (has protein AND how far it is trusted; see
+            ``_protein.neighbour_reliability``).
 
     Returns:
         (weights, converged): (N, K) and (N,) bool arrays
@@ -793,7 +802,8 @@ def solve_irwls_batch_shared(
     w_act = w.clone()
     if use_protein:
         Y_prot_act = Y_prot_batch
-        prot_mask_act = prot_mask  # may be None => all pixels have protein
+        # may be None => all pixels have protein; bool or float weight otherwise
+        prot_mask_act = None if prot_mask is None else prot_mask.to(dtype)
 
     for it in range(max_iter):
         n_act = active_idx.shape[0]
@@ -836,8 +846,8 @@ def solve_irwls_batch_shared(
             grad_prot = -lam * (wresid @ P_prot)  # (n_act, K)
             if prot_mask_act is not None:
                 m = prot_mask_act.unsqueeze(1)  # (n_act, 1)
-                grad = grad + torch.where(m, grad_prot, torch.zeros_like(grad_prot))
-                hess = hess + m.unsqueeze(2).to(hess.dtype) * hess_prot.unsqueeze(0)
+                grad = grad + m * grad_prot
+                hess = hess + m.unsqueeze(2) * hess_prot.unsqueeze(0)
             else:
                 grad = grad + grad_prot
                 hess = hess + hess_prot.unsqueeze(0)  # broadcast (1, K, K)
