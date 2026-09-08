@@ -326,6 +326,8 @@ saveRDS(spatial_obj, "spatial_rctd.rds")
 
 ## Multi-modal (RNA + protein)
 
+**Measured verdict (2026-09-08, 10x ccRCC Xenium Protein, 150k cells, `/srv/GT/analysis/pgueguen/rctd-py/ccrcc_protein/FINDINGS.md`)**: with a reference that contains the tumour and landmarks gated per LINEAGE (8 classes, gate markers held out of the fit), bootstrap protein at the measured lambda 1 lifted held-out lineage F1 0.480 -> 0.549 (z 4.1 vs permutation nulls) and agreement with 10x's WNN lineages 0.449 -> 0.697, rejects 31.7% -> 17.8%. `protein_norm="clr"`, scGate signed overrides and a post-hoc protein override all selected lambda 0. The earlier "protein does not help" measurements on this tissue used a reference with no tumour type and 72 fine-type landmarks. Recipe: `protein_weight="landmark"`, `protein_landmark_classes={type: lineage}`, `protein_landmark_signatures={lineage: gates}`, arcsinh-robust, and order the protein columns so the gate markers share one `marker_folds` fold (folds split by column PARITY).
+
 Joint RNA + protein deconvolution (Gaussian/WLS protein block sharing the per-spot cell-type weights) is in development on the `feat/multimodal-protein` branch. The objective is `L(w) = L_RNA(w) + λ · L_protein(w)`; protein enters the IRWLS gradient/Hessian and the doublet pair/singlet scores. Per-type protein profiles are bootstrapped from RNA-confident singlets, optionally combined with curated signed gates (positive + negative markers per type) to break RNA-degenerate types apart. Check the PR list on https://github.com/p-gueguen/rctd-py/pulls for current status before assuming the API is on `main`.
 
 **Gotchas observed on the branch** (API: `run_rctd_multimodal(...)`, `RCTDConfig(protein_weight=..., protein_norm=...)`):

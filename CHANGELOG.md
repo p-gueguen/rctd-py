@@ -101,6 +101,26 @@ byte-identical to the RNA-only solver.
   all the compute: `uns` has no writer for a tuple. `config._asdict()` is now
   normalized on the way out, so future tuple fields are safe too.
 
+### Measured on real data (2026-09-08)
+
+10x ccRCC Xenium Protein section (`Xenium_V1_Human_Clear_Cell_Renal_Cell_Carcinoma_FFPE_Protein`,
+XOA 4.0, 477 genes, 27-plex), 150k-cell subset, reference = DISCO kidney + a `Tumour_ccRCC`
+type from Zhang et al. 2021 PNAS. Landmarks gated per LINEAGE (8 classes, 839 cells) with the
+gate markers (CD3E, CD20, CD68, CD31, PanCK, alphaSMA, CD45, CD138, CD16) held out of every
+protein fit. Bootstrap protein, `protein_weight="landmark"`: lambda 1 selected, held-out F1
+0.480 -> 0.549, gain +0.069 vs null max -0.002 (z 4.1); agreement with 10x's WNN lineages
+0.449 -> 0.697; rejects 31.7% -> 17.8%. Curated scGate overrides (lambda 0, z 0.3), CLR
+normalisation (lambda 0) and a post-hoc lineage override (no gain) did not help. The two
+August negatives on the same tissue were measured against a reference with no tumour type
+and 72 fine-type landmarks - the reference, not the fusion, was the problem. Full arm table:
+`/srv/GT/analysis/pgueguen/rctd-py/ccrcc_protein/FINDINGS.md`.
+
+Two things that measurement caught in the docs: (1) `marker_folds` splits by column PARITY,
+so a panel whose lineage markers sit at even indices gates everything in fold 0 and leaves
+fold 1 with a junk truth - order the protein columns (or the folds) so each fold can gate;
+(2) scaling `CONFIDENCE_THRESHOLD`/`DOUBLET_THRESHOLD` changed `first_type` in 19.8% of
+cells, not only `spot_class` - the singlet branch and the doublet branch pick different types.
+
 ### Known limitation (measured, not suspected)
 
 Marker folds stop a marker from scoring itself. They do NOT make landmark truth
