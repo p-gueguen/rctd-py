@@ -532,3 +532,52 @@ def test_modality_conflict_flags_contradicting_cells():
     # off-diagonal mass must exist: some cells' modalities pick different types
     off_diag = res.modality_confusion.sum() - np.trace(res.modality_confusion)
     assert off_diag > 0
+
+
+@pytest.mark.protein
+def test_landmark_classes_forgive_within_class_confusion():
+    """protein_landmark_classes: gate and score landmarks per CLASS.
+
+    A and B are RNA-identical, so at lambda=0 the fine-type F1 is poor. Mapped to
+    one class "AB" (gated on m0, the A marker), that confusion is inside the class
+    and the class-level F1 at lambda=0 must be clearly higher. The gated landmark
+    report must be keyed by class, not by reference type."""
+    spatial, ref_adata, _ = _degenerate_dataset()
+    fine, _ = _select(spatial, ref_adata)
+
+    reference = Reference(ref_adata, cell_min=5, min_UMI=10)
+    cfg = RCTDConfig(
+        protein_weight="landmark",
+        protein_landmark_classes={"A": "AB", "B": "AB", "C": "C"},
+        protein_landmark_signatures={
+            "AB": {"positive": ["m0"], "negative": ["m2"]},
+            "C": {"positive": ["m2", "m3"], "negative": []},
+        },
+        **_SELECT_CFG,
+    )
+    coarse = RCTD(spatial, reference, cfg)
+    coarse.fit_platform_effects()
+    coarse.prepare_protein()
+
+    assert set(coarse.protein_landmark_info["per_type"]) == {"AB", "C"}
+    f_fine = fine.protein_lambda_curve["mean_f1"][0.0]
+    f_coarse = coarse.protein_lambda_curve["mean_f1"][0.0]
+    assert f_coarse > f_fine + 0.15, f"fine {f_fine:.3f} vs class-level {f_coarse:.3f}"
+    # the curated PROFILE still uses the per-type signatures (3 curated columns)
+    assert coarse.reference.protein_profiles.shape[1] == 3
+
+
+@pytest.mark.protein
+def test_calibrated_refuses_class_level_landmarks():
+    spatial, ref_adata, _ = _degenerate_dataset()
+    reference = Reference(ref_adata, cell_min=5, min_UMI=10)
+    cfg = RCTDConfig(
+        protein_weight=1.0,
+        protein_landmark_classes={"A": "AB", "B": "AB", "C": "C"},
+        protein_landmark_signatures={"AB": {"positive": ["m0"], "negative": []}},
+        **{**_SELECT_CFG, "protein_signature_magnitude": "calibrated"},
+    )
+    obj = RCTD(spatial, reference, cfg)
+    obj.fit_platform_effects()
+    with pytest.raises(ValueError, match="cannot be combined"):
+        obj.prepare_protein()

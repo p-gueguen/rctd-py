@@ -58,8 +58,24 @@ byte-identical to the RNA-only solver.
   components are read off the same joint single-type fits, so it is a decomposition
   of the joint score, not two independent solves.
 
+- **Class-level landmarks** (`protein_landmark_classes={cell_type: class}`,
+  `protein_landmark_signatures={class: gates}`). A 27-plex panel can adjudicate
+  T vs B vs myeloid vs epithelium; it cannot adjudicate CD4 vs Treg or PT vs
+  tumour, and gating 25 fine types on it left 72 landmark cells with 10 types
+  empty (10x renal, 2026-08-20), which is why that measurement could only say
+  "lambda = 0". Landmarks are now gated per class and `first_type` is mapped
+  through the class map before scoring, so confusion inside a class is not an
+  error. `protein_signatures` stays per-type for the curated PROFILE; a type left
+  out of the map never matches a landmark (a call there scores as wrong). Not
+  combinable with `protein_signature_magnitude="calibrated"` (per-type levels
+  need per-type landmarks; it raises).
+
 ### Changed
 
+- **`--protein-weight landmark` now works from the CLI.** The option parsed
+  `"auto"` and `float()`-ed everything else, so the measured selector was
+  Python-API only. `_parse_protein_weight` accepts a number, `auto` or
+  `landmark` and rejects anything else with a `BadParameter`.
 - **`prot_mask` is now a per-cell WEIGHT, not just a mask.** It was already
   multiplied into both the protein gradient and the protein Hessian, so accepting a
   float in [0, 1] cost one `torch.where` -> `*` swap in each solver and preserves

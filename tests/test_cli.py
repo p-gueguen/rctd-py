@@ -498,3 +498,16 @@ def test_run_persists_confidence_and_conflict(h5ad_pair, tmp_path):
     assert out.uns["rctd_modality_confusion"].shape[0] == len(
         out.uns["rctd_modality_confusion_types"]
     )
+
+
+def test_parse_protein_weight_accepts_landmark():
+    """'landmark' must survive the CLI (it used to hit float() and raise)."""
+    from click import BadParameter
+
+    from rctd.cli import _parse_protein_weight
+
+    assert _parse_protein_weight("landmark") == "landmark"
+    assert _parse_protein_weight(" Auto ") == "auto"
+    assert _parse_protein_weight("2") == 2.0
+    with pytest.raises(BadParameter):
+        _parse_protein_weight("strong")

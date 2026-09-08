@@ -421,17 +421,25 @@ class RCTD:
         want_landmarks = calibrated or cfg.protein_weight == "landmark"
         self.protein_landmarks = None
         self.protein_landmark_info = None
+        lm_sigs = cfg.protein_landmark_signatures or cfg.protein_signatures
+        lm_names, type_to_class = self._landmark_classes()
         if want_landmarks:
-            if not cfg.protein_signatures:
+            if not lm_sigs:
                 raise ValueError(
                     "protein_signature_magnitude='calibrated' and protein_weight='landmark' "
-                    "both need config.protein_signatures to gate landmark cells"
+                    "both need config.protein_signatures (or protein_landmark_signatures) "
+                    "to gate landmark cells"
+                )
+            if calibrated and type_to_class is not None:
+                raise ValueError(
+                    "protein_signature_magnitude='calibrated' needs per-type landmarks; "
+                    "it cannot be combined with protein_landmark_classes"
                 )
             self.protein_landmarks, self.protein_landmark_info = gate_landmarks(
                 P_std,
                 self._protein_feature_names,
-                cfg.protein_signatures,
-                self.reference.cell_type_names,
+                lm_sigs,
+                lm_names,
                 reliability=reliability,
                 min_cells=cfg.protein_landmark_min_cells,
             )
@@ -534,6 +542,19 @@ class RCTD:
             )
         return coords[:, :2]
 
+    def _landmark_classes(self):
+        """``(names, type_to_class)`` for landmark gating: the reference types and
+        ``None`` by default; with ``config.protein_landmark_classes`` the sorted
+        class names and a (K,) map (-1 for a type left out of the map)."""
+        classes = self.config.protein_landmark_classes
+        names = list(self.reference.cell_type_names)
+        if not classes:
+            return names, None
+        class_names = sorted(set(classes.values()))
+        cidx = {c: i for i, c in enumerate(class_names)}
+        type_to_class = np.array([cidx.get(classes.get(t), -1) for t in names], dtype=np.int64)
+        return class_names, type_to_class
+
     def _select_protein_lambda(self, P_std, P_prot, inv_tau2, protein_mask, reliability):
         """Measure lambda against held-out landmark cells (protein_weight="landmark").
 
@@ -545,6 +566,7 @@ class RCTD:
         from rctd._protein_eval import select_protein_weight
 
         cfg = self.config
+        lm_names, type_to_class = self._landmark_classes()
         fit_kwargs = dict(
             spatial_counts=self.counts,
             spatial_numi=self.nUMI,
@@ -566,7 +588,7 @@ class RCTD:
             inv_tau2=inv_tau2,
             protein_mask=protein_mask,
             feature_names=self._protein_feature_names,
-            signatures=cfg.protein_signatures,
+            signatures=cfg.protein_landmark_signatures or cfg.protein_signatures,
             cell_type_names=self.reference.cell_type_names,
             reliability=reliability,
             lambda_grid=cfg.protein_lambda_grid,
@@ -574,6 +596,8 @@ class RCTD:
             min_cells=cfg.protein_landmark_min_cells,
             max_pixels=cfg.protein_lambda_max_pixels,
             n_null=cfg.protein_lambda_nulls,
+            type_to_class=type_to_class,
+            class_names=None if type_to_class is None else lm_names,
         )
 
     def _estimate_protein_lambda(self, P_std, P_prot, inv_tau2, valid, max_pixels=2000):

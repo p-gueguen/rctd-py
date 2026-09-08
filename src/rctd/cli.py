@@ -392,6 +392,21 @@ def _write_results_to_adata(
     return adata
 
 
+def _parse_protein_weight(value):
+    """``"auto"`` / ``"landmark"`` stay strings (they name a lambda-estimation
+    method); anything else must be a number. Before this, ``float("landmark")``
+    made the measured selector unreachable from the CLI."""
+    s = str(value).strip().lower()
+    if s in ("auto", "landmark"):
+        return s
+    try:
+        return float(value)
+    except ValueError as e:
+        raise click.BadParameter(
+            f"--protein-weight must be a number, 'auto' or 'landmark'; got {value!r}"
+        ) from e
+
+
 @main.command()
 @click.argument("spatial", type=click.Path(exists=True, dir_okay=False))
 @click.argument("reference", type=click.Path(exists=True, dir_okay=False))
@@ -510,7 +525,11 @@ def _write_results_to_adata(
     "--protein-weight",
     default="0.0",
     show_default=True,
-    help="Protein balance weight lambda: 0.0 = RNA-only, 'auto' = per-feature balance, or a float.",
+    help=(
+        "Protein balance weight lambda: 0.0 = RNA-only, a float, 'auto' = per-feature "
+        "gradient balance, or 'landmark' = measured against protein-gated landmark cells "
+        "with a permutation null (needs --protein-signatures)."
+    ),
 )
 @click.option(
     "--protein-norm",
@@ -616,10 +635,7 @@ def run(
             )
         class_df_dict = dict(zip(df["cell_type"], df["class"]))
 
-    # Parse protein lambda: "auto" stays a string; everything else is a float.
-    protein_weight_val = (
-        "auto" if str(protein_weight).strip().lower() == "auto" else float(protein_weight)
-    )
+    protein_weight_val = _parse_protein_weight(protein_weight)
     # Curated signed gates from a JSON {cell_type: {positive:[...], negative:[...]}}.
     protein_signatures_dict = None
     if protein_signatures is not None:

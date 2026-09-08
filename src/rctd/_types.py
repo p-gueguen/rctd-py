@@ -81,6 +81,15 @@ class RCTDConfig(NamedTuple):
     # protein_signature_magnitude="calibrated").
     protein_landmark_min_cells: int = 20  # per-type target for the gating ladder
     protein_landmark_folds: int = 2  # marker folds: gate truth with one, fit without it
+    # Gate and score landmarks at a coarser level than the reference types:
+    # {cell_type: class}. A 27-plex panel can adjudicate T vs B vs myeloid vs
+    # epithelium; it cannot adjudicate CD4 vs Treg, and gating 25 fine types on
+    # it left 72 landmarks with 10 types empty (renal, 2026-08). Types absent
+    # from the map never match a landmark class (a call there scores as wrong).
+    # The landmark gates are then read from protein_landmark_signatures (class-
+    # keyed); protein_signatures stays per-type for the curated PROFILE.
+    protein_landmark_classes: dict | None = None
+    protein_landmark_signatures: dict | None = None  # default: protein_signatures
     protein_lambda_grid: tuple = (0.0, 0.5, 1.0, 2.0, 4.0, 8.0)  # swept by "landmark"
     protein_lambda_max_pixels: int = 10000  # subsample for the sweep; final fit uses all
     # Permutation-null realisations the measured gain must beat (0 = skip, and

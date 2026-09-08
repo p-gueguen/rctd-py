@@ -160,14 +160,24 @@ def _sweep_folds(
     max_pixels,
     verbose,
     tag="",
+    type_to_class=None,
+    class_names=None,
 ):
     """Gate truth from one marker fold, fit without that fold, score every lambda.
+
+    With ``type_to_class`` (K,) and ``class_names``, landmarks are gated per CLASS
+    (``signatures`` keyed by class) and ``first_type`` is mapped through
+    ``type_to_class`` before scoring, so confusion inside a class is not an error.
 
     Returns ``(mean_f1_per_lambda, fold_records)``.
     """
     folds = marker_folds(feature_names, n_folds=n_folds)
     scores: dict[float, list] = {lam: [] for lam in grid}
     fold_records = []
+    gate_names = list(cell_type_names) if type_to_class is None else list(class_names or [])
+
+    def _pred(res):
+        return res.first_type if type_to_class is None else type_to_class[res.first_type]
 
     for f, fold in enumerate(folds):
         keep = np.setdiff1d(np.arange(len(feature_names)), fold)
@@ -177,7 +187,7 @@ def _sweep_folds(
             protein_std,
             feature_names,
             signatures,
-            cell_type_names,
+            gate_names,
             reliability=reliability,
             min_cells=min_cells,
             restrict_markers=fold,
@@ -241,7 +251,7 @@ def _sweep_folds(
 
         for lam in grid:
             res = base if lam == 0.0 else _fit(lam)
-            macro, per_type = landmark_macro_f1(labels_eval, res.first_type, res.spot_class)
+            macro, per_type = landmark_macro_f1(labels_eval, _pred(res), res.spot_class)
             scores[lam].append(macro)
             rec["scores"][lam] = {
                 "macro_f1": macro,
@@ -277,6 +287,8 @@ def select_protein_weight(
     max_pixels: int | None = 10000,
     n_null: int = 6,
     verbose: bool = True,
+    type_to_class: np.ndarray | None = None,
+    class_names: list[str] | None = None,
 ) -> tuple[float, dict]:
     """Pick lambda by measured accuracy on held-out landmark cells, against a
     permutation null.
@@ -307,6 +319,10 @@ def select_protein_weight(
             price of a lambda you can defend; lower it to 3 for a weaker test, or
             0 to skip the null entirely and accept any gain over lambda=0 (as
             optimistic as the gradient heuristic it replaces).
+        type_to_class, class_names: score at a coarser level - gate landmarks per
+            class (``signatures`` keyed by class) and map ``first_type`` through
+            ``type_to_class`` (K,) first. Use when the panel can only adjudicate
+            lineages; a type mapped to -1 never matches a landmark.
 
     Returns:
         ``(best_lambda, curve)``. ``curve`` carries ``mean_f1``, ``gain``,
@@ -333,6 +349,8 @@ def select_protein_weight(
         min_cells=min_cells,
         max_pixels=max_pixels,
         verbose=verbose,
+        type_to_class=None if type_to_class is None else np.asarray(type_to_class),
+        class_names=class_names,
     )
     mean_f1, folds = _sweep_folds(protein_std=protein_std, **common)
     curve: dict = {"grid": grid, "mean_f1": mean_f1, "folds": folds}
