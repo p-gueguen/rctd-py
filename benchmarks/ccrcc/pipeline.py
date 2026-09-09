@@ -26,6 +26,9 @@ CONFIG = dict(
     UMI_min=10,
     protein_weight=1.0,
     protein_norm="arcsinh_robust",
+    # 10x protein values are mean stain intensity x10 (tens to hundreds); cofactor 5 saturates the
+    # bright markers, so a softer transform keeps their dynamic range
+    protein_arcsinh_cofactor=20.0,
     # 32% of 10x's exhausted CD8 cells are called CD4_T_cell: cleaner bootstrap singlets should give
     # sharper CD4 / CD8A protein profiles for the two types
     protein_singlet_purity=0.9,
