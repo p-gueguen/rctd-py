@@ -23,7 +23,7 @@ from rctd import RCTDConfig, Reference, run_rctd
 CONFIG = dict(
     compile=False,
     eigh_threshold=0,
-    UMI_min=10,
+    UMI_min=5,  # 'filtered' cells (9% at UMI_min 10) are guaranteed misses on both metric axes
     protein_weight=1.0,
     protein_norm="arcsinh_robust",
     # 10x protein values are mean stain intensity x10 (tens to hundreds); cofactor 5 saturates the
