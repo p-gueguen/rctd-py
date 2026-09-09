@@ -25,7 +25,7 @@ CONFIG = dict(
     eigh_threshold=0,
     UMI_min=10,
     counts_MIN=3,  # 9% of cells are 'filtered' (<10 counts in the bulk gene list) = guaranteed misses
-    protein_weight=1.0,
+    protein_weight=1.5,  # lambda 2 hurt at purity 0.8 / cofactor 5; retest a milder step at the current state
     protein_norm="arcsinh_robust",
     # 10x protein values are mean stain intensity x10 (tens to hundreds); cofactor 5 saturates the
     # bright markers, so a softer transform keeps their dynamic range
