@@ -26,6 +26,13 @@ CONFIG = dict(
     UMI_min=10,
     protein_weight=1.0,
     protein_norm="arcsinh_robust",
+    # signed CD4/CD8A gates for ALL three alpha-beta T types (iteration 9 gated only CD4/CD8 and the
+    # bootstrap Treg profile absorbed both); Treg and CD4_T share the same protein gate on purpose
+    protein_signatures={
+        "CD4_T_cell": {"positive": ["CD4"], "negative": ["CD8A"]},
+        "Treg_cell": {"positive": ["CD4"], "negative": ["CD8A"]},
+        "CD8_T_cell": {"positive": ["CD8A"], "negative": ["CD4"]},
+    },
     # singlet/reject thresholds are absolute log-likelihood gaps tuned for ~5k genes;
     # scale them to the 477-gene panel (A1t: rejects 31.7% -> 1.4% RNA-only)
     CONFIDENCE_THRESHOLD=5.0 * 477 / 5000,
