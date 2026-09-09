@@ -43,10 +43,28 @@ SPOT = np.array(["reject", "singlet", "doublet_certain", "doublet_uncertain"])
 DROP_TYPES = {"cDC1", "cDC2", "Cycling_myeloid_cell"}
 
 
-def run(ad, refs, device="auto"):
+# DISCO's CD4_T_cell is a normal-kidney (naive-like) profile; 92% of 10x's Helper T cells go to
+# Treg_cell. Replace only that one type with the activated/effector CD4 T cells of the tissue-matched
+# Krishna 2021 ccRCC atlas (iteration 10 swapped all four T/NK types and lost CD8 to a naive CD8 label).
+SWAP_FROM_KRISHNA = {"CD4_T_cell"}
+
+
+def build_reference(refs):
     ref_ad = anndata.read_h5ad(refs["hybrid"])
-    ref_ad = ref_ad[~ref_ad.obs["cell_type"].astype(str).isin(DROP_TYPES)].copy()
-    ref = Reference(ref_ad, cell_type_col="cell_type")
+    ct = ref_ad.obs["cell_type"].astype(str)
+    ref_ad = ref_ad[~ct.isin(DROP_TYPES | SWAP_FROM_KRISHNA)].copy()
+    kr = anndata.read_h5ad(refs["krishna_immune"])
+    kr = kr[kr.obs["cell_type"].astype(str).isin(SWAP_FROM_KRISHNA)].copy()
+    genes = sorted(set(ref_ad.var_names) & set(kr.var_names))
+    out = anndata.concat(
+        [ref_ad[:, genes].copy(), kr[:, genes].copy()], join="inner", index_unique="-"
+    )
+    out.obs["cell_type"] = out.obs["cell_type"].astype(str)
+    return out
+
+
+def run(ad, refs, device="auto"):
+    ref = Reference(build_reference(refs), cell_type_col="cell_type")
     cfg = RCTDConfig(device=device, **CONFIG)
     res = run_rctd(ad, ref, mode="doublet", config=cfg, batch_size=BATCH)
     n = ad.n_obs
@@ -61,5 +79,9 @@ def run(ad, refs, device="auto"):
         "first_type": first,
         "spot_class": spot,
         "weights": W,
-        "config": {**CONFIG, "drop_types": sorted(DROP_TYPES)},
+        "config": {
+            **CONFIG,
+            "drop_types": sorted(DROP_TYPES),
+            "swap_from_krishna": sorted(SWAP_FROM_KRISHNA),
+        },
     }
