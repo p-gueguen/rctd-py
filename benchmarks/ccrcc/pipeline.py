@@ -26,6 +26,9 @@ CONFIG = dict(
     UMI_min=10,
     protein_weight=1.0,
     protein_norm="arcsinh_robust",
+    # 32% of 10x's exhausted CD8 cells are called CD4_T_cell: cleaner bootstrap singlets should give
+    # sharper CD4 / CD8A protein profiles for the two types
+    protein_singlet_purity=0.9,
     # singlet/reject thresholds are absolute log-likelihood gaps tuned for ~5k genes;
     # scale them to the 477-gene panel (A1t: rejects 31.7% -> 1.4% RNA-only)
     CONFIDENCE_THRESHOLD=5.0 * 477 / 5000 / 2,  # x0.05: rejects still 10% at x0.1 (Memory T 34%)
