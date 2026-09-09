@@ -26,6 +26,12 @@ CONFIG = dict(
     UMI_min=10,
     protein_weight=1.0,
     protein_norm="arcsinh_robust",
+    # bootstrap profiles for every type except CD4/CD8 T, which get signed CD4/CD8A gates: 31% of
+    # 10x's exhausted CD8 cells were called CD4_T_cell with bootstrap-only protein
+    protein_signatures={
+        "CD4_T_cell": {"positive": ["CD4"], "negative": ["CD8A"]},
+        "CD8_T_cell": {"positive": ["CD8A"], "negative": ["CD4"]},
+    },
     # singlet/reject thresholds are absolute log-likelihood gaps tuned for ~5k genes;
     # scale them to the 477-gene panel (A1t: rejects 31.7% -> 1.4% RNA-only)
     CONFIDENCE_THRESHOLD=5.0 * 477 / 5000,
