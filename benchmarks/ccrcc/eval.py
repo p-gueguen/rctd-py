@@ -283,6 +283,55 @@ def main():
         "config_repr": str(res.get("config", "")),
         "elapsed_s": round(time.time() - t0, 1),
     }
+    # ---- spatial-anno-metrics (Paul's package; REPORTED, never part of the loop metric) ----
+    sam = {}
+    try:
+        from spatial_anno_metrics.eval_metrics import (
+            external_scores,
+            hierarchical_accuracy,
+            internal_validity,
+        )
+
+        ext = external_scores(pred_lin[lab], tenx_lin)
+        sam["lineage_vs_tenx"] = {k: v for k, v in ext.items() if k != "per_class_f1"}
+        primary = {  # one representative reference type per 10x group, for subtype accuracy
+            "Regulatory T Cells (Tregs)": "Treg_cell",
+            "Exhausted Cytotoxic T Cells": "CD8_T_cell",
+            "Vascular-Localized Cytotoxic T Cells": "CD8_T_cell",
+            "Cycling Exhausted T Cells": "CD8_T_cell",
+            "Proliferating T Cells": "Cycling_T_NK_cell",
+            "Helper T Cells": "CD4_T_cell",
+            "Memory T Cells": "CD4_T_cell",
+            "Lymphatic-Associated T Cells": "CD4_T_cell",
+            "Follicular B Cells and Interacting Tfh Cells": "B_cell",
+            "Endothelial-Associated Plasma Cells": "Plasma_cell",
+            "Monocyte-Derived Macrophages": "Macrophage",
+            "Tumor-Associated Macrophages (M2)": "Macrophage",
+            "Plasmacytoid Dendritic Cells (pDCs)": "cDC2",
+            "Hypoxic Tumor": "Tumour_ccRCC",
+            "Differentiated Proximal-Like Tumor": "Tumour_ccRCC",
+            "Growth Signaling-Enriched Tumor": "Tumour_ccRCC",
+            "Stressed/Dedifferentiating Proximal Tubule": "Renal_epithelial_cell_proximal_tubule",
+        }
+        m = g.isin(list(primary)).to_numpy()
+        pred_fine = np.where(called, first, "__reject__")
+        sam["hierarchical_vs_tenx_primary"] = hierarchical_accuracy(
+            pred_fine[m], g[m].map(primary).to_numpy(), LINEAGE
+        )
+        # reference-free coherence of the fine labels in expression space (log-normalised counts)
+        sub = ad_in[called].copy()
+        X = sub.X.toarray() if hasattr(sub.X, "toarray") else np.asarray(sub.X)
+        X = np.log1p(X / np.maximum(X.sum(1, keepdims=True), 1) * 100.0)
+        coh = anndata.AnnData(
+            X=X.astype(np.float32), obs=pd.DataFrame({"ft": first[called]}, index=sub.obs_names)
+        )
+        sam["internal_validity_fine"] = internal_validity(
+            coh, label_key="ft", embedding=None, subsample=3000
+        )
+    except Exception as e:  # reporting must never sink an iteration
+        sam["error"] = repr(e)
+    rec["spatial_anno_metrics"] = sam
+
     (out_dir / f"eval_{tag}.json").write_text(json.dumps(rec, indent=2, default=float))
     print(
         json.dumps(
