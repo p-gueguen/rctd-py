@@ -14,7 +14,6 @@ import anndata
 import h5py
 import numpy as np
 import pandas as pd
-from matplotlib.path import Path as MplPath
 from scipy.sparse import csc_matrix
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -23,6 +22,20 @@ from eval import DATA, GATE_MARKERS, LINEAGE, LINEAGE_SIGS, MIN_LM  # noqa: E402
 from rctd import RCTDConfig, Reference, run_rctd  # noqa: E402
 from rctd._protein import gate_landmarks, normalize_protein  # noqa: E402
 from rctd._types import SPOT_CLASS_REJECT  # noqa: E402
+
+
+def contains_points(poly, pts):
+    """Even-odd ray casting, vectorised over points (no matplotlib in the venv)."""
+    x, y = pts[:, 0], pts[:, 1]
+    inside = np.zeros(len(pts), dtype=bool)
+    xj, yj = poly[-1]
+    for xi, yi in poly:
+        cross = (yi > y) != (yj > y)
+        xint = (xj - xi) * (y - yi) / (yj - yi + 1e-300) + xi
+        inside ^= cross & (x < xint)
+        xj, yj = xi, yi
+    return inside
+
 
 SRC = Path("/srv/GT/analysis/pgueguen/rctd-py/ccrcc_protein/external_kidney/data")
 B = "Xenium_V1_Human_Kidney_FFPE_Protein_updated"
@@ -71,7 +84,7 @@ for ft in g["features"]:
     poly = np.array(ft["geometry"]["coordinates"][0], float)
     h = np.c_[poly, np.ones(len(poly))]
     poly = ((M @ h.T).T[:, :2]) * PX_UM
-    inside = MplPath(poly).contains_points(pts)
+    inside = contains_points(poly, pts)
     region[inside & (region == "")] = ft["properties"]["name"]  # first polygon wins (0.6% overlap)
 ad.obs["region"] = region
 print("regions:", pd.Series(region).value_counts().to_dict())
