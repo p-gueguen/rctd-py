@@ -188,6 +188,8 @@ def main():
     refs = {
         "hybrid": str(DATA / "reference_hybrid_ccrcc.h5ad"),
         "disco": str(DATA / "kidney_ref.h5ad"),
+        # immune-only Krishna 2021 ccRCC TME atlas (tissue-matched T/NK/myeloid/B states)
+        "krishna_immune": str(DATA / "reference_krishna_immune.h5ad"),
     }
 
     spec = importlib.util.spec_from_file_location("pipeline", a.pipeline)
