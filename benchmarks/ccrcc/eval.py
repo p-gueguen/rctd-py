@@ -158,7 +158,7 @@ def macro_f1(true_cls, pred_cls, classes):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--split", default="tune", choices=["tune", "test"])
+    ap.add_argument("--split", default="tune", choices=["tune", "test", "external"])
     ap.add_argument("--pipeline", default=str(HERE / "pipeline.py"))
     ap.add_argument("--tag", default=None)
     ap.add_argument("--out", default=str(HERE / "out"))
