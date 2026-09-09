@@ -24,7 +24,7 @@ CONFIG = dict(
     compile=False,
     eigh_threshold=0,
     UMI_min=10,
-    protein_weight=1.0,
+    protein_weight=2.0,  # lambda 1 was chosen on lineage F1 alone; the fine T-cell axis may want more
     protein_norm="arcsinh_robust",
     # singlet/reject thresholds are absolute log-likelihood gaps tuned for ~5k genes;
     # scale them to the 477-gene panel (A1t: rejects 31.7% -> 1.4% RNA-only)
