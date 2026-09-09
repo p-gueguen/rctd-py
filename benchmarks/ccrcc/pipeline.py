@@ -32,6 +32,8 @@ CONFIG = dict(
     DOUBLET_THRESHOLD=20.0 * 477 / 5000,
     # the DE-gene filter was designed for 20k-gene references; on a curated 477-gene panel it
     # kept only 232 genes for the pixel fit - use them all
+    gene_cutoff=0.0,
+    fc_cutoff=0.0,
     gene_cutoff_reg=0.0,
     fc_cutoff_reg=0.0,
 )
