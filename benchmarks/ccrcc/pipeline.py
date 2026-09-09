@@ -26,6 +26,10 @@ CONFIG = dict(
     UMI_min=10,
     protein_weight=1.0,
     protein_norm="arcsinh_robust",
+    # singlet/reject thresholds are absolute log-likelihood gaps tuned for ~5k genes;
+    # scale them to the 477-gene panel (A1t: rejects 31.7% -> 1.4% RNA-only)
+    CONFIDENCE_THRESHOLD=5.0 * 477 / 5000,
+    DOUBLET_THRESHOLD=20.0 * 477 / 5000,
 )
 BATCH = 4000
 SPOT = np.array(["reject", "singlet", "doublet_certain", "doublet_uncertain"])
