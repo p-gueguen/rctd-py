@@ -121,6 +121,16 @@ fold 1 with a junk truth - order the protein columns (or the folds) so each fold
 (2) scaling `CONFIDENCE_THRESHOLD`/`DOUBLET_THRESHOLD` changed `first_type` in 19.8% of
 cells, not only `spot_class` - the singlet branch and the doublet branch pick different types.
 
+### Autoresearch loop (2026-09-09, branch `autoresearch/protein-ccrcc`)
+
+Twenty keep/revert iterations on the ccRCC section (`benchmarks/ccrcc/`, read-only
+harness, `program.md` for the rules) against sqrt(held-out lineage F1 x 10x fine-type
+agreement): tune 0.457 -> 0.597, untouched test split 0.405 -> 0.507, protein-off arm
+0.439, shuffled-marker nulls <= 0.451. The wins were reference cleanup (drop cDC1/cDC2,
+Cycling_myeloid_cell, Cycling_T_NK_cell), panel-scaled thresholds, `protein_singlet_purity`
+0.9, `protein_arcsinh_cofactor` 20, `counts_MIN` 3 and lambda 1.5; curated signed gates on a
+subset of types lost twice to the bootstrap types. Ledger: `autoresearch/loop-260909-1020/`.
+
 ### Known limitation (measured, not suspected)
 
 Marker folds stop a marker from scoring itself. They do NOT make landmark truth

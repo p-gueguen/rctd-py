@@ -440,6 +440,54 @@ def main():
         else "<p class='note'>spatial-anno-metrics were added to the harness after iteration 4; earlier iterations carry none.</p>"
     )
 
+    # --- external transfer section (second 10x ccRCC block, pathologist regions) ----
+    ext_html = ""
+    ext_path = OUT / "external_metrics.json"
+    if ext_path.exists():
+        em = json.load(open(ext_path))
+        order = [
+            "external_baseline",
+            "external_final",
+            "external_final_rna",
+            "external_final_shuffle0",
+            "external_final_shuffle1",
+        ]
+        names = {
+            "external_baseline": "baseline (iteration 0)",
+            "external_final": "final (iteration 20)",
+            "external_final_rna": "final, protein off",
+            "external_final_shuffle0": "final, fit markers shuffled (seed 0)",
+            "external_final_shuffle1": "final, fit markers shuffled (seed 1)",
+        }
+        trs = "".join(
+            f"<tr><td>{esc(names.get(t, t))}</td><td class='num'>{fmt(em[t]['heldout_lineage_f1'])}</td>"
+            f"<td class='num'>{fmt(em[t]['reject_frac'])}</td><td class='num'>{fmt(em[t]['tumor_region_called_Tumour_ccRCC'])}</td>"
+            f"<td class='num'>{fmt(em[t]['tumor_region_called_nephron'])}</td><td class='num'>{fmt(em[t]['tumor_region_called_immune'])}</td>"
+            f"<td class='num'>{fmt(em[t]['immune_region_called_immune'])}</td><td class='num'>{fmt(em[t]['immune_region_called_Tumour_ccRCC'])}</td>"
+            f"<td class='num'>{fmt(em[t]['immune_region_called_nephron'])}</td></tr>"
+            for t in order
+            if t in em
+        )
+        n_t = next(iter(em.values()))["n_tumor_region"]
+        n_i = next(iter(em.values()))["n_immune_region"]
+        ext_html = (
+            f"<p class='note'>Xenium_V1_Human_Kidney_FFPE_Protein_updated: a different ccRCC patient block, 405-gene panel (387 shared, "
+            f"no CA9), same 27-plex, 150k-cell subsample. Truth here is a pathologist region annotation (QuPath geojson on the H&E, "
+            f"mapped through the alignment matrix): {n_t:,} cells inside 'Tumor' polygons, {n_i:,} inside 'Immune infiltration'. "
+            f"Expectations that use neither protein nor 10x: a normal-nephron call inside a tumour region is wrong; a tumour call inside an immune infiltrate is wrong.</p>"
+            "<table class='grid-t'><thead><tr><th>arm</th><th>held-out F1</th><th>reject</th><th>tumour region: called tumour</th><th>tumour region: called nephron (wrong)</th>"
+            "<th>tumour region: called immune</th><th>immune region: called immune</th><th>immune region: called tumour (wrong)</th><th>immune region: called nephron (wrong)</th></tr></thead>"
+            f"<tbody>{trs}</tbody></table>"
+        )
+        if "external_baseline" in em and "external_final" in em:
+            b, f = em["external_baseline"], em["external_final"]
+            ext_html += (
+                f"<p><b>Transfer verdict:</b> held-out lineage F1 {b['heldout_lineage_f1']:.3f} &rarr; {f['heldout_lineage_f1']:.3f}; "
+                f"nephron calls inside tumour regions {b['tumor_region_called_nephron']:.3f} &rarr; {f['tumor_region_called_nephron']:.3f}; "
+                f"tumour calls inside immune infiltrates {b['immune_region_called_Tumour_ccRCC']:.3f} &rarr; {f['immune_region_called_Tumour_ccRCC']:.3f}; "
+                f"immune calls inside immune infiltrates {b['immune_region_called_immune']:.3f} &rarr; {f['immune_region_called_immune']:.3f}.</p>"
+            )
+
     # --- narrative -----------------------------------------------------------------
     top = sorted([r for r in rows if r["status"] == "keep"], key=lambda r: -float(r["delta"]))[:4]
     worked = "".join(
@@ -535,6 +583,9 @@ Kept {n_kept}, discarded {n_disc}, crashed {n_crash}. Loop ran {esc(rows[0]["tim
 <h2>Held-out validation (test split, never seen by the loop)</h2>
 <div class="card">{test_html or "<p class='note'>Validation job not finished yet; rerun report.py when out/eval_test_*.json exist.</p>"}
 <p><b>{verdict}</b></p></div>
+
+<h2>Transfer to a second ccRCC section (pathologist regions as truth)</h2>
+<div class="card">{ext_html or "<p class='note'>External validation not run yet.</p>"}</div>
 
 <h2>spatial-anno-metrics (reported, never optimised)</h2>
 <div class="card">{sam_html}
