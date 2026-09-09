@@ -24,7 +24,7 @@ CONFIG = dict(
     compile=False,
     eigh_threshold=0,
     UMI_min=10,
-    counts_MIN=5,  # 9% of cells are 'filtered' (<10 counts in the bulk gene list) = guaranteed misses
+    counts_MIN=3,  # 9% of cells are 'filtered' (<10 counts in the bulk gene list) = guaranteed misses
     protein_weight=1.0,
     protein_norm="arcsinh_robust",
     # 10x protein values are mean stain intensity x10 (tens to hundreds); cofactor 5 saturates the
