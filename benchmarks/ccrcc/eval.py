@@ -339,6 +339,12 @@ def main():
     rec["spatial_anno_metrics"] = sam
 
     (out_dir / f"eval_{tag}.json").write_text(json.dumps(rec, indent=2, default=float))
+    np.savez_compressed(
+        out_dir / f"labels_{tag}.npz",
+        obs_names=np.asarray(ad.obs_names, dtype=object),
+        first_type=first.astype(str),
+        spot_class=spot.astype(str),
+    )
     print(
         json.dumps(
             {
