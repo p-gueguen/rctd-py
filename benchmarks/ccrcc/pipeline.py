@@ -44,7 +44,12 @@ SPOT = np.array(["reject", "singlet", "doublet_certain", "doublet_uncertain"])
 
 # cDC1/cDC2 absorb the macrophage groups on this 477-gene panel; Cycling_myeloid_cell (135 DISCO
 # cells, a proliferation profile) is a top-4 call in 14 of 16 10x groups - it steals T and tumour cells
-DROP_TYPES = {"cDC1", "cDC2", "Cycling_myeloid_cell"}
+DROP_TYPES = {
+    "cDC1",
+    "cDC2",
+    "Cycling_myeloid_cell",
+    "Cycling_T_NK_cell",
+}  # + a mixed T/NK proliferation profile
 
 
 def run(ad, refs, device="auto"):
