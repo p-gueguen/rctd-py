@@ -1,0 +1,30 @@
+{
+  "version": "2.1.0",
+  "source": "loop",
+  "timestamp": "2026-09-09T12:58:19.386556",
+  "status": "BOUNDED",
+  "results_tsv": "autoresearch/loop-260909-1020/results.tsv",
+  "findings": [
+    "iteration 2 (8fc18a8): +0.074174 - drop cDC1/cDC2 from reference (F1 0.639, fine 0.502; MDM 0.94 TAM 0.79, pDC 0.00)",
+    "iteration 1 (9367fe8): +0.034658 - scale CONFIDENCE/DOUBLET thresholds by 477/5000 (F1 0.626, fine 0.387, reject 0.101; MDM/TAM agreement collapsed 0.33/0.",
+    "iteration 13 (72a3f9b): +0.014307 - bootstrap singlet purity 0.9 (F1 0.643, fine 0.534; exhausted CD8 0.46 -> 0.70, vascular CD8 0.41 -> 0.62) but Helper T "
+  ],
+  "config": {
+    "goal": "raise RNA+protein cell-typing accuracy of rctd-py on the 10x ccRCC Xenium Protein section",
+    "scope": "benchmarks/ccrcc/pipeline.py, src/rctd/{_protein,_protein_eval,_irwls,_doublet,_rctd,_types,_likelihood}.py",
+    "metric": "sqrt(heldout_lineage_F1 * tenx_fine_agreement) on the 80k-cell tune split",
+    "direction": "higher_is_better",
+    "verify": "uv run python benchmarks/ccrcc/verify.py",
+    "guard": "uv run python benchmarks/ccrcc/guard.py",
+    "iterations": 20
+  },
+  "summary": {
+    "iterations": 20,
+    "kept": 10,
+    "discarded": 9,
+    "crashed": 1,
+    "start_metric": 0.457453,
+    "final_metric": 0.59724,
+    "improvement_pct": 30.6
+  }
+}
