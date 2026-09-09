@@ -225,6 +225,10 @@ def main():
     fine = (
         float(np.mean([v["agreement"] for v in per_group.values()])) if per_group else float("nan")
     )
+    for grp in per_group:  # what the misses are called (diagnostic for the next experiment)
+        m = (g == grp).to_numpy()
+        vc = pd.Series(np.where(called[m], first[m], "reject")).value_counts(normalize=True).head(4)
+        per_group[grp]["top_calls"] = {k: round(float(v), 3) for k, v in vc.items()}
 
     metric = float(np.sqrt(max(f1, 0.0) * max(fine, 0.0)))
 
