@@ -30,6 +30,10 @@ CONFIG = dict(
     # scale them to the 477-gene panel (A1t: rejects 31.7% -> 1.4% RNA-only)
     CONFIDENCE_THRESHOLD=5.0 * 477 / 5000,
     DOUBLET_THRESHOLD=20.0 * 477 / 5000,
+    # the DE-gene filter was designed for 20k-gene references; on a curated 477-gene panel it
+    # kept only 232 genes for the pixel fit - use them all
+    gene_cutoff_reg=0.0,
+    fc_cutoff_reg=0.0,
 )
 BATCH = 4000
 SPOT = np.array(["reject", "singlet", "doublet_certain", "doublet_uncertain"])
