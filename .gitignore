@@ -97,3 +97,6 @@ graphify-out/
 results.tsv
 examples/__marimo__/
 tests/performance_metrics_*.csv
+
+# ccRCC autoresearch harness outputs (logs, per-iteration eval JSON)
+benchmarks/ccrcc/out/

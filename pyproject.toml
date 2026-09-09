@@ -70,3 +70,6 @@ extend-exclude = ["src/rctd/_version.py"]
 [tool.ruff.lint]
 select = ["E", "F", "I", "W"]
 ignore = ["E741"]
+
+[tool.ruff.lint.per-file-ignores]
+"benchmarks/ccrcc/*" = ["E501"]  # harness prose and label maps read better unwrapped
