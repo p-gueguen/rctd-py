@@ -35,8 +35,13 @@ BATCH = 4000
 SPOT = np.array(["reject", "singlet", "doublet_certain", "doublet_uncertain"])
 
 
+DROP_TYPES = {"cDC1", "cDC2"}  # on this 477-gene panel they absorb the macrophage groups
+
+
 def run(ad, refs, device="auto"):
-    ref = Reference(anndata.read_h5ad(refs["hybrid"]), cell_type_col="cell_type")
+    ref_ad = anndata.read_h5ad(refs["hybrid"])
+    ref_ad = ref_ad[~ref_ad.obs["cell_type"].astype(str).isin(DROP_TYPES)].copy()
+    ref = Reference(ref_ad, cell_type_col="cell_type")
     cfg = RCTDConfig(device=device, **CONFIG)
     res = run_rctd(ad, ref, mode="doublet", config=cfg, batch_size=BATCH)
     n = ad.n_obs
@@ -47,4 +52,9 @@ def run(ad, refs, device="auto"):
     spot[res.pixel_mask] = SPOT[res.spot_class]
     W = np.full((n, len(names)), np.nan)
     W[res.pixel_mask] = res.weights
-    return {"first_type": first, "spot_class": spot, "weights": W, "config": CONFIG}
+    return {
+        "first_type": first,
+        "spot_class": spot,
+        "weights": W,
+        "config": {**CONFIG, "drop_types": sorted(DROP_TYPES)},
+    }
