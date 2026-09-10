@@ -3,12 +3,10 @@
 All notable changes to rctd-py are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.3.8] — 2026-09-10
 
 ### Added
 - **SpatialData / Zarr inputs in the CLI** (issue #28). `rctd validate` and `rctd run` now accept a `.h5ad` file, an AnnData Zarr store, or a SpatialData Zarr store for either positional argument. A directory is read as Zarr; if it holds a `tables/` group its single table is used, and a store with several tables errors with their names and asks for an explicit `<store>/tables/<name>` path. Reading goes through one shared `_read_adata()` used by both subcommands, so the two paths cannot drift.
-
-### Added
 - **`RCTD_Q_MATRICES` for offline / HPC installs** (issue #29). `q_matrices.npz` is 404 MB and does not compress (measured: `savez_compressed` returns the same 404 MB, because it is float64 spline tables), so it cannot be vendored in the wheel — PyPI caps a single file at 100 MB. Instead the lookup now consults `$RCTD_Q_MATRICES` (a `.npz`, or a directory holding one) before the package `data/` dir and the `~/.cache/rctd` download, so one staged read-only copy serves every user on a cluster rather than one 404 MB download per home directory. When there is no network and nothing is staged, the failure is now a `RuntimeError` naming the URL, the exact cache path to drop the file at, and the env var — previously a bare `urllib` traceback, which is what sent the reporter into the source to find the cache path. A partial download is deleted rather than left to fail as a corrupt cache later, and a file the caller pointed at deliberately (via the env var or `data_dir`) is reported as unreadable instead of being silently re-downloaded over.
 
 ### Fixed
