@@ -30,7 +30,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=7.0", "pytest-cov", "ruff", "pandas>=1.5"]
+dev = ["pytest>=7.0", "pytest-cov", "ruff", "pandas>=1.5", "spatialdata>=0.2"]
 
 [project.urls]
 Homepage = "https://github.com/p-gueguen/rctd-py"

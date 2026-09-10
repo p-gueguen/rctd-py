@@ -55,8 +55,16 @@ Two optimization layers accelerate the hot path beyond basic `torch.compile`:
 Entry point `rctd` is registered in `pyproject.toml` via `[project.scripts]`. Three subcommands:
 
 - `rctd info` — environment info (versions, GPU detection), `--json` for machine-readable
-- `rctd validate` — pre-flight checks on h5ad inputs (fast, no GPU)
+- `rctd validate` — pre-flight checks on inputs (fast, no GPU)
 - `rctd run` — full deconvolution pipeline, writes annotated h5ad output
+
+Both `validate` and `run` read their two positional arguments through
+`_read_adata()` (`cli.py`), which accepts a `.h5ad` file, an AnnData Zarr store,
+or a SpatialData Zarr store (a directory with a `tables/` group; its single
+table is used). It also casts pandas nullable string dtypes back to object —
+SpatialData writes `obs`/`var` names as `nullable-string-array`, which anndata
+reads as a `StringArray` and then refuses to write back to `.h5ad`, so without
+that cast `run` dies at the final write with the compute already done.
 
 The `run` command uses `RCTD` class directly (not `run_rctd()`), manages its own data loading, and writes results back into a copy of the spatial AnnData with `_write_results_to_adata()`. Progress goes to stderr when `--json` is set.
 

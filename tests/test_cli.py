@@ -384,3 +384,152 @@ def test_run_class_df_missing_columns_errors(h5ad_pair_for_run, tmp_path):
     )
     assert result.exit_code != 0
     assert "cell_type" in result.output and "class" in result.output
+
+
+# ── SpatialData Zarr input (issue #28) ──────────────────────────────
+
+
+def _write_spatialdata_store(path, table):
+    """Write a real SpatialData Zarr store, with pandas future string dtypes on.
+
+    ``pandas.options.future.infer_string`` (the pandas 3.0 default) makes
+    spatialdata encode obs/var names as ``nullable-string-array``. anndata reads
+    those back as a pandas ``StringArray`` and then refuses to write them out to
+    .h5ad, so this is the store shape ``_read_adata`` has to normalise.
+    """
+    import pandas as pd
+
+    sd = pytest.importorskip("spatialdata")
+    import anndata as ad
+    from spatialdata.models import TableModel
+
+    table = table.copy()
+    table.obs_names = pd.Index(table.obs_names, dtype="string")
+    table.var_names = pd.Index(table.var_names, dtype="string")
+
+    prev = ad.settings.allow_write_nullable_strings
+    try:
+        ad.settings.allow_write_nullable_strings = True
+        sd.SpatialData(tables={"table": TableModel.parse(table)}).write(path)
+    finally:
+        ad.settings.allow_write_nullable_strings = prev
+
+    # Fail loudly if the store stopped carrying the encoding these tests exist for.
+    meta = json.loads((path / "tables/table/obs/_index/zarr.json").read_text())
+    assert meta["attributes"]["encoding-type"] == "nullable-string-array", meta
+    return path
+
+
+@pytest.fixture
+def spatialdata_store(tmp_path):
+    """A real SpatialData store holding an RCTD-shaped table, plus a reference h5ad."""
+    from conftest import _make_synthetic_reference, _make_synthetic_spatial
+
+    ref_adata, profiles, _ = _make_synthetic_reference(n_genes=200, n_cells=500, n_types=5, seed=42)
+    spatial_adata, _ = _make_synthetic_spatial(profiles, n_pixels=100, n_types=5, seed=123)
+
+    ref_path = tmp_path / "reference.h5ad"
+    ref_adata.write_h5ad(ref_path)
+
+    store = _write_spatialdata_store(tmp_path / "spatial.zarr", spatial_adata)
+    return store, ref_path
+
+
+def test_read_adata_real_spatialdata_store(tmp_path):
+    """_read_adata reads spatialdata's own blobs store; result stays h5ad-writable."""
+    sd = pytest.importorskip("spatialdata")
+
+    from rctd.cli import _read_adata
+
+    store = _write_spatialdata_store(tmp_path / "blobs.zarr", sd.datasets.blobs()["table"])
+
+    adata = _read_adata(store)
+    assert adata.shape == (26, 3)
+
+    # Regression: without dtype normalisation these names come back as a pandas
+    # nullable StringArray and the write below raises — after a full run's compute.
+    assert not str(adata.obs_names.dtype).startswith("string")
+    assert not str(adata.var_names.dtype).startswith("string")
+    assert not anndata.settings.allow_write_nullable_strings  # the CLI's own default
+    adata.write_h5ad(tmp_path / "roundtrip.h5ad")
+
+
+def test_validate_spatialdata_store(spatialdata_store):
+    """rctd validate accepts a SpatialData store root and a table subpath alike."""
+    store, ref_path = spatialdata_store
+    runner = CliRunner()
+    for spatial in (store, store / "tables" / "table"):
+        result = runner.invoke(main, ["validate", str(spatial), str(ref_path), "--json"])
+        assert result.exit_code == 0, result.output
+        data = json.loads(result.output)
+        assert data["status"] == "pass", data
+        assert data["checks"]["spatial_readable"]["pass"]
+
+
+def test_read_adata_spatialdata_multiple_tables(tmp_path):
+    """A store with several tables names them and asks for an explicit table path."""
+    sd = pytest.importorskip("spatialdata")
+    from spatialdata.models import TableModel
+
+    from rctd.cli import _read_adata
+
+    rng = np.random.default_rng(0)
+    table = anndata.AnnData(X=rng.poisson(5, size=(20, 10)).astype(np.float32))
+    table.var_names = [f"Gene_{i}" for i in range(10)]
+    store = tmp_path / "two.zarr"
+    sd.SpatialData(
+        tables={"table": TableModel.parse(table.copy()), "other": TableModel.parse(table.copy())}
+    ).write(store)
+
+    with pytest.raises(Exception, match="2 tables"):
+        _read_adata(store)
+    # ...but pointing at one of them works
+    assert _read_adata(store / "tables" / "other").shape == (20, 10)
+
+
+@pytest.mark.slow
+def test_run_spatialdata_store(spatialdata_store, tmp_path):
+    """rctd run deconvolves straight from a SpatialData store."""
+    store, ref_path = spatialdata_store
+    out_path = tmp_path / "out.h5ad"
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "run",
+            str(store),
+            str(ref_path),
+            "--mode",
+            "doublet",
+            "--output",
+            str(out_path),
+            "--device",
+            "cpu",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    out = anndata.read_h5ad(out_path)
+    assert "rctd_spot_class" in out.obs
+    assert out.obsm["rctd_weights"].shape[0] == out.n_obs
+
+
+@pytest.mark.slow
+def test_run_spatialdata_default_output_stays_outside_store(spatialdata_store):
+    """The default output path must not land inside the Zarr store."""
+    store, ref_path = spatialdata_store
+    runner = CliRunner()
+    result = runner.invoke(
+        main,
+        [
+            "run",
+            str(store / "tables" / "table"),
+            str(ref_path),
+            "--mode",
+            "doublet",
+            "--device",
+            "cpu",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert (store.parent / "spatial_rctd.h5ad").exists()
+    assert not list(store.rglob("*.h5ad"))

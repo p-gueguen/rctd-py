@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import sys
+from pathlib import Path
 
 import click
 
@@ -77,9 +78,52 @@ def info(use_json):
         click.echo(f"scipy   {data['scipy_version']}")
 
 
+def _read_adata(path):
+    """Read an AnnData from .h5ad, an AnnData Zarr store, or a SpatialData Zarr store.
+
+    A directory is read as Zarr. If it looks like a SpatialData store (it has a
+    ``tables/`` group) the single table inside is used; with zero or several
+    tables, point at the table path directly.
+    """
+    import anndata
+
+    p = Path(path)
+    if not p.is_dir():
+        return anndata.read_h5ad(p)
+
+    tables = p / "tables"
+    if tables.is_dir():
+        names = sorted(c.name for c in tables.iterdir() if c.is_dir())
+        if len(names) != 1:
+            listed = ", ".join(names) if names else "none"
+            raise click.ClickException(
+                f"{p} is a SpatialData store with {len(names)} tables ({listed}); "
+                f"pass the table path directly, e.g. {tables / (names[0] if names else '<table>')}"
+            )
+        p = tables / names[0]
+
+    try:
+        from anndata.io import read_zarr
+    except ImportError:  # anndata < 0.11
+        from anndata import read_zarr
+    adata = read_zarr(p)
+
+    # SpatialData stores obs/var names and string columns as pandas nullable
+    # strings, which anndata refuses to write back out to .h5ad. Normalise to the
+    # plain object dtype the .h5ad path already yields, so the rest of the
+    # pipeline cannot tell the two containers apart.
+    adata.obs_names = adata.obs_names.astype(object)
+    adata.var_names = adata.var_names.astype(object)
+    for df in (adata.obs, adata.var):
+        for col in df.columns:
+            if str(df[col].dtype).startswith("string"):
+                df[col] = df[col].astype(object)
+    return adata
+
+
 @main.command()
-@click.argument("spatial", type=click.Path(exists=True, dir_okay=False))
-@click.argument("reference", type=click.Path(exists=True, dir_okay=False))
+@click.argument("spatial", type=click.Path(exists=True))
+@click.argument("reference", type=click.Path(exists=True))
 @click.option(
     "--cell-type-col",
     default="cell_type",
@@ -93,7 +137,6 @@ def info(use_json):
 @click.option("--json", "use_json", is_flag=True, help="Output as JSON.")
 def validate(spatial, reference, cell_type_col, umi_min, cell_min, use_json):
     """Validate inputs before running RCTD (fast, no GPU needed)."""
-    import anndata
     import numpy as np
     from scipy import sparse
 
@@ -102,7 +145,7 @@ def validate(spatial, reference, cell_type_col, umi_min, cell_min, use_json):
 
     # 1. Read spatial
     try:
-        sp = anndata.read_h5ad(spatial)
+        sp = _read_adata(spatial)
         checks["spatial_readable"] = {
             "pass": True,
             "detail": f"{sp.n_obs} pixels, {sp.n_vars} genes",
@@ -113,7 +156,7 @@ def validate(spatial, reference, cell_type_col, umi_min, cell_min, use_json):
 
     # 2. Read reference
     try:
-        ref = anndata.read_h5ad(reference)
+        ref = _read_adata(reference)
         checks["reference_readable"] = {
             "pass": True,
             "detail": f"{ref.n_obs} cells, {ref.n_vars} genes",
@@ -366,8 +409,8 @@ def _write_results_to_adata(
 
 
 @main.command()
-@click.argument("spatial", type=click.Path(exists=True, dir_okay=False))
-@click.argument("reference", type=click.Path(exists=True, dir_okay=False))
+@click.argument("spatial", type=click.Path(exists=True))
+@click.argument("reference", type=click.Path(exists=True))
 @click.option(
     "--cell-type-col",
     default="cell_type",
@@ -501,9 +544,6 @@ def run(
     import contextlib
     import time
     import traceback
-    from pathlib import Path
-
-    import anndata
 
     from rctd import __version__
     from rctd._doublet import run_doublet_mode
@@ -516,6 +556,8 @@ def run(
     # Default output path
     if output is None:
         sp = Path(spatial)
+        if sp.parent.name == "tables":  # path into a SpatialData store; step out of it
+            sp = sp.parent.parent
         output = str(sp.parent / f"{sp.stem}_rctd.h5ad")
 
     # Load class_df TSV if provided
@@ -564,10 +606,10 @@ def run(
             # Load data
             if not quiet:
                 click.echo("Loading spatial data...", err=True)
-            spatial_adata = anndata.read_h5ad(spatial)
+            spatial_adata = _read_adata(spatial)
             if not quiet:
                 click.echo("Loading reference...", err=True)
-            ref_adata = anndata.read_h5ad(reference)
+            ref_adata = _read_adata(reference)
             ref_obj = Reference(
                 ref_adata,
                 cell_type_col=cell_type_col,

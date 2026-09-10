@@ -127,6 +127,19 @@ rctd run spatial.h5ad reference.h5ad \
 rctd run spatial.h5ad reference.h5ad --json --quiet
 ```
 
+Both positional arguments accept a `.h5ad` file, an AnnData Zarr store, or a
+SpatialData Zarr store — no conversion step needed ([#28](https://github.com/p-gueguen/rctd-py/issues/28)):
+
+```bash
+# SpatialData store: the single table under tables/ is used
+rctd run experiment.zarr reference.h5ad
+
+# Several tables in the store? Name the one you want
+rctd run experiment.zarr/tables/table reference.h5ad
+```
+
+Results are always written as `.h5ad`; the input store is never modified.
+
 <details>
 <summary><strong>Output format</strong></summary>
 

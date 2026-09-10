@@ -3,6 +3,15 @@
 All notable changes to rctd-py are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **SpatialData / Zarr inputs in the CLI** (issue #28). `rctd validate` and `rctd run` now accept a `.h5ad` file, an AnnData Zarr store, or a SpatialData Zarr store for either positional argument. A directory is read as Zarr; if it holds a `tables/` group its single table is used, and a store with several tables errors with their names and asks for an explicit `<store>/tables/<name>` path. Reading goes through one shared `_read_adata()` used by both subcommands, so the two paths cannot drift.
+
+### Fixed
+- **A Zarr-read AnnData could not be written back out to `.h5ad`.** SpatialData encodes `obs`/`var` names as `nullable-string-array`, which anndata reads as a pandas `StringArray` and then refuses to write to h5ad unless `allow_write_nullable_strings` is set. The failure landed at the very last step, after the full deconvolution had run. `_read_adata()` now normalises nullable string dtypes to the plain object dtype the `.h5ad` path already yields, so downstream code cannot tell the two containers apart. Verified against stores written by spatialdata 0.8.0 (including its own `datasets.blobs()`); `tests/test_cli.py` builds real SpatialData stores and asserts on disk that they carry the `nullable-string-array` encoding, so the tests cannot silently stop covering this.
+- **The default output path no longer lands inside the input store.** With `<store>/tables/table` as input, `<spatial_stem>_rctd.h5ad` would have been written into the Zarr store's `tables/` group; it now resolves to the store's parent directory.
+
 ## [0.3.7] — 2026-07-15
 
 ### Fixed
