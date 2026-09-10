@@ -84,6 +84,22 @@ The `run` command uses `RCTD` class directly (not `run_rctd()`), manages its own
 
 Tests in `tests/test_cli.py` — slow tests (marked `@pytest.mark.slow`) run actual deconvolution on synthetic data via `conftest._make_synthetic_reference` / `_make_synthetic_spatial`.
 
+## Q-matrices
+
+`q_matrices.npz` (404 MB: `X_vals` plus `Q_10`..`Q_200`, one 1003x439 float64 table per
+sigma) is excluded from the wheel and sdist in `pyproject.toml` and lives as a v0.1.1
+release asset. It cannot be vendored: it does not compress at all (`savez_compressed`
+gives back the same 404 MB) and PyPI caps one file at 100 MB. `choose_sigma` searches the
+whole sigma grid, so a run needs all 126 tables, not one.
+
+Lookup order in `load_cached_q_matrices()`: explicit `data_dir` -> `$RCTD_Q_MATRICES` ->
+package `data/` -> `~/.cache/rctd` -> download. Set `RCTD_Q_MATRICES` on a cluster so one
+read-only copy serves everyone. CI provisions it with `gh release download` into
+`~/.cache/rctd` behind an `actions/cache` key, so the test job never pulls 404 MB twice.
+
+Note `RCTD(sigma_override=...)` still loads all 404 MB and splines all 126 tables before
+discarding everything but one - unnecessary, but not currently optimised.
+
 ## Testing
 
 ```bash

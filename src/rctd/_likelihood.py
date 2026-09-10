@@ -5,6 +5,7 @@ from prob_model.R.
 """
 
 import logging
+import os
 import urllib.request
 import warnings
 import zipfile
@@ -46,6 +47,7 @@ def _pop_inductor_codegen_failed() -> bool:
 
 
 _Q_MATRICES_URL = "https://github.com/p-gueguen/rctd-py/releases/download/v0.1.1/q_matrices.npz"
+_Q_MATRICES_ENV = "RCTD_Q_MATRICES"
 
 # Module-level cache for the tridiagonal matrix inverse in compute_spline_coefficients.
 # Keyed by x_vals.tobytes() since x_vals never changes during a session.
@@ -75,11 +77,50 @@ def _get_or_compute_MI(x_vals: np.ndarray) -> np.ndarray:
     return MI
 
 
+def _q_matrices_from_env() -> Path | None:
+    """Resolve ``$RCTD_Q_MATRICES`` to a file, or None if the variable is unset.
+
+    Accepts either the .npz itself or a directory holding ``q_matrices.npz``, so one
+    staged copy can serve every user on a cluster without a per-user download.
+    """
+    raw = os.environ.get(_Q_MATRICES_ENV)
+    if not raw:
+        return None
+    path = Path(raw).expanduser()
+    if path.is_dir():
+        path = path / "q_matrices.npz"
+    if not path.exists():
+        raise FileNotFoundError(
+            f"{_Q_MATRICES_ENV}={raw!r} does not point at the Q-matrices (looked for {path}). "
+            f"Unset it to fall back to ~/.cache/rctd, or download {_Q_MATRICES_URL} to that path."
+        )
+    return path
+
+
 def _download_q_matrices(dest: Path) -> None:
-    """Download pre-computed Q-matrices from GitHub release."""
+    """Download pre-computed Q-matrices from GitHub release.
+
+    Raises RuntimeError with staging instructions when there is no network, which is
+    the normal case on a walled-off HPC compute node (issue #29).
+    """
     dest.parent.mkdir(parents=True, exist_ok=True)
     print(f"Downloading Q-matrices ({_Q_MATRICES_URL}) ...")
-    urllib.request.urlretrieve(_Q_MATRICES_URL, dest)
+    try:
+        urllib.request.urlretrieve(_Q_MATRICES_URL, dest)
+    except OSError as exc:
+        dest.unlink(missing_ok=True)  # urlretrieve leaves a partial file behind
+        raise RuntimeError(
+            f"Could not download the Q-matrices: {exc}\n"
+            "This host appears to have no access to github.com, which is normal for an "
+            "isolated compute node.\n"
+            "The file is 404 MB, so it ships as a release asset rather than inside the "
+            "wheel. To stage it by hand, download\n"
+            f"    {_Q_MATRICES_URL}\n"
+            "on a host that does have access, then either put it at\n"
+            f"    {dest}\n"
+            f"or set {_Q_MATRICES_ENV} to that file (or to the directory holding it). "
+            "One shared read-only copy can serve every user on a cluster."
+        ) from exc
     print(f"Saved to {dest}")
 
 
@@ -87,16 +128,27 @@ def load_cached_q_matrices(data_dir: Path | str | None = None) -> dict[str, np.n
     """Load precomputed Q-matrices and X_vals.
 
     Lookup order:
-    1. ``data_dir`` (or package ``data/`` directory)
-    2. ``~/.cache/rctd/q_matrices.npz``
-    3. Auto-download from GitHub release and cache to (2)
+    1. ``data_dir``, when given explicitly
+    2. ``$RCTD_Q_MATRICES`` (a .npz file, or a directory holding ``q_matrices.npz``)
+    3. the package ``data/`` directory
+    4. ``~/.cache/rctd/q_matrices.npz``
+    5. Auto-download from the GitHub release and cache to (4)
+
+    The env var comes before the package directory so a staged copy always wins; the
+    download is last and raises with staging instructions on a host with no network.
     """
+    explicit = data_dir is not None
     if data_dir is None:
         data_dir = Path(__file__).parent / "data"
     data_dir = Path(data_dir)
     npz_path = data_dir / "q_matrices.npz"
 
     cache_path = Path.home() / ".cache" / "rctd" / "q_matrices.npz"
+
+    if not explicit:
+        env_path = _q_matrices_from_env()
+        if env_path is not None:
+            npz_path = env_path
 
     if not npz_path.exists():
         if cache_path.exists():
@@ -109,11 +161,19 @@ def load_cached_q_matrices(data_dir: Path | str | None = None) -> dict[str, np.n
         with np.load(npz_path) as data:
             return {k: data[k] for k in data.files}
     except (zipfile.BadZipFile, ValueError, EOFError, OSError) as exc:
-        # Most commonly this means a partial/corrupt download in cache.
-        # Recover by re-downloading to cache and retrying once.
+        # Usually a partial/corrupt download in the cache: recover by re-downloading
+        # and retrying once. A file the caller pointed us at deliberately is NOT
+        # silently replaced - say it is corrupt instead of going to the network.
+        if npz_path != cache_path:
+            raise RuntimeError(
+                f"The Q-matrices at {npz_path} could not be read: {exc}\n"
+                "That path came from "
+                + ("the data_dir argument" if explicit else f"${_Q_MATRICES_ENV}")
+                + f", so it is left alone. Re-download {_Q_MATRICES_URL} (404 MB) over it, "
+                "or clear the setting to fall back to ~/.cache/rctd."
+            ) from exc
         print(f"Failed to load Q-matrices from {npz_path}: {exc}")
-        if cache_path.exists():
-            cache_path.unlink()
+        cache_path.unlink(missing_ok=True)
         _download_q_matrices(cache_path)
         with np.load(cache_path) as data:
             return {k: data[k] for k in data.files}

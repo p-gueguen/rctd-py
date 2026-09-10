@@ -200,6 +200,28 @@ Filtered pixels (below `--umi-min`) have `NaN` weights and `"filtered"` labels.
 uv pip install rctd-py   # or: pip install rctd-py
 ```
 
+### Q-matrices (offline and HPC setups)
+
+The first run needs `q_matrices.npz`, the precomputed Poisson-Lognormal likelihood tables
+for every sigma between 0.10 and 2.00. It is **404 MB** and does not compress, so it ships
+as a [release asset](https://github.com/p-gueguen/rctd-py/releases/download/v0.1.1/q_matrices.npz)
+rather than inside the wheel, and is fetched once into `~/.cache/rctd/` on first use.
+
+That download fails on a compute node with no internet access, which is a common way to
+run a cluster. Stage the file from a host that does have access and point rctd-py at it
+([#29](https://github.com/p-gueguen/rctd-py/issues/29)):
+
+```bash
+# once, somewhere every node can read
+wget -P /shared/rctd https://github.com/p-gueguen/rctd-py/releases/download/v0.1.1/q_matrices.npz
+export RCTD_Q_MATRICES=/shared/rctd          # a directory, or the .npz itself
+```
+
+`RCTD_Q_MATRICES` takes precedence over the cache, so one shared read-only copy serves
+every user instead of a 404 MB download per home directory. If it is unset and the download
+fails, the error names the URL and the exact path to place the file at. A file you point to
+deliberately is never silently re-downloaded over: if it is unreadable, you are told so.
+
 <details>
 <summary>GPU setup and CUDA compatibility</summary>
 
