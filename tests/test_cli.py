@@ -414,9 +414,16 @@ def _write_spatialdata_store(path, table):
     finally:
         ad.settings.allow_write_nullable_strings = prev
 
-    # Fail loudly if the store stopped carrying the encoding these tests exist for.
-    meta = json.loads((path / "tables/table/obs/_index/zarr.json").read_text())
-    assert meta["attributes"]["encoding-type"] == "nullable-string-array", meta
+    # Fail loudly if the store stopped carrying the shape these tests exist for: the
+    # names must read back as a pandas nullable string array, which is what anndata
+    # refuses to write to .h5ad. Checked through the reader rather than the on-disk
+    # metadata, because zarr 2 and zarr 3 lay those metadata files out differently.
+    try:
+        from anndata.io import read_zarr
+    except ImportError:  # anndata < 0.11
+        from anndata import read_zarr
+    raw = read_zarr(path / "tables" / "table")
+    assert str(raw.obs_names.dtype).startswith("string"), raw.obs_names.dtype
     return path
 
 

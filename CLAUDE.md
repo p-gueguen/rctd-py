@@ -7,6 +7,20 @@ via `conda install -c conda-forge gh` (or your distro package manager) and
 authenticate once with `gh auth login`. If you keep `gh` in a dedicated
 conda env, remember to activate it before running release / CI commands.
 
+## Pre-commit hooks
+
+`.pre-commit-config.yaml` mirrors the CI ruff checks, and `.git/hooks/pre-commit` is
+already generated in this clone. The hook calls the venv's Python, so if `pre-commit`
+itself is not installed there **every commit fails** with the cryptic
+`No module named pre_commit` and nothing else — never `--no-verify` past it, that also
+skips the ruff gate CI will then fail on.
+
+`pre-commit` is in the `dev` extra for this reason. Do **not** rely on
+`uv pip install pre-commit`: any later `uv run` re-syncs the venv from the lockfile and
+prunes it again, so the hook breaks a second time a few commits later. Verify with
+`uv run pre-commit run --all-files`. After a fresh clone also run `pre-commit install`,
+per the comment at the top of the config.
+
 ## Architecture
 
 GPU-accelerated Python reimplementation of spacexr RCTD for spatial transcriptomics deconvolution.
