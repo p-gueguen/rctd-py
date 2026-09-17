@@ -14,6 +14,29 @@ byte-identical to the RNA-only solver.
 
 ### Added
 
+- **Cognate-gene prior** (`protein_profile_source="cognate"`, `_protein.cognate_profile`,
+  `COGNATE_GENES`, `RCTDConfig.protein_marker_genes`). VirTues (Nature 2026) reads a
+  channel by the protein it measures, not its column name; here each marker's per-type
+  profile is the RNA reference's expression of its cognate gene(s), z-scored across
+  types. No bootstrap pass, negatives for free, and a type with no confident singlets
+  keeps a profile. Curated `protein_signatures` still override listed types.
+  Measured protein-only on a public IMC tissue (spora cords2024cancer, 1986 cells): on
+  the dictionary markers it matches the hand-written positives-only gate (macro-F1
+  0.569 vs 0.564); with all 38 matched markers against a normal-lung reference it drops
+  to 0.496 because the reference's epithelium is not the tumour - a cognate prior is as
+  good as the reference's match to the tissue, no better.
+- **Alias-tolerant marker matching**: `build_signed_profile`, `gate_landmarks` and
+  `calibrate_signed_levels` match `CD3e` / `CD3-E` / `cd3e` as one marker and warn on
+  signature markers absent from the panel instead of silently ignoring them.
+- **`gate_landmarks` reads OR-list dictionaries**: `"any_of": true` in a type's
+  signature ORs its positives (astir / spora-bench dictionaries are OR-lists), and
+  negatives are gated at a fixed percentile `neg_t` (`protein_landmark_neg_t`, default
+  0.5) instead of the `1 - t` ladder mirror, which with a dozen cross-lineage negatives
+  admitted 0 of 1986 cells. `protein_landmark_t_start` is exposed for rare classes.
+- **Per-section protein normalisation** (`protein_sample_key`, CLI `--protein-sample-key`,
+  `normalize_protein_by_sample`): VirTues standardises per image; the reliability kNN
+  also stays inside a section, so two sections sharing pixel coordinates in one AnnData
+  no longer read each other as bleed-through.
 - **Landmark cells as internal truth** (`_protein.gate_landmarks`). Strict
   two-sided gates on the protein channels, relaxed on a ladder from the 95th
   percentile until each type reaches `protein_landmark_min_cells`. A cell claimed
