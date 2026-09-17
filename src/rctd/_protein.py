@@ -576,6 +576,137 @@ def neighbour_reliability(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Measured protein levels from a CITE-seq reference (Azimuth / Hao et al. 2021)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def reference_protein_levels(
+    adt_counts,
+    labels,
+    adt_names: list[str],
+    isotype_names: list[str],
+    type_map: dict,
+    marker_to_adt: dict,
+    cofactor: float = 5.0,
+    min_range: float = 0.05,
+):
+    """Per-type protein levels in [0, 1] measured on a CITE-seq reference.
+
+    The bootstrap profile inherits the RNA call's errors and the cognate prior
+    inherits mRNA-protein discordance. A CITE-seq reference measures the antibody
+    itself, per cell type - what Seurat's WNN references (Hao et al. 2021) are built
+    from. Levels are scaled per marker between the ISOTYPE-control floor and the
+    highest type, not min-max across types: a pan-immune marker (CD45) must stay
+    high for every immune type instead of being pushed to 0 for the lowest one.
+
+    Args:
+        adt_counts: (C, A) antibody counts (dense or scipy.sparse).
+        labels: (C,) reference cell-type labels.
+        adt_names: A antibody names (column order of ``adt_counts``).
+        isotype_names: antibody names of the isotype controls (the floor).
+        type_map: ``{reference label: spatial cell type}``; unmapped labels are ignored.
+        marker_to_adt: ``{spatial marker: antibody name}``; markers whose antibody is
+            absent from ``adt_names`` are left OUT of the result (never set to 0).
+        cofactor: arcsinh cofactor applied to counts before averaging.
+        min_range: a marker whose top type sits less than this above the isotype floor
+            carries no information and is dropped.
+
+    Returns:
+        ``pandas.DataFrame`` (spatial marker x spatial type) of levels in [0, 1],
+        ``NaN`` where a type has no reference cells. Feed to
+        :func:`apply_reference_levels`.
+    """
+    import pandas as pd
+
+    A = np.asarray(adt_names)
+    aidx = {_norm_marker(n): i for i, n in enumerate(A)}
+    labels = np.asarray(labels).astype(str)
+    dense = adt_counts.toarray() if hasattr(adt_counts, "toarray") else np.asarray(adt_counts)
+    X = np.arcsinh(np.asarray(dense, dtype=np.float64) / cofactor)
+
+    iso_cols = [aidx[_norm_marker(n)] for n in isotype_names if _norm_marker(n) in aidx]
+    if not iso_cols:
+        raise ValueError(f"none of the isotype controls {isotype_names} are in adt_names")
+    floor = float(X[:, iso_cols].mean())
+
+    spatial_types = sorted(set(type_map.values()))
+    type_means = {}
+    for st in spatial_types:
+        refs = [r for r, s in type_map.items() if s == st]
+        sel = np.isin(labels, refs)
+        type_means[st] = X[sel].mean(axis=0) if sel.any() else np.full(X.shape[1], np.nan)
+
+    rows, index = [], []
+    dropped = []
+    for marker, ab in marker_to_adt.items():
+        j = aidx.get(_norm_marker(ab))
+        if j is None:
+            dropped.append(marker)
+            continue
+        vals = np.array([type_means[st][j] for st in spatial_types], dtype=float)
+        ceiling = np.nanmax(vals)
+        if not np.isfinite(ceiling) or ceiling - floor < min_range:
+            dropped.append(marker)
+            continue
+        rows.append(np.clip((vals - floor) / (ceiling - floor), 0.0, 1.0))
+        index.append(marker)
+    if dropped:
+        print(f"reference_protein_levels: no usable reference antibody for {dropped}")
+    return pd.DataFrame(rows, index=index, columns=spatial_types)
+
+
+def apply_reference_levels(
+    P_prot: np.ndarray,
+    levels,
+    protein_std: np.ndarray,
+    feature_names: list[str],
+    cell_type_names: list[str],
+    hi_pct: float = 90.0,
+    lo_pct: float = 10.0,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Write CITE-seq levels into a profile, on THIS section's protein scale.
+
+    A reference level of 1 means "as high as the brightest reference type", which on
+    the section is the ``hi_pct`` percentile of that marker; 0 means the isotype
+    floor, i.e. the ``lo_pct`` percentile. Everything in between is linear. Cross-assay
+    z-scores cannot be compared directly (a PBMC z is taken over immune cells only,
+    a tissue z mostly over epithelium), which is why the transfer goes through
+    percentile anchors rather than raw values.
+
+    Returns ``(P_prot copy, overridden (K,) bool)``; (marker, type) pairs that are
+    ``NaN`` in ``levels``, or whose marker is not in the panel, keep the base profile.
+    """
+    P = np.array(P_prot, dtype=np.float64, copy=True)
+    fidx = _feature_index(feature_names, "apply_reference_levels")
+    kidx = {t: k for k, t in enumerate(cell_type_names)}
+    overridden = np.zeros(len(cell_type_names), dtype=bool)
+    missing = []
+    for marker in levels.index:
+        i = fidx.get(_norm_marker(marker))
+        if i is None:
+            missing.append(marker)
+            continue
+        col = protein_std[:, i]
+        col = col[np.isfinite(col)]
+        if col.size == 0:
+            continue
+        hi, lo = np.percentile(col, hi_pct), np.percentile(col, lo_pct)
+        for t in levels.columns:
+            k = kidx.get(t)
+            s = levels.loc[marker, t]
+            if k is None or not np.isfinite(s):
+                continue
+            P[i, k] = lo + float(s) * (hi - lo)
+            overridden[k] = True
+    if missing:
+        warnings.warn(
+            f"apply_reference_levels: reference markers not in the panel, ignored: {missing}",
+            stacklevel=2,
+        )
+    return P, overridden
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # WNN per-cell modality weights (Hao et al. 2021)
 # ─────────────────────────────────────────────────────────────────────────────
 

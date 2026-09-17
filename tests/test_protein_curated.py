@@ -157,3 +157,76 @@ def test_cognate_profile_from_reference(synthetic_data):
     rctd.fit_platform_effects()
     rctd.prepare_protein()
     assert np.allclose(rctd.reference.protein_profiles, P)
+
+
+def _toy_citeseq(seed=0):
+    """T cells: CD3 high, CD45 high. B cells: CD3 at isotype level, CD45 high."""
+    rng = np.random.default_rng(seed)
+    n = 200
+    labels = np.array(["T1"] * n + ["B1"] * n + ["Junk"] * n)
+    iso = rng.poisson(5, 3 * n)
+    cd3 = np.r_[rng.poisson(200, n), rng.poisson(5, n), rng.poisson(50, n)]
+    cd45 = np.r_[rng.poisson(300, n), rng.poisson(280, n), rng.poisson(5, n)]
+    adt = np.column_stack([cd3, cd45, iso]).astype(float)
+    return adt, labels, ["CD3-1", "CD45-1", "IgG-iso"]
+
+
+@pytest.mark.protein
+def test_reference_protein_levels_use_isotype_floor():
+    from rctd._protein import reference_protein_levels
+
+    adt, labels, names = _toy_citeseq()
+    lv = reference_protein_levels(
+        adt,
+        labels,
+        names,
+        isotype_names=["IgG-iso"],
+        type_map={"T1": "T", "B1": "B"},
+        marker_to_adt={"CD3E": "CD3-1", "CD45": "CD45-1", "PanCK": "not-measured"},
+    )
+    assert list(lv.columns) == ["T", "B"] or set(lv.columns) == {"T", "B"}
+    assert lv.loc["CD3E", "T"] == pytest.approx(1.0)
+    assert lv.loc["CD3E", "B"] < 0.15
+    # pan-immune marker stays high for BOTH types (a min-max scale would push B to 0)
+    assert lv.loc["CD45", "B"] > 0.8 and lv.loc["CD45", "T"] > 0.8
+    assert "PanCK" not in lv.index  # unmeasured markers are absent, not zero
+
+
+@pytest.mark.protein
+def test_apply_reference_levels_overrides_only_covered_cells():
+    import pandas as pd
+
+    from rctd._protein import apply_reference_levels
+
+    rng = np.random.default_rng(1)
+    P_std = rng.normal(0, 1, (500, 3))
+    lv = pd.DataFrame({"T": [1.0, 1.0], "B": [0.0, np.nan]}, index=["cd3e", "CD45"])
+    base = np.full((3, 3), 7.0)
+    P, mask = apply_reference_levels(base, lv, P_std, ["CD3E", "CD45", "m3"], ["T", "B", "Other"])
+    hi, lo = np.percentile(P_std[:, 0], 90), np.percentile(P_std[:, 0], 10)
+    assert P[0, 0] == pytest.approx(hi) and P[0, 1] == pytest.approx(lo)
+    assert P[1, 1] == 7.0  # NaN level -> base kept
+    assert (P[2] == 7.0).all() and (P[:, 2] == 7.0).all()
+    assert mask.tolist() == [True, True, False]
+    assert (base == 7.0).all()  # input not mutated
+
+
+@pytest.mark.protein
+def test_prepare_protein_applies_reference_levels(synthetic_data):
+    import pandas as pd
+
+    spatial = _synth_with_protein(synthetic_data)
+    ref = Reference(synthetic_data["reference"], cell_min=10, min_UMI=10)
+    lv = pd.DataFrame({"Type_0": [1.0, 0.0]}, index=["mA", "mB"])
+    rctd = RCTD(
+        spatial, ref, RCTDConfig(compile=False, protein_weight=1.0, protein_reference_levels=lv)
+    )
+    rctd.fit_platform_effects()
+    kw = rctd.prepare_protein()
+    feats = rctd.reference.protein_feature_names
+    k0 = rctd.reference.cell_type_names.index("Type_0")
+    Y = kw["protein_intensity"]
+    iA = feats.index("mA")
+    assert rctd.reference.protein_profiles[iA, k0] == pytest.approx(
+        np.percentile(Y[:, iA], 90), rel=1e-5
+    )

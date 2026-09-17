@@ -69,6 +69,12 @@ class RCTDConfig(NamedTuple):
     # _protein.scgate_signatures. Overriding a wrong RNA call needs a strong protein_weight
     # (e.g. 4), not the balanced "auto" (which only sharpens).
     protein_signatures: dict | None = None
+    # Measured per-type protein levels from a CITE-seq reference (marker x type, in
+    # [0, 1]; see _protein.reference_protein_levels). Applied AFTER the base profile
+    # (bootstrap / cognate) and BEFORE protein_signatures, on this section's protein
+    # scale via percentile anchors. Covers only the types and markers the reference
+    # measures; everything else keeps the base profile.
+    protein_reference_levels: object | None = None
     # +/- z written for positive/negative curated markers. "calibrated" measures a
     # per-marker level from landmark cells instead (see _protein.calibrate_signed_levels):
     # one global magnitude that understates a real separation has to be paid for with a

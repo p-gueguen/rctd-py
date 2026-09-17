@@ -339,6 +339,7 @@ class RCTD:
             return {}
 
         from rctd._protein import (
+            apply_reference_levels,
             bootstrap_protein_profiles,
             build_signed_profile,
             calibrate_signed_levels,
@@ -494,6 +495,22 @@ class RCTD:
                 )
             )
 
+        n_reference = 0
+        if cfg.protein_reference_levels is not None:
+            import pandas as pd
+
+            lv = cfg.protein_reference_levels
+            if not isinstance(lv, pd.DataFrame):
+                lv = pd.DataFrame(lv)
+            P_prot, ref_mask = apply_reference_levels(
+                P_prot, lv, P_std, self._protein_feature_names, self.reference.cell_type_names
+            )
+            n_reference = int(ref_mask.sum())
+            print(
+                f"CITE-seq reference levels: {len(lv.index)} markers written for "
+                f"{n_reference}/{K} cell types"
+            )
+
         n_curated = 0
         if cfg.protein_signatures:
             levels = None
@@ -548,9 +565,11 @@ class RCTD:
         print(
             f"Protein modality: M={M} markers, source={cfg.protein_profile_source}, "
             + (
-                f"lambda={lam:.4g}, cognate-profiled markers={n_boot}/{M}, curated={n_curated}/{K}"
+                f"lambda={lam:.4g}, cognate-profiled markers={n_boot}/{M}, "
+                f"reference-levelled={n_reference}/{K}, curated={n_curated}/{K}"
                 if cfg.protein_profile_source == "cognate"
-                else f"lambda={lam:.4g}, bootstrap-profiled={n_boot}/{K}, curated={n_curated}/{K}"
+                else f"lambda={lam:.4g}, bootstrap-profiled={n_boot}/{K}, "
+                f"reference-levelled={n_reference}/{K}, curated={n_curated}/{K}"
             )
         )
 

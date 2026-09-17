@@ -11,6 +11,7 @@ from rctd._multimodal_api import Modality, MultiModalResult, run_rctd_multimodal
 from rctd._normalize import fit_bulk
 from rctd._protein import (
     COGNATE_GENES,
+    apply_reference_levels,
     bootstrap_protein_profiles,
     build_signed_profile,
     calibrate_signed_levels,
@@ -20,6 +21,7 @@ from rctd._protein import (
     neighbour_reliability,
     normalize_protein,
     normalize_protein_by_sample,
+    reference_protein_levels,
     scgate_signatures,
     wnn_modality_weights,
 )
@@ -59,6 +61,8 @@ __all__ = [
     "wnn_modality_weights",
     "bootstrap_protein_profiles",
     "cognate_profile",
+    "reference_protein_levels",
+    "apply_reference_levels",
     "COGNATE_GENES",
     "build_signed_profile",
     "scgate_signatures",
