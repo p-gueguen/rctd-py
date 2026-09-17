@@ -548,10 +548,13 @@ def _parse_protein_weight(value):
 @click.option("--protein-obsm-key", default="protein", show_default=True)
 @click.option(
     "--protein-profile-source",
-    type=click.Choice(["bootstrap", "curated"]),
+    type=click.Choice(["bootstrap", "curated", "cognate"]),
     default="bootstrap",
     show_default=True,
-    help="Per-type protein profile: bootstrap from RNA-confident singlets, or curated gates.",
+    help=(
+        "Per-type protein profile: bootstrap from RNA-confident singlets, curated gates, or "
+        "cognate (each marker's profile from the RNA reference's expression of its gene)."
+    ),
 )
 @click.option(
     "--protein-signatures",

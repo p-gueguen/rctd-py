@@ -15,6 +15,9 @@ the solver:
   reference required).
 """
 
+import re
+import warnings
+
 import numpy as np
 
 
@@ -133,6 +136,178 @@ def bootstrap_protein_profiles(
     return P_prot, tau, n_used
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+# Marker identity: a channel is the protein it measures, not its column name
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _norm_marker(name: str) -> str:
+    """Case/punctuation-free key so 'CD3e', 'CD3-E' and 'cd3e' are one marker."""
+    return re.sub(r"[^a-z0-9]", "", str(name).lower())
+
+
+# Protein marker -> cognate gene symbol(s), keyed by _norm_marker. Covers the
+# usual IMC / CODEX / Xenium-protein / CosMx panels; extend per run with
+# RCTDConfig(protein_marker_genes={...}). Composite channels (one metal tag on
+# two antibodies) list both genes.
+COGNATE_GENES: dict[str, tuple[str, ...]] = {
+    "cd3": ("CD3E", "CD3D"),
+    "cd3e": ("CD3E",),
+    "cd4": ("CD4",),
+    "cd8": ("CD8A",),
+    "cd8a": ("CD8A",),
+    "cd20": ("MS4A1",),
+    "cd68": ("CD68",),
+    "cd163": ("CD163",),
+    "cd14": ("CD14",),
+    "cd16": ("FCGR3A",),
+    "cd15": ("FUT4",),
+    "cd11b": ("ITGAM",),
+    "cd11c": ("ITGAX",),
+    "cd45": ("PTPRC",),
+    "cd45ra": ("PTPRC",),
+    "cd45ro": ("PTPRC",),
+    "cd45racd45ro": ("PTPRC",),
+    "cd56": ("NCAM1",),
+    "cd57": ("B3GAT1",),
+    "cd138": ("SDC1",),
+    "cd31": ("PECAM1",),
+    "vwf": ("VWF",),
+    "cd31vwf": ("PECAM1", "VWF"),
+    "cd34": ("CD34",),
+    "cd146": ("MCAM",),
+    "lyve1": ("LYVE1",),
+    "podoplanin": ("PDPN",),
+    "pdn": ("PDPN",),
+    "panck": ("KRT8", "KRT18", "KRT19"),
+    "pancytokeratin": ("KRT8", "KRT18", "KRT19"),
+    "ecadherin": ("CDH1",),
+    "epcam": ("EPCAM",),
+    "sma": ("ACTA2",),
+    "alphasma": ("ACTA2",),
+    "asma": ("ACTA2",),
+    "vim": ("VIM",),
+    "vimentin": ("VIM",),
+    "fap": ("FAP",),
+    "pdgfrb": ("PDGFRB",),
+    "cdh11": ("CDH11",),
+    "collagen1": ("COL1A1",),
+    "collageni": ("COL1A1",),
+    "collagenifibronectin": ("COL1A1", "FN1"),
+    "fibronectin": ("FN1",),
+    "hladr": ("HLA-DRA",),
+    "foxp3": ("FOXP3",),
+    "ki67": ("MKI67",),
+    "pcna": ("PCNA",),
+    "pd1": ("PDCD1",),
+    "pdl1": ("CD274",),
+    "lag3": ("LAG3",),
+    "granzymeb": ("GZMB",),
+    "mpo": ("MPO",),
+    "ca9": ("CA9",),
+    "betacatenin": ("CTNNB1",),
+    "pten": ("PTEN",),
+    "vista": ("VSIR",),
+    "s100": ("S100A4",),
+    "sox10": ("SOX10",),
+    "mlana": ("MLANA",),
+    "melana": ("MLANA",),
+    "cd38": ("CD38",),
+    "cd10": ("MME",),
+    "cd73": ("NT5E",),
+    "cd248": ("CD248",),
+    "mmp9": ("MMP9",),
+    "mmp11": ("MMP11",),
+    "vcam1": ("VCAM1",),
+    "cav1": ("CAV1",),
+    "cxcl12": ("CXCL12",),
+    "ccl21": ("CCL21",),
+    "ido": ("IDO1",),
+    "tcf1tcf7": ("TCF7",),
+    "p75": ("NGFR",),
+}
+
+
+def _feature_index(feature_names: list[str], where: str) -> dict[str, int]:
+    """Normalised-name -> column map; warns on names that collapse together."""
+    fidx: dict[str, int] = {}
+    for i, f in enumerate(feature_names):
+        key = _norm_marker(f)
+        if key in fidx:
+            warnings.warn(
+                f"{where}: markers {feature_names[fidx[key]]!r} and {f!r} collapse to one key",
+                stacklevel=3,
+            )
+        fidx.setdefault(key, i)
+    return fidx
+
+
+def _lookup(fidx: dict[str, int], markers, where: str) -> list[int]:
+    """Indices for the signature markers found in the panel; warns on the rest."""
+    idx, missing = [], []
+    for mk in markers:
+        key = _norm_marker(mk)
+        (idx if key in fidx else missing).append(fidx.get(key, mk))
+    if missing:
+        warnings.warn(
+            f"{where}: markers not in the protein panel, ignored: {missing}", stacklevel=3
+        )
+    return idx
+
+
+def cognate_profile(
+    reference,
+    feature_names: list[str],
+    marker_genes: dict | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Per-type protein profile from the RNA reference's expression of each
+    marker's cognate gene(s) - VirTues' "identity by protein, not column" in
+    miniature, without a bootstrap pass or hand-written gates.
+
+    Row m is the across-type z-score of ``log1p(1e4 * mean UMI-normalised
+    expression)`` of marker m's genes (``reference.profiles`` (G, K), summed over
+    the genes when a channel carries several). A type that does not express the
+    gene gets a negative entry, so negatives come for free; a marker with no
+    gene in the reference gets a zero (neutral) row and ``has_gene=False``.
+
+    mRNA and protein disagree for some markers (CD4 on monocytes, HLA-DR
+    breadth); override those rows with ``protein_signatures``, which are applied
+    after this in ``RCTD.prepare_protein``.
+
+    Args:
+        reference: fitted :class:`~rctd.Reference` (``profiles``, ``gene_names``,
+            ``cell_type_names``).
+        feature_names: M protein marker names (panel order).
+        marker_genes: extra / overriding ``{marker: [gene, ...]}``, matched by
+            :func:`_norm_marker`; merged over :data:`COGNATE_GENES`.
+
+    Returns:
+        ``(P (M, K) float64, has_gene (M,) bool)``.
+    """
+    table = dict(COGNATE_GENES)
+    for mk, genes in (marker_genes or {}).items():
+        table[_norm_marker(mk)] = tuple(genes)
+    gidx = {g: i for i, g in enumerate(reference.gene_names)}
+    K = reference.profiles.shape[1]
+    P = np.zeros((len(feature_names), K), dtype=np.float64)
+    has_gene = np.zeros(len(feature_names), dtype=bool)
+    unmatched = []
+    for m, f in enumerate(feature_names):
+        rows = [gidx[g] for g in table.get(_norm_marker(f), ()) if g in gidx]
+        if not rows:
+            unmatched.append(f)
+            continue
+        x = np.log1p(1e4 * np.asarray(reference.profiles)[rows].sum(axis=0))
+        P[m] = (x - x.mean()) / max(float(x.std()), 1e-6)
+        has_gene[m] = True
+    if unmatched:
+        print(
+            f"cognate_profile: {len(unmatched)} markers have no cognate gene in the "
+            f"reference and stay neutral: {unmatched}"
+        )
+    return P, has_gene
+
+
 def build_signed_profile(
     cell_type_names: list[str],
     feature_names: list[str],
@@ -164,7 +339,7 @@ def build_signed_profile(
         a signature (so a caller can fill the rest from a bootstrap pass: hybrid mode).
     """
     M, K = len(feature_names), len(cell_type_names)
-    fidx = {f: i for i, f in enumerate(feature_names)}
+    fidx = _feature_index(feature_names, "build_signed_profile")
     if levels is None:
         pos_level = np.full(M, float(magnitude))
         neg_level = np.full(M, -float(magnitude))
@@ -181,12 +356,10 @@ def build_signed_profile(
         if not spec:
             continue
         mask[k] = True
-        for mk in spec.get("positive", []):
-            if mk in fidx:
-                P[fidx[mk], k] = pos_level[fidx[mk]]
-        for mk in spec.get("negative", []):
-            if mk in fidx:
-                P[fidx[mk], k] = neg_level[fidx[mk]]
+        for i in _lookup(fidx, spec.get("positive", []), f"build_signed_profile[{t}]"):
+            P[i, k] = pos_level[i]
+        for i in _lookup(fidx, spec.get("negative", []), f"build_signed_profile[{t}]"):
+            P[i, k] = neg_level[i]
     return P, mask
 
 
@@ -458,7 +631,7 @@ def gate_landmarks(
         raise ValueError(f"{len(feature_names)} feature names for {M} protein columns")
 
     u = _percentile_ranks(np.where(np.isfinite(P), P, 0.0))
-    fidx = {f: i for i, f in enumerate(feature_names)}
+    fidx = _feature_index(feature_names, "gate_landmarks")
     allowed = None if restrict_markers is None else set(np.asarray(restrict_markers).tolist())
 
     usable = np.ones(N, dtype=bool)
@@ -476,8 +649,8 @@ def gate_landmarks(
 
     for k, tname in enumerate(cell_type_names):
         spec = signatures.get(tname) or {}
-        pos = [fidx[m] for m in spec.get("positive", []) if m in fidx]
-        neg = [fidx[m] for m in spec.get("negative", []) if m in fidx]
+        pos = _lookup(fidx, spec.get("positive", []), f"gate_landmarks[{tname}]")
+        neg = _lookup(fidx, spec.get("negative", []), f"gate_landmarks[{tname}]")
         if allowed is not None:
             pos = [i for i in pos if i in allowed]
             neg = [i for i in neg if i in allowed]
@@ -548,18 +721,16 @@ def calibrate_signed_levels(
     P = np.asarray(protein_std, dtype=np.float64)
     M = P.shape[1]
     labels = np.asarray(labels)
-    fidx = {f: i for i, f in enumerate(feature_names)}
+    fidx = _feature_index(feature_names, "calibrate_signed_levels")
 
     pos_types: dict[int, list[int]] = {}
     neg_types: dict[int, list[int]] = {}
     for k, tname in enumerate(cell_type_names):
         spec = signatures.get(tname) or {}
-        for mk in spec.get("positive", []):
-            if mk in fidx:
-                pos_types.setdefault(fidx[mk], []).append(k)
-        for mk in spec.get("negative", []):
-            if mk in fidx:
-                neg_types.setdefault(fidx[mk], []).append(k)
+        for i in _lookup(fidx, spec.get("positive", []), f"calibrate_signed_levels[{tname}]"):
+            pos_types.setdefault(i, []).append(k)
+        for i in _lookup(fidx, spec.get("negative", []), f"calibrate_signed_levels[{tname}]"):
+            neg_types.setdefault(i, []).append(k)
 
     hi_fb, lo_fb = fallback_pct
     pos_level = np.zeros(M)

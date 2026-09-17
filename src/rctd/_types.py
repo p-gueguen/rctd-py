@@ -52,7 +52,15 @@ class RCTDConfig(NamedTuple):
     protein_weight: float | str = 0.0
     protein_obsm_key: str = "protein"  # spatial.obsm key for the (N, M) intensity matrix
     protein_norm: str = "arcsinh_robust"  # "arcsinh_robust" (default) | "clr"
-    protein_profile_source: str = "bootstrap"  # "bootstrap" | "curated" (needs protein_signatures)
+    # "bootstrap" (RNA-confident singlets) | "curated" (needs protein_signatures) |
+    # "cognate" (each marker's profile = the RNA reference's expression of its cognate
+    # gene, z-scored across types: no bootstrap pass, negatives for free, rare types keep
+    # a profile; see _protein.cognate_profile / COGNATE_GENES). protein_signatures still
+    # override listed types afterwards with any source.
+    protein_profile_source: str = "bootstrap"
+    # Extra / overriding {marker: [gene, ...]} for source="cognate" (case and
+    # punctuation in marker names are ignored).
+    protein_marker_genes: dict | None = None
     # Optional curated signed gates: {cell_type: {"positive":[markers], "negative":[markers]}}.
     # When set, these OVERRIDE the per-type profile (negative markers let protein actively reject a
     # contaminant - e.g. NK = CD16+ / CD3E-/CD8A-, which the bootstrap cannot encode). With

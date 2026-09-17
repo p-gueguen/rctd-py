@@ -341,13 +341,14 @@ class RCTD:
             bootstrap_protein_profiles,
             build_signed_profile,
             calibrate_signed_levels,
+            cognate_profile,
             gate_landmarks,
             neighbour_reliability,
             normalize_protein,
         )
 
         cfg = self.config
-        if cfg.protein_profile_source not in ("bootstrap", "curated"):
+        if cfg.protein_profile_source not in ("bootstrap", "curated", "cognate"):
             raise ValueError(f"unsupported protein_profile_source: {cfg.protein_profile_source!r}")
 
         P_std, _tau_norm, valid = normalize_protein(
@@ -407,6 +408,14 @@ class RCTD:
             singlet_idx = np.where(confident, boot.first_type, -1)
             P_prot, tau, n_used = bootstrap_protein_profiles(P_std, singlet_idx, K)
             n_boot = int((n_used >= 25).sum())
+        elif cfg.protein_profile_source == "cognate":
+            # Profiles from the RNA reference's expression of each marker's cognate
+            # gene: no bootstrap pass, negatives for free, rare types keep a profile.
+            # tau stays 1 (no residuals to pool), so wls_pooled == unit here.
+            P_prot, has_gene = cognate_profile(
+                self.reference, self._protein_feature_names, cfg.protein_marker_genes
+            )
+            n_boot = int(has_gene.sum())  # reported as "cognate-profiled markers" below
         else:  # "curated": no bootstrap; uncurated types stay neutral (zero)
             if not cfg.protein_signatures:
                 raise ValueError(
@@ -509,7 +518,11 @@ class RCTD:
 
         print(
             f"Protein modality: M={M} markers, source={cfg.protein_profile_source}, "
-            f"lambda={lam:.4g}, bootstrap-profiled={n_boot}/{K}, curated={n_curated}/{K}"
+            + (
+                f"lambda={lam:.4g}, cognate-profiled markers={n_boot}/{M}, curated={n_curated}/{K}"
+                if cfg.protein_profile_source == "cognate"
+                else f"lambda={lam:.4g}, bootstrap-profiled={n_boot}/{K}, curated={n_curated}/{K}"
+            )
         )
 
         target_dtype = self.norm_profiles.dtype

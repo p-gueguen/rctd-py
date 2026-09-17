@@ -6,7 +6,7 @@ import pandas as pd
 import pytest
 
 from rctd import RCTDConfig, Reference
-from rctd._protein import build_signed_profile, scgate_signatures
+from rctd._protein import build_signed_profile, cognate_profile, scgate_signatures
 from rctd._rctd import RCTD
 
 
@@ -113,3 +113,47 @@ def test_signature_override_applied_hybrid(synthetic_data):
     assert P[feats.index("mA"), k0] == 1.5
     assert P[feats.index("mB"), k0] == -1.5
     assert P[feats.index("mC"), k0] == 0.0
+
+
+@pytest.mark.protein
+def test_build_signed_profile_matches_marker_aliases():
+    """Panel names are not gene symbols: 'CD3e' / 'cd3-e' must hit a signature
+    written as 'CD3E'. Exact string matching silently ignored such markers."""
+    P, _ = build_signed_profile(
+        ["T"], ["CD3e", "pan-CK"], {"T": {"positive": ["CD3E"], "negative": ["panCK"]}}
+    )
+    assert P[0, 0] == 1.5 and P[1, 0] == -1.5
+
+
+@pytest.mark.protein
+def test_cognate_profile_from_reference(synthetic_data):
+    """VirTues reads a channel by the protein it measures, not by its column name.
+    The cognate prior does the same in miniature: marker mA is protein of Gene_0,
+    so its profile is Gene_0's z-scored expression across the reference types -
+    positive on the type that expresses it, negative elsewhere, with no bootstrap
+    pass and no hand-written negatives."""
+    ref = Reference(synthetic_data["reference"], cell_min=10, min_UMI=10)
+    feats = ["mA", "mB", "mC"]
+    P, has_gene = cognate_profile(ref, feats, marker_genes={"mA": ["Gene_0"]})
+    k0 = ref.cell_type_names.index("Type_0")
+    assert P.shape == (3, len(ref.cell_type_names))
+    assert has_gene.tolist() == [True, False, False]
+    others = [k for k in range(P.shape[1]) if k != k0]
+    assert P[0, k0] > 1.0 and P[0, k0] == P[0].max()
+    assert P[0, others].mean() < 0  # the fixture's non-marker expression is exponential noise
+    assert np.allclose(P[1:], 0.0)
+
+    spatial = _synth_with_protein(synthetic_data)
+    rctd = RCTD(
+        spatial,
+        ref,
+        RCTDConfig(
+            compile=False,
+            protein_weight=1.0,
+            protein_profile_source="cognate",
+            protein_marker_genes={"mA": ["Gene_0"]},
+        ),
+    )
+    rctd.fit_platform_effects()
+    rctd.prepare_protein()
+    assert np.allclose(rctd.reference.protein_profiles, P)

@@ -10,9 +10,11 @@ from rctd._multimodal import (
 from rctd._multimodal_api import Modality, MultiModalResult, run_rctd_multimodal
 from rctd._normalize import fit_bulk
 from rctd._protein import (
+    COGNATE_GENES,
     bootstrap_protein_profiles,
     build_signed_profile,
     calibrate_signed_levels,
+    cognate_profile,
     gate_landmarks,
     marker_folds,
     neighbour_reliability,
@@ -52,6 +54,8 @@ __all__ = [
     "SPOT_CLASS_NAMES",
     "normalize_protein",
     "bootstrap_protein_profiles",
+    "cognate_profile",
+    "COGNATE_GENES",
     "build_signed_profile",
     "scgate_signatures",
     "gate_landmarks",
