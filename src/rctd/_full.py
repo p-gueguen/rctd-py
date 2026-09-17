@@ -59,7 +59,14 @@ def run_full_mode(
         Yprot_gpu = torch.tensor(protein_intensity, device=device, dtype=P_gpu.dtype)
         inv_tau2_gpu = torch.tensor(inv_tau2, device=device, dtype=P_gpu.dtype)
         if protein_mask is not None:
-            prot_mask_gpu = torch.tensor(protein_mask, device=device, dtype=torch.bool)
+            # bool = "has protein"; float = per-cell weight (reliability, WNN). Keep
+            # floats as floats - a bool cast silently turned any weight into full trust.
+            pm = np.asarray(protein_mask)
+            prot_mask_gpu = (
+                torch.tensor(pm, device=device, dtype=torch.bool)
+                if pm.dtype == np.bool_
+                else torch.tensor(pm, device=device, dtype=P_gpu.dtype)
+            )
 
     all_weights = []
     all_converged = []

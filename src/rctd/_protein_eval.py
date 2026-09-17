@@ -403,7 +403,11 @@ def select_protein_weight(
     if "null_sd" in curve and curve["null_sd"] > 0:
         curve["z"] = (curve["gain"] - curve["null_mean"]) / curve["null_sd"]
 
-    winners = {lam: v for lam, v in usable.items() if lam > 0.0 and (v - base_f1) > null_gain}
+    # A lambda must beat BOTH lambda=0 and the largest null gain. When every null
+    # scores below its own baseline, "beats the null" alone accepted a lambda that
+    # was worse than RNA-only (ccRCC, 2026-09-17: gain -0.0009 vs null max -0.0043).
+    threshold = max(null_gain, 0.0)
+    winners = {lam: v for lam, v in usable.items() if lam > 0.0 and (v - base_f1) > threshold}
     best = max(winners, key=lambda lam: winners[lam]) if winners else 0.0
     curve["best"] = best
     if verbose:

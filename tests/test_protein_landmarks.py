@@ -637,3 +637,62 @@ def test_calibrated_refuses_class_level_landmarks():
     obj.fit_platform_effects()
     with pytest.raises(ValueError, match="cannot be combined"):
         obj.prepare_protein()
+
+
+@pytest.mark.protein
+def test_select_protein_weight_rejects_a_negative_gain(monkeypatch):
+    """A lambda that scores BELOW lambda=0 must never be selected, even when every
+    permutation null scores lower still. Measured on ccRCC 2026-09-17: gain -0.0009
+    against a null max of -0.0043 was accepted as lambda=1."""
+    import rctd._protein_eval as pe
+
+    def fake_sweep(*, protein_std, tag="", **kw):
+        if tag:  # a null sweep
+            return {0.0: 0.50, 1.0: 0.4957}, []
+        return {0.0: 0.684, 1.0: 0.6831}, []
+
+    monkeypatch.setattr(pe, "_sweep_folds", fake_sweep)
+    best, curve = pe.select_protein_weight(
+        run_doublet=None,
+        fit_kwargs={},
+        protein_std=np.zeros((4, 2)),
+        protein_profiles=np.zeros((2, 2)),
+        inv_tau2=np.ones(2),
+        protein_mask=None,
+        feature_names=["a", "b"],
+        signatures={},
+        cell_type_names=["A", "B"],
+        lambda_grid=(0.0, 1.0),
+        n_null=3,
+        verbose=False,
+    )
+    assert curve["gain"] < 0 and curve["null_gain"] < curve["gain"]
+    assert best == 0.0
+
+
+@pytest.mark.protein
+def test_full_mode_keeps_float_protein_weights(multimodal_synthetic_data, likelihood_tables):
+    """Full mode cast protein_mask to bool, so a per-cell float weight (reliability,
+    WNN) was silently treated as full trust. A 0.01 weight must change the fit."""
+    from rctd._full import run_full_mode
+
+    d = multimodal_synthetic_data
+    Q_mat, SQ_mat, x_vals = likelihood_tables
+    N = d["protein"].shape[0]
+    kw = dict(
+        spatial_counts=np.asarray(d["counts"]),
+        spatial_numi=np.asarray(d["nUMI"]),
+        norm_profiles=np.asarray(d["profiles"]),
+        cell_type_names=d["cell_type_names"],
+        q_mat=Q_mat.numpy(),
+        sq_mat=SQ_mat.numpy(),
+        x_vals=x_vals.numpy(),
+        device="cpu",
+        protein_profiles=np.asarray(d["P_prot"]),
+        protein_intensity=np.asarray(d["protein"]),
+        inv_tau2=np.asarray(d["inv_tau2"]),
+        protein_lambda=4.0,
+    )
+    w_true = run_full_mode(**kw, protein_mask=np.ones(N, dtype=bool)).weights
+    w_small = run_full_mode(**kw, protein_mask=np.full(N, 0.01)).weights
+    assert not np.allclose(w_true, w_small)
