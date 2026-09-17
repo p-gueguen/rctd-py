@@ -162,6 +162,8 @@ def _sweep_folds(
     tag="",
     type_to_class=None,
     class_names=None,
+    neg_t=0.5,
+    t_start=0.95,
 ):
     """Gate truth from one marker fold, fit without that fold, score every lambda.
 
@@ -191,6 +193,8 @@ def _sweep_folds(
             reliability=reliability,
             min_cells=min_cells,
             restrict_markers=fold,
+            neg_t=neg_t,
+            t_start=t_start,
         )
         gated = [t for t, d in info["per_type"].items() if d.get("n", 0) >= min_cells]
         n_lm = int((labels >= 0).sum())
@@ -289,6 +293,8 @@ def select_protein_weight(
     verbose: bool = True,
     type_to_class: np.ndarray | None = None,
     class_names: list[str] | None = None,
+    neg_t: float = 0.5,
+    t_start: float = 0.95,
 ) -> tuple[float, dict]:
     """Pick lambda by measured accuracy on held-out landmark cells, against a
     permutation null.
@@ -351,6 +357,8 @@ def select_protein_weight(
         verbose=verbose,
         type_to_class=None if type_to_class is None else np.asarray(type_to_class),
         class_names=class_names,
+        neg_t=neg_t,
+        t_start=t_start,
     )
     mean_f1, folds = _sweep_folds(protein_std=protein_std, **common)
     curve: dict = {"grid": grid, "mean_f1": mean_f1, "folds": folds}

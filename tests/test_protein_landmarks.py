@@ -116,6 +116,42 @@ def test_gate_landmarks_reports_ungateable_type():
 
 
 @pytest.mark.protein
+def test_gate_landmarks_any_of_and_neg_t():
+    """Marker dictionaries are OR-lists (astir, spora-bench: Immune = CD20 or CD68
+    or CD15) and negatives mean "not clearly positive", not "in the bottom
+    percentiles of every other lineage's marker". Measured 2026-09-17 on a public
+    IMC tissue: the AND rule plus the 1-t mirror gated 0 of 1986 cells.
+
+    Plant C as m2-high XOR m3-high, and give A three natural-level negatives."""
+    rng = np.random.default_rng(3)
+    n = 600
+    truth = rng.integers(0, 3, n)
+    Z = rng.normal(0, 1, (n, len(NAMES)))
+    Z[truth == 0, 0] += 6.0
+    Z[truth == 1, 1] += 6.0
+    c = np.where(truth == 2)[0]
+    Z[c[: len(c) // 2], 2] += 6.0
+    Z[c[len(c) // 2 :], 3] += 6.0
+    sigs = {
+        "A": {"positive": ["m0"], "negative": ["m1", "m2", "m3"]},
+        "B": {"positive": ["m1"], "negative": ["m0", "m2", "m3"]},
+        "C": {"positive": ["m2", "m3"], "any_of": True, "negative": ["m0", "m1"]},
+    }
+    labels, info = gate_landmarks(Z, NAMES, sigs, TYPES, min_cells=20)
+    for t in TYPES:
+        assert info["per_type"][t]["n"] >= 20, f"{t}: {info['per_type'][t]}"
+    ev = labels >= 0
+    assert (labels[ev] == truth[ev]).mean() >= 0.9
+    c_lm = labels == 2
+    assert (truth[c_lm] == 2).mean() >= 0.9
+
+    # the old semantics, made explicit: AND positives + strict mirror gate nothing for C
+    sigs_and = {**sigs, "C": {"positive": ["m2", "m3"], "negative": ["m0", "m1"]}}
+    _, info_and = gate_landmarks(Z, NAMES, sigs_and, TYPES, min_cells=20, neg_t=0.05)
+    assert info_and["per_type"]["C"]["n"] < 20
+
+
+@pytest.mark.protein
 def test_marker_folds_partition_without_overlap():
     folds = marker_folds(NAMES, n_folds=2)
     assert len(folds) == 2

@@ -80,6 +80,11 @@ class RCTDConfig(NamedTuple):
     # Landmark cells (protein-gated, used when protein_weight="landmark" and by
     # protein_signature_magnitude="calibrated").
     protein_landmark_min_cells: int = 20  # per-type target for the gating ladder
+    # Negative-marker ceiling (percentile), fixed rather than mirrored off the
+    # ladder: "negative" = not clearly positive. The old 1-t mirror gated 0 of 1986
+    # cells on a real IMC tissue with cross-lineage negatives (2026-09-17).
+    protein_landmark_neg_t: float = 0.5
+    protein_landmark_t_start: float = 0.95  # ladder start; 0.99 for a class rarer than 5%
     protein_landmark_folds: int = 2  # marker folds: gate truth with one, fit without it
     # Gate and score landmarks at a coarser level than the reference types:
     # {cell_type: class}. A 27-plex panel can adjudicate T vs B vs myeloid vs

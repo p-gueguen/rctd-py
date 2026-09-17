@@ -442,6 +442,8 @@ class RCTD:
                 lm_names,
                 reliability=reliability,
                 min_cells=cfg.protein_landmark_min_cells,
+                neg_t=cfg.protein_landmark_neg_t,
+                t_start=cfg.protein_landmark_t_start,
             )
             info = self.protein_landmark_info
             print(
@@ -598,6 +600,8 @@ class RCTD:
             n_null=cfg.protein_lambda_nulls,
             type_to_class=type_to_class,
             class_names=None if type_to_class is None else lm_names,
+            neg_t=cfg.protein_landmark_neg_t,
+            t_start=cfg.protein_landmark_t_start,
         )
 
     def _estimate_protein_lambda(self, P_std, P_prot, inv_tau2, valid, max_pixels=2000):

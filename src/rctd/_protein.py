@@ -401,15 +401,28 @@ def gate_landmarks(
     t_step: float = 0.05,
     min_reliability: float = 0.5,
     restrict_markers: np.ndarray | None = None,
+    neg_t: float = 0.5,
 ) -> tuple[np.ndarray, dict]:
     """Gate high-confidence landmark cells from protein alone (CellTune's
     automated landmarking, ported).
 
-    A cell is a landmark for type k when EVERY positive marker of k sits above
-    the threshold and EVERY negative marker sits below its mirror, in per-marker
-    percentiles. Thresholds start strict (0.95) and relax by ``t_step`` until the
-    type reaches ``min_cells`` - CellTune's ladder, which is what keeps rare
-    types representable without loosening the common ones.
+    A cell is a landmark for type k when its positive markers sit above the
+    threshold - EVERY one by default, ANY one when the type's signature carries
+    ``"any_of": true`` (marker dictionaries such as astir's are OR-lists:
+    ``Immune = CD20 or CD68 or CD15``) - and EVERY negative marker sits at or
+    below the ``neg_t`` percentile. Thresholds start strict (0.95) and relax by
+    ``t_step`` until the type reaches ``min_cells`` - CellTune's ladder, which is
+    what keeps rare types representable without loosening the common ones.
+
+    ``neg_t`` is deliberately NOT tied to the ladder: the earlier mirror rule
+    (``1 - t``) demanded every negative below the 30th percentile at the ladder
+    floor, which with a dozen cross-lineage negatives admitted 0 of 1986 cells on
+    a real IMC tissue. "Negative" means "not clearly positive", i.e. below the
+    median by default.
+
+    ponytail: no prevalence cap. At ``t_start`` 0.95 the positive gate admits
+    ~5% of cells, so a class rarer than that cannot gate pure; raise ``t_start``
+    (0.99) for such a class until a prevalence-aware cap exists.
 
     Two things make these labels usable as truth rather than as another
     prediction: a cell claimed by more than one type is DROPPED (truth must be
@@ -423,13 +436,15 @@ def gate_landmarks(
     Args:
         protein_std: (N, M) standardized protein.
         feature_names: M marker names (column order).
-        signatures: ``{cell_type: {"positive": [...], "negative": [...]}}``.
+        signatures: ``{cell_type: {"positive": [...], "negative": [...],
+            "any_of": bool}}``; ``any_of`` (default False) ORs the positives.
         cell_type_names: K reference type names; labels index into this list.
         reliability: optional (N,) from :func:`neighbour_reliability`.
         min_cells: per-type target before the ladder stops relaxing.
         t_start, t_min, t_step: the relaxation ladder.
         min_reliability: cells below this are never landmarks.
         restrict_markers: optional marker-column indices to gate on.
+        neg_t: percentile ceiling for every negative marker (fixed, not laddered).
 
     Returns:
         ``(labels, info)``. ``labels`` (N,) int: type index, or -1 for "not a
@@ -470,13 +485,14 @@ def gate_landmarks(
             info["per_type"][tname] = {"n": 0, "threshold": None, "reason": "no positive marker"}
             continue
 
+        any_of = bool(spec.get("any_of", False))
         chosen = None
         for t in ladder:
             ok = usable.copy()
-            for i in pos:
-                ok &= u[:, i] >= t
+            hit = u[:, pos] >= t
+            ok &= hit.any(axis=1) if any_of else hit.all(axis=1)
             for i in neg:
-                ok &= u[:, i] <= 1.0 - t
+                ok &= u[:, i] <= neg_t
             chosen = (t, ok)
             if int(ok.sum()) >= min_cells:
                 break
@@ -488,6 +504,7 @@ def gate_landmarks(
             "n": n,
             "threshold": t_used,
             "positive": [feature_names[i] for i in pos],
+            "any_of": any_of,
             "negative": [feature_names[i] for i in neg],
         }
         if n < min_cells:
