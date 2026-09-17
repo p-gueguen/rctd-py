@@ -615,7 +615,7 @@ def solve_irwls_batch(
         inv_tau2: (M,) per-marker precision 1 / tau_m^2.
         lam: protein balance weight (lambda). 0.0 => RNA-only.
         prot_mask: (N,) per-pixel protein weight. A bool marks pixels WITH protein
-            (others fall back to RNA-only); a FLOAT in [0, 1] additionally scales
+            (others fall back to RNA-only); a non-negative FLOAT additionally scales
             how much that pixel's protein term is trusted (see
             ``_protein.neighbour_reliability``). An all-True bool is arithmetically
             identical to the previous ``torch.where`` gate.
@@ -750,9 +750,9 @@ def solve_irwls_batch_shared(
         Y_prot_batch: (N, M) standardized observed protein intensities.
         inv_tau2: (M,) per-marker precision 1 / tau_m^2.
         lam: protein balance weight (lambda). 0.0 => RNA-only.
-        prot_mask: (N,) per-pixel protein weight — bool (has protein) or float in
-            [0, 1] (has protein AND how far it is trusted; see
-            ``_protein.neighbour_reliability``).
+        prot_mask: (N,) per-pixel protein weight - bool (has protein) or a
+            non-negative float (1 = full weight; see ``_protein.neighbour_reliability``
+            and ``_protein.wnn_modality_weights``).
 
     Returns:
         (weights, converged): (N, K) and (N,) bool arrays

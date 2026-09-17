@@ -576,6 +576,93 @@ def neighbour_reliability(
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# WNN per-cell modality weights (Hao et al. 2021)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def _l2_rows(X: np.ndarray) -> np.ndarray:
+    X = np.asarray(X, dtype=np.float64)
+    n = np.linalg.norm(X, axis=1, keepdims=True)
+    return X / np.maximum(n, 1e-12)
+
+
+def _modality_ratio(X, own_nn, other_nn, eps, chunk=20000):
+    """Within/cross affinity ratio for one modality (X already L2-normalised)."""
+    N = X.shape[0]
+    out = np.empty(N)
+    for s in range(0, N, chunk):
+        e = min(N, s + chunk)
+        x = X[s:e]
+        own = X[own_nn[s:e]]  # (n, k, d)
+        d_own = np.linalg.norm(own - x[:, None, :], axis=2)
+        d1, sigma = d_own.min(axis=1), d_own.max(axis=1)
+        bw = np.maximum(sigma - d1, 1e-12)
+        d_within = np.linalg.norm(x - own.mean(axis=1), axis=1)
+        d_cross = np.linalg.norm(x - X[other_nn[s:e]].mean(axis=1), axis=1)
+        th_w = np.exp(-np.maximum(d_within - d1, 0.0) / bw)
+        th_c = np.exp(-np.maximum(d_cross - d1, 0.0) / bw)
+        out[s:e] = th_w / (th_c + eps)
+    return out
+
+
+def wnn_modality_weights(
+    rna_embed: np.ndarray,
+    prot_embed: np.ndarray,
+    k: int = 20,
+    eps: float = 1e-4,
+    sample: np.ndarray | None = None,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Per-cell RNA / protein weights by weighted nearest neighbours (Hao et al. 2021).
+
+    For each modality m and cell i: the cell's own profile in m-space is predicted
+    from its k nearest neighbours in m-space (within) and from its k nearest
+    neighbours in the OTHER modality's space (cross). Each prediction becomes an
+    affinity ``exp(-max(d - d_nn1, 0) / (sigma - d_nn1))``, with ``d_nn1`` the
+    distance to the nearest neighbour and ``sigma`` the distance to the k-th; the
+    modality score is within / (cross + eps), and the weights are a softmax of the
+    log scores (i.e. scores normalised to sum to 1). A modality earns weight where
+    its own neighbourhood explains the cell better than the other modality's does.
+
+    Departures from Seurat, stated: the bandwidth is the k-th neighbour distance
+    (Seurat derives it from shared-neighbour overlap), and embeddings are passed in
+    rather than computed here. Rows are L2-normalised first, as in Seurat.
+
+    Caveat: the weight rewards a SELF-CONSISTENT modality. Spillover and
+    segmentation bleed are self-consistent too, so a high protein weight is not
+    evidence that protein is right - measure the downstream call (landmark F1).
+
+    Args:
+        rna_embed: (N, d1) RNA embedding (e.g. PCs of log-normalised counts).
+        prot_embed: (N, d2) protein embedding (e.g. standardised intensities).
+        k: neighbours per cell.
+        eps: floor on the cross affinity.
+        sample: optional (N,) section labels; neighbours are searched within a section.
+
+    Returns:
+        ``(w_rna, w_prot)``, each (N,) in [0, 1], summing to 1.
+    """
+    R, P = _l2_rows(rna_embed), _l2_rows(prot_embed)
+    N = R.shape[0]
+    if P.shape[0] != N:
+        raise ValueError(f"rna_embed has {N} rows, prot_embed has {P.shape[0]}")
+    groups = (
+        [np.arange(N)]
+        if sample is None
+        else [np.where(np.asarray(sample) == s)[0] for s in np.unique(np.asarray(sample))]
+    )
+    w_prot = np.full(N, 0.5)
+    for rows in groups:
+        if rows.size < 3:
+            continue  # too few cells to judge; stay neutral
+        r, p = R[rows], P[rows]
+        nn_r, nn_p = _knn_indices(r, k=k), _knn_indices(p, k=k)
+        s_r = _modality_ratio(r, nn_r, nn_p, eps)
+        s_p = _modality_ratio(p, nn_p, nn_r, eps)
+        w_prot[rows] = s_p / np.maximum(s_r + s_p, 1e-300)
+    return 1.0 - w_prot, w_prot
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Landmark cells: an internal gold standard gated on protein alone
 # ─────────────────────────────────────────────────────────────────────────────
 

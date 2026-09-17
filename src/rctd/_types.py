@@ -89,6 +89,14 @@ class RCTDConfig(NamedTuple):
     protein_reliability: str | None = None  # None | "neighbour_ratio"
     protein_reliability_k: int = 6  # neighbours per cell for the ratio
     protein_reliability_floor: float = 0.05  # never strip a cell's protein term entirely
+    # Per-cell modality weight. "wnn" = Seurat's weighted nearest neighbours (Hao et
+    # al. 2021): protein counts at a cell in proportion to how well protein
+    # neighbourhoods explain it vs RNA neighbourhoods. The factor 2*w_prot (1 = equal
+    # weight) multiplies the protein term next to the reliability score, so
+    # protein_weight keeps its meaning. None = every cell weighs 1.
+    protein_modality_weight: str | None = None  # None | "wnn"
+    protein_wnn_k: int = 20  # neighbours per cell for WNN
+    protein_wnn_npcs: int = 30  # RNA PCs used as the RNA embedding
     # Landmark cells (protein-gated, used when protein_weight="landmark" and by
     # protein_signature_magnitude="calibrated").
     protein_landmark_min_cells: int = 20  # per-type target for the gating ladder

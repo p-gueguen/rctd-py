@@ -151,9 +151,9 @@ def run_doublet_mode(
         Yprot_gpu = torch.tensor(protein_intensity, device=device, dtype=P_gpu.dtype)  # (N, M)
         invtau_gpu = torch.tensor(inv_tau2, device=device, dtype=P_gpu.dtype)  # (M,)
         if protein_mask is not None:
-            # bool = "has protein"; float in [0, 1] = has protein AND how far it is
-            # trusted (per-cell reliability, e.g. the neighbour-ratio spillover
-            # score). Preserve whichever was passed — the solver and the protein
+            # bool = "has protein"; non-negative float = has protein AND how much
+            # it counts (1 = full weight; the neighbour-ratio reliability and the
+            # WNN factor multiply in). Preserve whichever was passed — the solver and the protein
             # NLL both multiply by it, so they must see the same values.
             pm = np.asarray(protein_mask)
             protmask_gpu = (

@@ -21,6 +21,7 @@ from rctd._protein import (
     normalize_protein,
     normalize_protein_by_sample,
     scgate_signatures,
+    wnn_modality_weights,
 )
 from rctd._protein_eval import landmark_macro_f1, select_protein_weight
 from rctd._rctd import RCTD, run_rctd
@@ -55,6 +56,7 @@ __all__ = [
     "SPOT_CLASS_NAMES",
     "normalize_protein",
     "normalize_protein_by_sample",
+    "wnn_modality_weights",
     "bootstrap_protein_profiles",
     "cognate_profile",
     "COGNATE_GENES",

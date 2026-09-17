@@ -334,6 +334,7 @@ class RCTD:
         downstream solve is byte-for-byte the RNA-only path.
         """
         self.protein_lambda = 0.0
+        self.protein_wnn_weight = None
         if not _protein_enabled(self.config) or getattr(self, "_protein_raw", None) is None:
             return {}
 
@@ -346,6 +347,7 @@ class RCTD:
             neighbour_reliability,
             normalize_protein,
             normalize_protein_by_sample,
+            wnn_modality_weights,
         )
 
         cfg = self.config
@@ -391,6 +393,24 @@ class RCTD:
                 f"Protein reliability (neighbour ratio, k={cfg.protein_reliability_k}): "
                 f"median {np.median(reliability):.3f}, "
                 f"{int((reliability < 0.5).sum())}/{len(reliability)} cells below 0.5"
+            )
+
+        # ── Per-cell modality weight (WNN) ──
+        cell_weight = None if reliability is None else np.asarray(reliability, dtype=np.float64)
+        if cfg.protein_modality_weight is not None:
+            if cfg.protein_modality_weight != "wnn":
+                raise ValueError(
+                    f"unsupported protein_modality_weight: {cfg.protein_modality_weight!r}"
+                )
+            _, w_prot = wnn_modality_weights(
+                self._rna_embedding(cfg.protein_wnn_npcs), P_std, k=cfg.protein_wnn_k, sample=sample
+            )
+            self.protein_wnn_weight = w_prot
+            f = 2.0 * w_prot
+            cell_weight = f if cell_weight is None else cell_weight * f
+            print(
+                f"Protein WNN weight (k={cfg.protein_wnn_k}): median {np.median(w_prot):.3f}, "
+                f"{int((w_prot > 0.5).sum())}/{len(w_prot)} cells lean on protein"
             )
 
         if cfg.protein_profile_source == "bootstrap":
@@ -511,7 +531,7 @@ class RCTD:
 
         # Per-cell protein weight handed to both the solver and the protein NLL:
         # bool "has protein" when no reliability model, float otherwise.
-        protein_mask = valid if reliability is None else valid.astype(np.float64) * reliability
+        protein_mask = valid if cell_weight is None else valid.astype(np.float64) * cell_weight
 
         self.protein_lambda_curve = None
         if isinstance(cfg.protein_weight, str):
@@ -565,6 +585,15 @@ class RCTD:
                 f"({self._protein_raw.shape[0]}); pixel mask is out of sync"
             )
         return coords[:, :2]
+
+    def _rna_embedding(self, n_pcs: int) -> np.ndarray:
+        """(N, n_pcs) PCs of log1p(CP10k) RNA, row-aligned to the protein matrix."""
+        X = np.log1p(1e4 * self.counts / np.maximum(self.nUMI, 1)[:, None]).astype(np.float32)
+        X -= X.mean(axis=0, keepdims=True)
+        q = int(max(2, min(n_pcs, min(X.shape) - 1)))
+        torch.manual_seed(0)
+        _, _, V = torch.pca_lowrank(torch.from_numpy(X), q=q, center=False)
+        return (X @ V.numpy()).astype(np.float64)
 
     def _protein_sample(self) -> np.ndarray | None:
         """(N,) section labels row-aligned to the protein matrix, or None."""
