@@ -19,6 +19,7 @@ from rctd._protein import (
     marker_folds,
     neighbour_reliability,
     normalize_protein,
+    normalize_protein_by_sample,
     scgate_signatures,
 )
 from rctd._protein_eval import landmark_macro_f1, select_protein_weight
@@ -53,6 +54,7 @@ __all__ = [
     "run_multi_mode",
     "SPOT_CLASS_NAMES",
     "normalize_protein",
+    "normalize_protein_by_sample",
     "bootstrap_protein_profiles",
     "cognate_profile",
     "COGNATE_GENES",

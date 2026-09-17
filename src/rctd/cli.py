@@ -567,6 +567,11 @@ def _parse_protein_weight(value):
     ),
 )
 @click.option("--protein-signature-magnitude", default=1.5, show_default=True, type=float)
+@click.option(
+    "--protein-sample-key",
+    default=None,
+    help="obs column naming each cell's section; protein is then normalised per section.",
+)
 def run(
     spatial,
     reference,
@@ -603,6 +608,7 @@ def run(
     protein_profile_source,
     protein_signatures,
     protein_signature_magnitude,
+    protein_sample_key,
 ):
     """Run RCTD deconvolution on spatial transcriptomics data."""
     import contextlib
@@ -670,6 +676,7 @@ def run(
         protein_profile_source=protein_profile_source,
         protein_signatures=protein_signatures_dict,
         protein_signature_magnitude=protein_signature_magnitude,
+        protein_sample_key=protein_sample_key,
     )
     config_dict = config._asdict()
     # uns has no writer for a tuple, and a tuple-valued config field (e.g.

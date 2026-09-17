@@ -84,6 +84,32 @@ def normalize_protein(
     return P_std.astype(np.float64), tau, valid_mask
 
 
+def normalize_protein_by_sample(
+    P_raw: np.ndarray,
+    sample: np.ndarray,
+    **kwargs,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """:func:`normalize_protein` per sample / section, then concatenated.
+
+    VirTues standardises every image on its own statistics before anything is
+    compared across images; the pooled robust-z cannot tell a brighter section
+    from a section with more positive cells. ``sample`` is an (N,) label vector
+    (e.g. ``obs[protein_sample_key]``); ``tau`` is 1 for every marker as in the
+    single-sample path.
+    """
+    P_raw = np.asarray(P_raw, dtype=np.float64)
+    sample = np.asarray(sample)
+    if sample.shape[0] != P_raw.shape[0]:
+        raise ValueError(f"sample has {sample.shape[0]} rows, protein has {P_raw.shape[0]}")
+    P_std = np.zeros_like(P_raw)
+    valid = np.zeros(P_raw.shape[0], dtype=bool)
+    tau = np.ones(P_raw.shape[1])
+    for s in np.unique(sample):
+        rows = np.where(sample == s)[0]
+        P_std[rows], tau, valid[rows] = normalize_protein(P_raw[rows], **kwargs)
+    return P_std, tau, valid
+
+
 def bootstrap_protein_profiles(
     protein_std: np.ndarray,
     singlet_type_idx: np.ndarray,
@@ -467,6 +493,7 @@ def neighbour_reliability(
     k: int = 6,
     high_pct: float = 75.0,
     floor: float = 0.05,
+    sample: np.ndarray | None = None,
 ) -> np.ndarray:
     """Per-cell protein reliability in ``[floor, 1]`` from the neighbour-max ratio.
 
@@ -493,6 +520,9 @@ def neighbour_reliability(
         high_pct: percentile (over the positive part of each marker) above which a
             cell counts as reading high on that marker.
         floor: lower clamp, so a cell is never fully stripped of its protein term.
+        sample: optional (N,) section labels; neighbours are searched within a
+            section only, so two sections that share pixel coordinates in one
+            AnnData do not read each other as bleed.
 
     Returns:
         ``r`` (N,) float64 in ``[floor, 1.0]``. Feed it to
@@ -507,8 +537,20 @@ def neighbour_reliability(
         raise ValueError(f"coords has {np.asarray(coords).shape[0]} rows, protein_std has {N}")
 
     x = np.clip(np.where(np.isfinite(P), P, 0.0), 0.0, None)  # (N, M) above-median part
-    nn = _knn_indices(coords, k=k)  # (N, k_eff)
-    nbr_max = x[nn].max(axis=1)  # (N, M) brightest neighbour per marker
+    if sample is None:
+        nn = _knn_indices(coords, k=k)  # (N, k_eff)
+        nbr_max = x[nn].max(axis=1)  # (N, M) brightest neighbour per marker
+    else:
+        sample = np.asarray(sample)
+        if sample.shape[0] != N:
+            raise ValueError(f"sample has {sample.shape[0]} rows, protein_std has {N}")
+        nbr_max = np.zeros_like(x)
+        for s in np.unique(sample):
+            rows = np.where(sample == s)[0]
+            if rows.size < 2:
+                continue  # a lone cell has no neighbour to doubt it
+            nn = _knn_indices(coords[rows], k=k)
+            nbr_max[rows] = x[rows][nn].max(axis=1)
 
     # Per-marker "reads high" cut, taken over the positive part only so a marker
     # that is off in most cells does not set an absurdly low bar.

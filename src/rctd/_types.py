@@ -76,6 +76,10 @@ class RCTDConfig(NamedTuple):
     protein_signature_magnitude: float | str = 1.5
     protein_var_model: str = "wls_pooled"  # "wls_pooled" (1/tau_m) | "unit"
     protein_arcsinh_cofactor: float = 5.0  # arcsinh cofactor for IF intensity
+    # obs column naming the section / sample of each cell. When set, protein is
+    # normalised per section (VirTues standardises per image) and the reliability
+    # kNN never crosses sections. None = one pooled normalisation.
+    protein_sample_key: str | None = None
     protein_singlet_purity: float = 0.8  # confident-singlet weight gate for the bootstrap
     protein_tau_floor: float = 1e-3  # floor on per-marker tau to bound 1/tau^2
     # Per-cell protein reliability. "neighbour_ratio" downweights a cell whose

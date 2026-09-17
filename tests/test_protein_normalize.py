@@ -3,7 +3,7 @@
 import numpy as np
 import pytest
 
-from rctd._protein import normalize_protein
+from rctd._protein import normalize_protein, normalize_protein_by_sample
 
 
 @pytest.mark.protein
@@ -72,3 +72,20 @@ def test_clr_centers_each_cell():
 def test_unknown_method_raises():
     with pytest.raises(ValueError, match="unknown protein normalization"):
         normalize_protein(np.ones((4, 3)), method="zscore")
+
+
+@pytest.mark.protein
+def test_per_sample_normalisation_removes_a_section_offset():
+    """VirTues standardises per image. Two sections whose staining differs by a
+    constant offset must both centre at 0 per marker; pooled normalisation
+    leaves the brighter section shifted."""
+    rng = np.random.default_rng(0)
+    P = rng.lognormal(3, 1, size=(400, 3))
+    sample = np.array(["s1"] * 200 + ["s2"] * 200)
+    P[sample == "s2"] *= 10.0
+    pooled, _, _ = normalize_protein(P)
+    assert np.median(pooled[sample == "s2"], axis=0).min() > 0.5
+    per, tau, valid = normalize_protein_by_sample(P, sample)
+    assert per.shape == P.shape and tau.shape == (3,) and valid.all()
+    for s in ("s1", "s2"):
+        assert np.allclose(np.median(per[sample == s], axis=0), 0.0, atol=1e-6)

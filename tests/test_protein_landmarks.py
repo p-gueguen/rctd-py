@@ -254,6 +254,26 @@ def test_neighbour_reliability_separates_source_from_bleeder():
 
 
 @pytest.mark.protein
+def test_neighbour_reliability_does_not_cross_sections():
+    """Two sections stored in one AnnData share pixel coordinates. A cell must
+    only be judged against neighbours from its own section, or a bright cell on
+    section B makes an honest cell on section A look like bleed."""
+    rng = np.random.default_rng(5)
+    n = 300
+    coords = np.vstack([rng.uniform(0, 200, (n, 2))] * 2)  # identical coordinates twice
+    sample = np.array(["A"] * n + ["B"] * n)
+    X = np.zeros((2 * n, 4))
+    X[:, 0] = rng.uniform(0.0, 0.5, 2 * n)
+    X[0, 0] = 3.0  # honest positive on A ...
+    X[n, 0] = 12.0  # ... sitting exactly under a much brighter cell on B
+    r_mixed = neighbour_reliability(X, coords, k=3)
+    assert r_mixed[0] < 0.5  # the cross-section bug, made explicit
+    r = neighbour_reliability(X, coords, k=3, sample=sample)
+    assert r[0] == pytest.approx(1.0)
+    assert r[n] == pytest.approx(1.0)
+
+
+@pytest.mark.protein
 def test_reliability_weight_recovers_a_contaminated_fit(
     multimodal_synthetic_data, likelihood_tables
 ):

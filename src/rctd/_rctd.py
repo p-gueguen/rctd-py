@@ -345,17 +345,25 @@ class RCTD:
             gate_landmarks,
             neighbour_reliability,
             normalize_protein,
+            normalize_protein_by_sample,
         )
 
         cfg = self.config
         if cfg.protein_profile_source not in ("bootstrap", "curated", "cognate"):
             raise ValueError(f"unsupported protein_profile_source: {cfg.protein_profile_source!r}")
 
-        P_std, _tau_norm, valid = normalize_protein(
-            self._protein_raw,
-            method=cfg.protein_norm,
-            cofactor=cfg.protein_arcsinh_cofactor,
-        )
+        sample = self._protein_sample()
+        norm_kw = dict(method=cfg.protein_norm, cofactor=cfg.protein_arcsinh_cofactor)
+        if sample is None:
+            P_std, _tau_norm, valid = normalize_protein(self._protein_raw, **norm_kw)
+        else:
+            P_std, _tau_norm, valid = normalize_protein_by_sample(
+                self._protein_raw, sample, **norm_kw
+            )
+            print(
+                f"Protein normalised per section ({cfg.protein_sample_key}): "
+                f"{len(np.unique(sample))} sections"
+            )
         M = P_std.shape[1]
         K = self.norm_profiles.shape[1]
         tau = np.ones(M)
@@ -377,6 +385,7 @@ class RCTD:
                 coords,
                 k=cfg.protein_reliability_k,
                 floor=cfg.protein_reliability_floor,
+                sample=sample,
             )
             print(
                 f"Protein reliability (neighbour ratio, k={cfg.protein_reliability_k}): "
@@ -556,6 +565,15 @@ class RCTD:
                 f"({self._protein_raw.shape[0]}); pixel mask is out of sync"
             )
         return coords[:, :2]
+
+    def _protein_sample(self) -> np.ndarray | None:
+        """(N,) section labels row-aligned to the protein matrix, or None."""
+        key = self.config.protein_sample_key
+        if key is None:
+            return None
+        if key not in self.spatial.obs:
+            raise ValueError(f"protein_sample_key {key!r} is not a column of spatial.obs")
+        return np.asarray(self.spatial.obs[key])[self._pixel_mask]
 
     def _landmark_classes(self):
         """``(names, type_to_class)`` for landmark gating: the reference types and
