@@ -230,3 +230,50 @@ def test_prepare_protein_applies_reference_levels(synthetic_data):
     assert rctd.reference.protein_profiles[iA, k0] == pytest.approx(
         np.percentile(Y[:, iA], 90), rel=1e-5
     )
+
+
+@pytest.mark.protein
+def test_reference_protein_levels_needs_an_exact_antibody_name():
+    """'CD31' and 'CD3-1' share a punctuation-free key. Handing CD31 the CD3 antibody
+    gave the endothelial marker a T-cell profile (PBMC panel, 2026-09-17)."""
+    from rctd._protein import reference_protein_levels
+
+    adt, labels, names = _toy_citeseq()
+    names = ["CD3-1", "CD31", "IgG-iso"]  # column 1 is now the CD45-like pan marker
+    lv = reference_protein_levels(
+        adt,
+        labels,
+        names,
+        isotype_names=["IgG-iso"],
+        type_map={"T1": "T", "B1": "B"},
+        marker_to_adt={"CD3E": "CD3-1", "CD31": "CD31"},
+    )
+    assert lv.loc["CD3E", "B"] < 0.15  # the real CD3 antibody
+    assert lv.loc["CD31", "B"] > 0.8  # the pan marker, NOT a copy of CD3
+    with pytest.warns(UserWarning, match="matches several antibodies"):
+        reference_protein_levels(
+            adt,
+            labels,
+            ["CD3-1", "CD3.1", "IgG-iso"],
+            isotype_names=["IgG-iso"],
+            type_map={"T1": "T"},
+            marker_to_adt={"CD3E": "cd31"},
+        )
+
+
+@pytest.mark.protein
+def test_reference_protein_levels_drop_background_antibodies():
+    """An antibody that never leaves isotype background carries noise, not levels."""
+    from rctd._protein import reference_protein_levels
+
+    adt, labels, names = _toy_citeseq()
+    adt[:, 0] = np.random.default_rng(0).poisson(6, adt.shape[0])  # CD3 at isotype level
+    lv = reference_protein_levels(
+        adt,
+        labels,
+        names,
+        isotype_names=["IgG-iso"],
+        type_map={"T1": "T", "B1": "B"},
+        marker_to_adt={"CD3E": "CD3-1", "CD45": "CD45-1"},
+    )
+    assert "CD3E" not in lv.index and "CD45" in lv.index

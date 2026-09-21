@@ -589,6 +589,7 @@ def reference_protein_levels(
     marker_to_adt: dict,
     cofactor: float = 5.0,
     min_range: float = 0.05,
+    min_signal_ratio: float = 2.0,
 ):
     """Per-type protein levels in [0, 1] measured on a CITE-seq reference.
 
@@ -610,6 +611,10 @@ def reference_protein_levels(
         cofactor: arcsinh cofactor applied to counts before averaging.
         min_range: a marker whose top type sits less than this above the isotype floor
             carries no information and is dropped.
+        min_signal_ratio: a marker whose top type is below this multiple of the isotype
+            floor never left background in the reference and is dropped (measured on the
+            PBMC panel: CD68, PD-1 and CD138 sit within 1.8x of the isotype level, so
+            their "levels" would be noise ranked as biology).
 
     Returns:
         ``pandas.DataFrame`` (spatial marker x spatial type) of levels in [0, 1],
@@ -618,13 +623,34 @@ def reference_protein_levels(
     """
     import pandas as pd
 
-    A = np.asarray(adt_names)
-    aidx = {_norm_marker(n): i for i, n in enumerate(A)}
+    A = [str(n) for n in adt_names]
+    exact = {n: i for i, n in enumerate(A)}
+    norm: dict[str, list[int]] = {}
+    for i, n in enumerate(A):
+        norm.setdefault(_norm_marker(n), []).append(i)
+
+    def _column(name):
+        """Exact antibody name first; the punctuation-free fallback only when it is
+        unambiguous - on the PBMC panel "CD31" and "CD3-1" share a normalised key, and
+        the fallback silently handed CD31 the CD3 antibody (caught 2026-09-17)."""
+        if name in exact:
+            return exact[name]
+        hits = norm.get(_norm_marker(name), [])
+        if len(hits) == 1:
+            return hits[0]
+        if len(hits) > 1:
+            warnings.warn(
+                f"reference_protein_levels: {name!r} matches several antibodies "
+                f"{[A[i] for i in hits]}; name it exactly",
+                stacklevel=3,
+            )
+        return None
+
     labels = np.asarray(labels).astype(str)
     dense = adt_counts.toarray() if hasattr(adt_counts, "toarray") else np.asarray(adt_counts)
     X = np.arcsinh(np.asarray(dense, dtype=np.float64) / cofactor)
 
-    iso_cols = [aidx[_norm_marker(n)] for n in isotype_names if _norm_marker(n) in aidx]
+    iso_cols = [c for c in (_column(n) for n in isotype_names) if c is not None]
     if not iso_cols:
         raise ValueError(f"none of the isotype controls {isotype_names} are in adt_names")
     floor = float(X[:, iso_cols].mean())
@@ -639,14 +665,17 @@ def reference_protein_levels(
     rows, index = [], []
     dropped = []
     for marker, ab in marker_to_adt.items():
-        j = aidx.get(_norm_marker(ab))
+        j = _column(ab)
         if j is None:
-            dropped.append(marker)
+            dropped.append(f"{marker} (no antibody)")
             continue
         vals = np.array([type_means[st][j] for st in spatial_types], dtype=float)
         ceiling = np.nanmax(vals)
         if not np.isfinite(ceiling) or ceiling - floor < min_range:
-            dropped.append(marker)
+            dropped.append(f"{marker} (flat across types)")
+            continue
+        if ceiling < min_signal_ratio * floor:
+            dropped.append(f"{marker} (at isotype background: {ceiling:.2f} vs floor {floor:.2f})")
             continue
         rows.append(np.clip((vals - floor) / (ceiling - floor), 0.0, 1.0))
         index.append(marker)
