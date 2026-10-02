@@ -540,3 +540,119 @@ def test_run_spatialdata_default_output_stays_outside_store(spatialdata_store):
     assert result.exit_code == 0, result.output
     assert (store.parent / "spatial_rctd.h5ad").exists()
     assert not list(store.rglob("*.h5ad"))
+
+
+# ── --table: choosing among several tables in a SpatialData store ───
+
+
+@pytest.fixture
+def two_table_store(tmp_path):
+    """A real SpatialData store with two RCTD-valid tables of DIFFERENT sizes, plus a reference.
+
+    The sizes differ so a test can tell which table was read; the older multi-table test
+    uses two identically shaped tables and could not.
+    """
+    sd = pytest.importorskip("spatialdata")
+    from conftest import _make_synthetic_reference, _make_synthetic_spatial
+    from spatialdata.models import TableModel
+
+    ref_adata, profiles, _ = _make_synthetic_reference(n_genes=200, n_cells=500, n_types=5, seed=42)
+    big, _ = _make_synthetic_spatial(profiles, n_pixels=100, n_types=5, seed=123)
+    small, _ = _make_synthetic_spatial(profiles, n_pixels=60, n_types=5, seed=7)
+
+    ref_path = tmp_path / "reference.h5ad"
+    ref_adata.write_h5ad(ref_path)
+    store = tmp_path / "two.zarr"
+    sd.SpatialData(tables={"big": TableModel.parse(big), "small": TableModel.parse(small)}).write(
+        store
+    )
+    return store, ref_path
+
+
+def test_read_adata_table_picks_the_named_table(two_table_store):
+    from rctd.cli import _read_adata
+
+    store, _ = two_table_store
+    assert _read_adata(store, table="small").n_obs == 60
+    assert _read_adata(store, table="big").n_obs == 100
+
+
+def test_read_adata_unknown_table_lists_the_available_ones(two_table_store):
+    import click
+
+    from rctd.cli import _read_adata
+
+    store, _ = two_table_store
+    with pytest.raises(click.ClickException, match=r"no table named 'nope'.*big, small"):
+        _read_adata(store, table="nope")
+
+
+def test_read_adata_ambiguous_store_points_at_the_table_flag(two_table_store):
+    import click
+
+    from rctd.cli import _read_adata
+
+    store, _ = two_table_store
+    with pytest.raises(click.ClickException, match="--table"):
+        _read_adata(store)
+
+
+def test_table_is_rejected_where_it_cannot_apply(two_table_store):
+    """--table on an .h5ad, or on a path already inside a table, is an error, not a no-op."""
+    import click
+
+    from rctd.cli import _read_adata
+
+    store, ref_path = two_table_store
+    with pytest.raises(click.UsageError, match="only applies to a SpatialData store"):
+        _read_adata(ref_path, table="big")
+    with pytest.raises(click.UsageError, match="only applies to a SpatialData store"):
+        _read_adata(store / "tables" / "big", table="big")
+
+
+def test_validate_table_flag_selects_the_table(two_table_store):
+    store, ref_path = two_table_store
+    runner = CliRunner()
+
+    ok = runner.invoke(main, ["validate", str(store), str(ref_path), "--table", "small", "--json"])
+    assert "60 pixels" in json.loads(ok.output)["checks"]["spatial_readable"]["detail"]
+
+    # without it the ambiguity is reported, and the message names the way out
+    bad = json.loads(runner.invoke(main, ["validate", str(store), str(ref_path), "--json"]).output)
+    assert not bad["checks"]["spatial_readable"]["pass"]
+    assert "--table" in bad["checks"]["spatial_readable"]["detail"]
+
+
+def test_run_threads_table_through_to_the_loader(two_table_store, tmp_path):
+    """`run` must pass --table on. A name that does not exist fails fast, before any compute."""
+    store, ref_path = two_table_store
+    result = CliRunner().invoke(
+        main, ["run", str(store), str(ref_path), "--table", "nope", "--device", "cpu"]
+    )
+    assert result.exit_code != 0
+    assert "no table named 'nope'" in result.output
+
+
+@pytest.mark.slow
+def test_run_table_flag_end_to_end(two_table_store, tmp_path):
+    """The deconvolution runs on the table that was asked for, not the first or the biggest."""
+    store, ref_path = two_table_store
+    out_path = tmp_path / "out.h5ad"
+    result = CliRunner().invoke(
+        main,
+        [
+            "run",
+            str(store),
+            str(ref_path),
+            "--table",
+            "small",
+            "--mode",
+            "doublet",
+            "--output",
+            str(out_path),
+            "--device",
+            "cpu",
+        ],
+    )
+    assert result.exit_code == 0, result.output
+    assert anndata.read_h5ad(out_path).n_obs == 60

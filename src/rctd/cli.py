@@ -78,29 +78,48 @@ def info(use_json):
         click.echo(f"scipy   {data['scipy_version']}")
 
 
-def _read_adata(path):
+def _read_adata(path, table=None):
     """Read an AnnData from .h5ad, an AnnData Zarr store, or a SpatialData Zarr store.
 
     A directory is read as Zarr. If it looks like a SpatialData store (it has a
-    ``tables/`` group) the single table inside is used; with zero or several
-    tables, point at the table path directly.
+    ``tables/`` group) the single table inside is used; with several, ``table`` names
+    the one to read. Passing ``table`` for anything that is not a SpatialData store is
+    an error rather than being silently ignored.
     """
     import anndata
 
     p = Path(path)
     if not p.is_dir():
+        if table is not None:
+            raise click.UsageError(
+                f"--table only applies to a SpatialData store, but {p} is a file."
+            )
         return anndata.read_h5ad(p)
 
     tables = p / "tables"
     if tables.is_dir():
         names = sorted(c.name for c in tables.iterdir() if c.is_dir())
-        if len(names) != 1:
-            listed = ", ".join(names) if names else "none"
+        listed = ", ".join(names) if names else "none"
+        if table is not None:
+            if table not in names:
+                raise click.ClickException(
+                    f"{p} has no table named {table!r}; available tables: {listed}"
+                )
+            chosen = table
+        elif len(names) == 1:
+            chosen = names[0]
+        else:
             raise click.ClickException(
                 f"{p} is a SpatialData store with {len(names)} tables ({listed}); "
-                f"pass the table path directly, e.g. {tables / (names[0] if names else '<table>')}"
+                "pick one with --table NAME, or pass the table path directly, e.g. "
+                f"{tables / (names[0] if names else '<table>')}"
             )
-        p = tables / names[0]
+        p = tables / chosen
+    elif table is not None:
+        raise click.UsageError(
+            f"--table only applies to a SpatialData store (a directory with a tables/ "
+            f"group), but {p} has none."
+        )
 
     try:
         from anndata.io import read_zarr
@@ -125,6 +144,14 @@ def _read_adata(path):
 @click.argument("spatial", type=click.Path(exists=True))
 @click.argument("reference", type=click.Path(exists=True))
 @click.option(
+    "--table",
+    default=None,
+    help=(
+        "SpatialData stores only: name of the table to read from the SPATIAL store "
+        "when it holds several."
+    ),
+)
+@click.option(
     "--cell-type-col",
     default="cell_type",
     show_default=True,
@@ -135,7 +162,7 @@ def _read_adata(path):
     "--cell-min", default=25, show_default=True, help="Minimum cells per cell type in reference."
 )
 @click.option("--json", "use_json", is_flag=True, help="Output as JSON.")
-def validate(spatial, reference, cell_type_col, umi_min, cell_min, use_json):
+def validate(spatial, reference, table, cell_type_col, umi_min, cell_min, use_json):
     """Validate inputs before running RCTD (fast, no GPU needed)."""
     import numpy as np
     from scipy import sparse
@@ -145,7 +172,7 @@ def validate(spatial, reference, cell_type_col, umi_min, cell_min, use_json):
 
     # 1. Read spatial
     try:
-        sp = _read_adata(spatial)
+        sp = _read_adata(spatial, table)
         checks["spatial_readable"] = {
             "pass": True,
             "detail": f"{sp.n_obs} pixels, {sp.n_vars} genes",
@@ -412,6 +439,14 @@ def _write_results_to_adata(
 @click.argument("spatial", type=click.Path(exists=True))
 @click.argument("reference", type=click.Path(exists=True))
 @click.option(
+    "--table",
+    default=None,
+    help=(
+        "SpatialData stores only: name of the table to read from the SPATIAL store "
+        "when it holds several."
+    ),
+)
+@click.option(
     "--cell-type-col",
     default="cell_type",
     show_default=True,
@@ -514,6 +549,7 @@ def _write_results_to_adata(
 def run(
     spatial,
     reference,
+    table,
     cell_type_col,
     mode,
     output,
@@ -606,7 +642,7 @@ def run(
             # Load data
             if not quiet:
                 click.echo("Loading spatial data...", err=True)
-            spatial_adata = _read_adata(spatial)
+            spatial_adata = _read_adata(spatial, table)
             if not quiet:
                 click.echo("Loading reference...", err=True)
             ref_adata = _read_adata(reference)

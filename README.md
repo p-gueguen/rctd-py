@@ -135,8 +135,13 @@ SpatialData Zarr store — no conversion step needed ([#28](https://github.com/p
 rctd run experiment.zarr reference.h5ad
 
 # Several tables in the store? Name the one you want
-rctd run experiment.zarr/tables/table reference.h5ad
+rctd run experiment.zarr reference.h5ad --table cell_table
+rctd run experiment.zarr/tables/cell_table reference.h5ad   # equivalent: point at the table
 ```
+
+`--table` applies to the spatial store only (it is an error on an `.h5ad`, or on a path
+already inside a table, rather than being ignored), and a store with several tables and no
+`--table` stops with the list of names to choose from.
 
 Results are always written as `.h5ad`; the input store is never modified.
 

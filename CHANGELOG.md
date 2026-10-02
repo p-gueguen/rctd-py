@@ -3,6 +3,11 @@
 All notable changes to rctd-py are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.9] — 2026-10-02
+
+### Added
+- **`--table NAME` for `rctd validate` / `rctd run`** (issue #28 follow-up). A SpatialData store with several tables used to stop with an error asking for an explicit `<store>/tables/<name>` path; `--table` now picks the one to read from the spatial store, so the store root stays the single thing you pass. An unknown name lists the tables that exist, and `--table` on an `.h5ad` or on a path already inside a table is a usage error rather than a silent no-op. It applies to the spatial argument only; a multi-table reference store still takes the explicit table path.
+
 ## [0.3.8] — 2026-09-10
 
 ### Added
@@ -10,7 +15,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 - **`RCTD_Q_MATRICES` for offline / HPC installs** (issue #29). `q_matrices.npz` is 404 MB and does not compress (measured: `savez_compressed` returns the same 404 MB, because it is float64 spline tables), so it cannot be vendored in the wheel — PyPI caps a single file at 100 MB. Instead the lookup now consults `$RCTD_Q_MATRICES` (a `.npz`, or a directory holding one) before the package `data/` dir and the `~/.cache/rctd` download, so one staged read-only copy serves every user on a cluster rather than one 404 MB download per home directory. When there is no network and nothing is staged, the failure is now a `RuntimeError` naming the URL, the exact cache path to drop the file at, and the env var — previously a bare `urllib` traceback, which is what sent the reporter into the source to find the cache path. A partial download is deleted rather than left to fail as a corrupt cache later, and a file the caller pointed at deliberately (via the env var or `data_dir`) is reported as unreadable instead of being silently re-downloaded over.
 
 ### Fixed
-- **A Zarr-read AnnData could not be written back out to `.h5ad`.** SpatialData encodes `obs`/`var` names as `nullable-string-array`, which anndata reads as a pandas `StringArray` and then refuses to write to h5ad unless `allow_write_nullable_strings` is set. The failure landed at the very last step, after the full deconvolution had run. `_read_adata()` now normalises nullable string dtypes to the plain object dtype the `.h5ad` path already yields, so downstream code cannot tell the two containers apart. Verified against stores written by spatialdata 0.8.0 (including its own `datasets.blobs()`); `tests/test_cli.py` builds real SpatialData stores and asserts on disk that they carry the `nullable-string-array` encoding, so the tests cannot silently stop covering this.
+- **A Zarr-read AnnData could not be written back out to `.h5ad`.** SpatialData encodes `obs`/`var` names as `nullable-string-array`, which anndata reads as a pandas `StringArray` and then refuses to write to h5ad unless `allow_write_nullable_strings` is set. The failure landed at the very last step, after the full deconvolution had run. `_read_adata()` now normalises nullable string dtypes to the plain object dtype the `.h5ad` path already yields, so downstream code cannot tell the two containers apart. Verified against stores written by spatialdata 0.8.0 (including its own `datasets.blobs()`); `tests/test_cli.py` builds real SpatialData stores and asserts that the names read back as a nullable string array, so the tests cannot silently stop covering this.
 - **The default output path no longer lands inside the input store.** With `<store>/tables/table` as input, `<spatial_stem>_rctd.h5ad` would have been written into the Zarr store's `tables/` group; it now resolves to the store's parent directory.
 
 ## [0.3.7] — 2026-07-15
