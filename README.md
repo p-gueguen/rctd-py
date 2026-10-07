@@ -13,7 +13,7 @@
   </p>
 </p>
 
-> **Latest: v0.3.2** — hierarchical class fallback (`class_df`, #14) and a major perf fix for doublet mode at K>16 on Hopper/Blackwell GPUs (8h+ stall → ~47 min on K=78, 100k pixels). See [CHANGELOG.md](CHANGELOG.md).
+> **Latest: v0.3.9** — the CLI reads SpatialData / AnnData Zarr stores directly (`--table` picks one of several tables, #28), and `RCTD_Q_MATRICES` points offline / HPC installs at a staged copy of the Q-matrices (#29). See [CHANGELOG.md](CHANGELOG.md).
 
 ---
 
@@ -176,13 +176,18 @@ Filtered pixels (below `--umi-min`) have `NaN` weights and `"filtered"` labels.
 | Option | Default | Description |
 |--------|---------|-------------|
 | `--mode` | `doublet` | `full`, `doublet`, or `multi` |
+| `--table` | _(none)_ | SpatialData stores only: table to read from the spatial store when it holds several |
+| `--class-df` | _(none)_ | Doublet mode: TSV with `cell_type` and `class` columns (see [Hierarchical cell types](#hierarchical-cell-types-class_df)) |
 | `--output` / `-o` | `<stem>_rctd.h5ad` | Output path |
 | `--device` | `auto` | `auto`, `cpu`, or `cuda` |
 | `--batch-size` | `10000` | GPU batch size (lower = less VRAM) |
+| `--no-compile` | off | Disable `torch.compile` (environments without CUDA headers) |
+| `--eigh-threshold` | _(arch-based)_ | K cutoff for GPU eigh: K above it offloads to CPU LAPACK. Default 16 on sm_<9, 128 on sm_≥9 ([#22](https://github.com/p-gueguen/rctd-py/issues/22)) |
 | `--cell-type-col` | `cell_type` | Reference obs column for cell types |
 | `--sigma-override` | _(auto)_ | Skip sigma estimation, use this value |
 | `--umi-min` | `100` | Minimum UMI per pixel |
 | `--umi-max` | `20000000` | Maximum UMI per pixel |
+| `--umi-min-sigma` | `300` | Minimum UMI for sigma-estimation pixels |
 | `--json` | off | Print JSON summary to stdout |
 | `--quiet` / `-q` | off | Suppress progress messages |
 | `--dtype` | `float64` | `float32` or `float64` |
@@ -232,19 +237,18 @@ deliberately is never silently re-downloaded over: if it is unreadable, you are 
 
 ### Recommended setup
 
-Install PyTorch with CUDA **before** installing rctd-py — `pip install rctd-py` alone pulls CPU-only PyTorch on most systems:
+On Linux x86_64, `pip install rctd-py` already pulls a CUDA build of PyTorch: the default PyPI wheel has bundled CUDA 13.0 since torch 2.11. That needs an NVIDIA driver >= 580. On an older driver, install a CUDA 12 build of PyTorch **before** rctd-py:
 
 ```bash
-# CUDA 12.4 (recommended for drivers >= 550.54)
-uv pip install torch --index-url https://download.pytorch.org/whl/cu124
+# Driver >= 580: default wheel, nothing extra to do
 uv pip install rctd-py
 
-# CUDA 12.1 (for older drivers >= 530.30)
-uv pip install torch --index-url https://download.pytorch.org/whl/cu121
-
-# CUDA 11.8 (legacy, drivers >= 520.61)
-uv pip install torch --index-url https://download.pytorch.org/whl/cu118
+# Driver 525-579: CUDA 12.6 build (not for Blackwell, which needs CUDA >= 12.8)
+uv pip install torch --index-url https://download.pytorch.org/whl/cu126
+uv pip install rctd-py
 ```
+
+macOS and Windows get the CPU (or MPS) wheel from PyPI; for other combinations use the selector at [pytorch.org/get-started](https://pytorch.org/get-started/locally/).
 
 ### Verify GPU detection
 
@@ -252,18 +256,18 @@ uv pip install torch --index-url https://download.pytorch.org/whl/cu118
 import torch
 print(torch.cuda.is_available())    # True  (False means CPU-only torch or driver issue)
 print(torch.cuda.get_device_name()) # e.g. 'NVIDIA L40S'
-print(torch.version.cuda)           # e.g. '12.4'
+print(torch.version.cuda)           # e.g. '13.0'
 ```
 
 ### CUDA compatibility table
 
 **No separate CUDA toolkit installation needed.** PyTorch ships its own CUDA runtime — you only need a compatible NVIDIA driver.
 
-| PyTorch version | Bundled CUDA | Minimum NVIDIA driver |
-|-----------------|-------------|----------------------|
-| 2.5+ | CUDA 12.4 | >= 550.54 |
-| 2.3–2.4 | CUDA 12.1 | >= 530.30 |
-| 2.0–2.2 | CUDA 11.8 | >= 520.61 |
+| PyTorch wheel | Bundled CUDA | Minimum NVIDIA driver | Blackwell (sm_100 / sm_120) |
+|---------------|-------------|----------------------|-----------------------------|
+| PyPI default, or `cu130` / `cu132` index | CUDA 13.x | >= 580 | yes |
+| `cu128` / `cu129` index | CUDA 12.8 / 12.9 | >= 525 | yes |
+| `cu126` index | CUDA 12.6 | >= 525 | no |
 
 > **Tip:** Check your driver version with `nvidia-smi` (top right of the output). This is the *driver* version, not the CUDA toolkit version — `nvcc --version` shows the toolkit version, which is irrelevant here since PyTorch bundles its own runtime.
 
@@ -300,6 +304,8 @@ nvrtc compilation failed:
 ```
 
 This is a runtime-library mismatch, **not** a `rctd-py` bug: the PyTorch wheel commonly bundles only the CUDA 12-era `libnvrtc-builtins.so.12.x`, and the system `/usr/lib/x86_64-linux-gnu/` typically contains only `.12.x` as well. The CUDA 13.0 nvrtc runtime simply isn't present in either location until you install it explicitly.
+
+The CUDA 13 PyTorch wheels (the PyPI default on Linux since torch 2.11) pull the CUDA 13 nvrtc in as a dependency, so this mostly affects a CUDA 12 build of PyTorch running on a CUDA 13 driver.
 
 ### Fix
 
@@ -352,8 +358,7 @@ If that prints `OK`, run any rctd-py workflow with `--no-compile`; the `[doublet
 When your reference has granular subtypes (e.g. `CD4_TH1` vs `CD4_TH2`, or several macrophage subsets), doublet mode may struggle to pick one subtype confidently. R spacexr solves this with a `class_df` parameter that maps each subtype to a higher-level class. If RCTD can't decide the subtype, it still reports the two best subtypes but flags that the call is only trustworthy at the class level. rctd-py v0.3.2 ports this directly.
 
 ```python
-from rctd import run_rctd
-from rctd._types import RCTDConfig
+from rctd import RCTDConfig, run_rctd
 
 class_df = {
     "CD4_TH1":    "T_cell",
@@ -476,7 +481,7 @@ For GPU acceleration, set `device="cuda"` in `RCTDConfig()` or pass `--device cu
 
 ### `run_rctd(spatial, reference, mode, config, batch_size, sigma_override)`
 
-End-to-end pipeline. Takes an `AnnData` spatial object and a `Reference`, returns a typed result (`FullResult`, `DoubletResult`, or `MultiResult`). Pass `sigma_override` (int) to skip sigma estimation and use a known value (e.g. from R).
+End-to-end pipeline. Takes an `AnnData` spatial object and a `Reference`, returns a typed result (`FullResult`, `DoubletResult`, or `MultiResult`). `batch_size` defaults to `"auto"` (sized from free GPU memory; the CLI instead defaults to 10000). Pass `sigma_override` (int) to skip sigma estimation and use a known value (e.g. from R).
 
 ### `Reference(adata, cell_type_col, cell_min, n_max_cells, min_UMI)`
 
@@ -497,12 +502,18 @@ Stateful class for step-by-step control. Call `fit_platform_effects()`, then `ru
 | `CONFIDENCE_THRESHOLD` | 5.0 | Singlet confidence threshold |
 | `DOUBLET_THRESHOLD` | 20.0 | Doublet certainty threshold |
 | `device` | `"auto"` | `"auto"`, `"cpu"`, or `"cuda"` — force CPU/GPU |
+| `dtype` | `"float64"` | `"float32"` is ~2x faster on consumer GPUs |
+| `compile` | `True` | `False` skips `torch.compile` (eager mode) |
+| `class_df` | `None` | Doublet mode: `{cell_type: class}` for hierarchical fallback |
+| `eigh_threshold` | `None` | Override the arch-based K cutoff for GPU eigh |
 
 ### Result types
 
-- **`FullResult`** — `weights` (N×K), `cell_type_names`, `converged`
-- **`DoubletResult`** — `weights`, `weights_doublet` (N×2), `spot_class`, `first_type`, `second_type`
-- **`MultiResult`** — `weights`, `cell_type_indices`, `n_types`, `conf_list`
+- **`FullResult`** — `weights` (N×K), `cell_type_names`, `converged`, `pixel_mask`
+- **`DoubletResult`** — `weights`, `weights_doublet` (N×2), `spot_class` (0=reject, 1=singlet, 2=doublet_certain, 3=doublet_uncertain), `first_type`, `second_type` (indices into `cell_type_names`), `first_class`, `second_class` (bool), `min_score`, `singlet_score`, `cell_type_names`, `pixel_mask`, `first_class_name`, `second_class_name` (set only with `class_df`)
+- **`MultiResult`** — `weights`, `sub_weights` (N×`MAX_MULTI_TYPES`), `cell_type_indices` (padded with -1), `n_types`, `conf_list`, `min_score`, `cell_type_names`, `pixel_mask`
+
+Result arrays cover only the pixels that passed the `UMI_min`/`UMI_max` and `counts_MIN` filters, so N can be smaller than the input. `pixel_mask` (length = all input pixels) marks which ones they are: `spatial[result.pixel_mask]` lines up row-for-row with the result.
 
 </details>
 
