@@ -21,6 +21,10 @@ from rctd._types import (
     resolve_device,
 )
 
+# True while the compile flags in _irwls/_likelihood are off because a config asked for it
+# (as opposed to an automatic fallback after compile failed).
+_COMPILE_DISABLED_BY_CONFIG = False
+
 
 class RCTD:
     """Robust Cell Type Decomposition (RCTD)."""
@@ -43,18 +47,24 @@ class RCTD:
         self.reference = reference
         self.config = config if config is not None else RCTDConfig()
 
-        # Disable torch.compile if requested
-        if not self.config.compile:
-            from rctd import _irwls, _likelihood
+        # These settings live in module globals, so every RCTD sets them, defaults included:
+        # otherwise one run with eigh_threshold / compile=False leaks into every later run
+        # in the process. A compile fallback set after a real failure stays sticky.
+        global _COMPILE_DISABLED_BY_CONFIG
+        from rctd import _irwls, _likelihood
 
+        if not self.config.compile:
             _irwls._USE_COMPILE = False
             _likelihood._CALC_Q_USE_COMPILE = False
+            _COMPILE_DISABLED_BY_CONFIG = True
+        elif _COMPILE_DISABLED_BY_CONFIG:
+            _irwls._USE_COMPILE = None
+            _likelihood._CALC_Q_USE_COMPILE = None
+            _COMPILE_DISABLED_BY_CONFIG = False
 
-        # Apply user-supplied GPU-eigh K cutoff override (issue #22).
-        if self.config.eigh_threshold is not None:
-            from rctd import _irwls
-
-            _irwls._EIGH_THRESHOLD_OVERRIDE = int(self.config.eigh_threshold)
+        # GPU-eigh K cutoff override (issue #22); None restores the per-arch default.
+        threshold = self.config.eigh_threshold
+        _irwls._EIGH_THRESHOLD_OVERRIDE = None if threshold is None else int(threshold)
 
         # Internal state
         self.is_normalized = False
