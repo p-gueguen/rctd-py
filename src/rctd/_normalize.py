@@ -25,6 +25,7 @@ def fit_bulk(
     spatial_nUMI: torch.Tensor,
     min_change: float = 0.001,
     max_iter: int = 100,
+    min_obs: int = 10,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """Estimate bulk cell type composition and compute normalized reference profiles.
 
@@ -36,6 +37,8 @@ def fit_bulk(
         spatial_nUMI: (N,) array of total UMI per pixel
         min_change: convergence tolerance
         max_iter: max iterations for IRWLS
+        min_obs: genes with fewer total counts are left out of the decomposition
+            (R: prepareBulkData MIN_OBS = 10) but are still renormalised
 
     Returns:
         bulk_weights: (K,) array of estimated cell type proportions
@@ -62,9 +65,12 @@ def fit_bulk(
     dummy_SQ = torch.zeros((1, 1), dtype=dtype, device=device)
     dummy_x = torch.zeros((1,), dtype=dtype, device=device)
 
+    # R's prepareBulkData decomposes only genes with >= MIN_OBS (10) total counts;
+    # get_norm_ref below still renormalises every bulk gene.
+    obs = bulk_Y >= min_obs
     bulk_weights, converged = solve_irwls(
-        S=bulk_S,
-        Y=bulk_Y,
+        S=bulk_S[obs],
+        Y=bulk_Y[obs],
         nUMI=bulk_nUMI,
         Q_mat=dummy_Q,
         SQ_mat=dummy_SQ,
