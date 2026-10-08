@@ -3,6 +3,11 @@
 All notable changes to rctd-py are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **`eigh_threshold` and `compile=False` leaked into later runs in the same process.** Both are applied by `RCTD.__init__` to module-level flags, which were set but never reset, so one run with `RCTDConfig(eigh_threshold=64)` kept every later run in that Python session on GPU eigh, and one `compile=False` kept it eager. Found while benchmarking: on an L40S (StrataMap breast, 21,425 cells, K=40, doublet mode) a leaked `eigh_threshold=64` made the full-fit step of a later default-config float32 run take 263 s; the same float32 full fit takes 44 s in a fresh process. Every `RCTD` now sets both flags from its own config; a compile fallback triggered by an actual compile failure still stays sticky. `tests/test_config_state.py` covers both leaks and the sticky fallback.
+
 ## [0.3.9] — 2026-10-02
 
 ### Added
