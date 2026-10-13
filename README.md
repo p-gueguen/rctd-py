@@ -8,6 +8,7 @@
     <a href="https://github.com/p-gueguen/rctd-py/actions/workflows/ci.yml"><img src="https://github.com/p-gueguen/rctd-py/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
     <a href="https://pypi.org/project/rctd-py/"><img src="https://img.shields.io/pypi/v/rctd-py?cacheSeconds=3600" alt="PyPI"></a>
     <a href="https://pypi.org/project/rctd-py/"><img src="https://img.shields.io/pypi/pyversions/rctd-py?cacheSeconds=3600" alt="Python"></a>
+    <a href="https://rctd-py.readthedocs.io"><img src="https://readthedocs.org/projects/rctd-py/badge/?version=latest" alt="Documentation"></a>
     <a href="https://www.gnu.org/licenses/gpl-3.0"><img src="https://img.shields.io/badge/License-GPLv3-blue.svg" alt="License: GPL v3"></a>
 
   </p>
@@ -21,188 +22,17 @@ A Python reimplementation of the [spacexr](https://github.com/dmcable/spacexr) R
 
 Deconvolve spatial transcriptomics spots (Visium, Xenium, MERFISH, Slide-seq, …) into cell type proportions using a scRNA-seq reference — in minutes instead of hours.
 
+**Documentation: [rctd-py.readthedocs.io](https://rctd-py.readthedocs.io)** (installation, tutorials, CLI, API reference, coming from R spacexr)
+
 ## ✨ Highlights
 
 | | |
 |---|---|
 | ⚡ **4–41x faster than R spacexr** | Xenium 58k cells, multi mode: **3.7 min** vs 2.6 hours in R |
-| 🎯 **99.7% concordance** with R spacexr | **100%** with `sigma_override` — per-pixel solver is bit-identical |
-| 🔧 **Drop-in replacement** | Same algorithm, same parameters, same results — just faster |
-| 📦 **`pip install rctd-py`** | Pure Python, works on CPU out of the box |
-| 🧬 **Whole-transcriptome ready** | Tested on 10x **Atera** WTA (18,028 genes): 718k cells deconvolved in ~10 min on GPU |
-
-## Benchmarks
-
-Benchmarked across five datasets — three standard Xenium panels, one VisiumHD run, and two whole-transcriptome **Atera** previews (18,028 genes) — over all RCTD modes (full, doublet, multi). All runs on AMD EPYC 9554 nodes (128 cores, 1.15 TB RAM). GPU: NVIDIA RTX PRO 6000 Blackwell (96 GB VRAM) on the same node class. CPU rctd-py: `device="cpu"`, 8 threads (`OMP_NUM_THREADS=8`). R spacexr: 8 CPU cores (`doParallel`); the Atera datasets have no R baseline (impractical at 18k genes × 170k–718k cells), so they are reported as GPU-vs-CPU. All rctd-py timings use warm `torch.compile` cache.
-
-<p align="center">
-  <img src="docs/benchmark.png" alt="Benchmark: CPU vs GPU scalability, runtime, and memory" width="900">
-</p>
-
-### Runtime comparison (all modes)
-
-| Dataset | Cells | K | Mode | R spacexr | rctd-py GPU | GPU vs R |
-|---------|-------|---|------|-----------|-------------|----------|
-| Xenium Liver (small) | 13,940 | 45 | full | 5.3 min | 1.4 min | **3.8x** |
-| | | | doublet | 14.1 min | 1.5 min | **9.4x** |
-| | | | multi | 6.7 min | 1.6 min | **4.2x** |
-| Xenium Mouse Brain | 36,362 | 22 | full | 4.7 min | 0.8 min | **5.9x** |
-| | | | doublet | 12.4 min | 0.9 min | **13.8x** |
-| | | | multi | 9.5 min | 1.1 min | **8.6x** |
-| Xenium Liver (large) | 58,191 | 45 | full | 14.3 min | 3.6 min | **4.0x** |
-| | | | doublet | 51.1 min | 3.7 min | **13.8x** |
-| | | | multi | 153.3 min | 3.7 min | **41.4x** |
-| **VisiumHD Mouse Brain (8µm)** | **392,580** | 22 | full | — | **1.0 min** | — |
-| **Atera WTA Breast (FFPE)** | **169,965** | 40 | full | — | 81.7 min | — |
-| | | | doublet | — | 102.8 min | — |
-| | | | multi | — | 101.0 min | — |
-| **Atera WTA Cervical (FFPE)** | **714,535** | 7 | full | — | 3.5 min | — |
-| | | | doublet | — | 10.2 min | — |
-| | | | multi | — | 10.3 min | — |
-
-GPU timings include sigma estimation (25–53s depending on dataset). The VisiumHD benchmark demonstrates scalability to ~400k spots in about a minute (33s deconv + 25s sigma, Blackwell GPU). GPU speedup is highest in **doublet mode** (9–14x) and **multi mode on large datasets** (41x for Region 3) because R spacexr's pairwise fitting and greedy selection are the main bottlenecks — rctd-py batches all C(K,2) pairs into a single tensor operation.
-
-The two **Atera** datasets exercise 10x's whole-transcriptome in-situ platform (18,028 genes, preview release) and are deconvolved against public CZ CELLxGENE references — breast against a breast-cancer atlas (K=40), cervix against a normal uterine-cervix atlas (K=7; no cervical-cancer scRNA-seq exists in CELLxGENE). With no R baseline at this scale, we report **GPU vs rctd-py CPU** (doublet): cervical (714k cells, K=7) runs in **10.2 min on GPU vs 45.1 min on CPU (4.4×)**, while breast (170k cells, K=40) runs in **102.8 min on GPU vs 112.6 min on CPU (1.1×)**. As with the Xenium panels, the GPU advantage is largest at **low K / high N**: at K=40 with ~4,800 informative genes the per-pixel constrained solve dominates and GPU and CPU converge. The key result is that rctd-py runs whole-transcriptome data end-to-end with no code changes.
-
-### Memory requirements
-
-| Dataset | Cells | K | Peak VRAM | Peak RSS |
-|---------|-------|---|-----------|----------|
-| Xenium Liver (small) | 13,940 | 45 | 2.6 GB | 34 GB |
-| Xenium Mouse Brain | 36,362 | 22 | 2.6 GB | 5 GB |
-| Xenium Liver (large) | 58,191 | 45 | 2.6 GB | 34 GB |
-| **VisiumHD Mouse Brain (8µm)** | **392,580** | 22 | 41 GB | 47 GB |
-| **Atera WTA Breast (FFPE)** | **169,965** | 40 | 8.3 GB | 43 GB |
-| **Atera WTA Cervical (FFPE)** | **714,535** | 7 | 12.3 GB | 110 GB |
-
-Peak VRAM for Xenium-scale datasets is ~2.6 GB (doublet mode, default batch size). VisiumHD at 392k spots uses 41 GB VRAM with auto batch sizing (200k spots per batch). RSS is dominated by the reference matrix and scales with K and N. Use the `batch_size` parameter to control peak VRAM — smaller batches trade throughput for lower memory. For the whole-transcriptome **Atera** runs the spatial count matrix dominates host RAM instead: the 714k-cell cervical dataset peaks at ~110 GB RSS (18,028 genes × 714k cells plus intermediates) while using only 12.3 GB VRAM at `batch_size=5000`.
-
-> **Note:** The main speedup comes from PyTorch's vectorized batched solver. GPU rctd-py times are nearly identical across modes (~2–7 min) while R spacexr times vary 3–10x between modes, because rctd-py batches pairwise/iterative fits into tensor operations that scale efficiently. The GPU advantage is largest for smaller cell type panels (K < 25) where GPU eigendecomposition handles all pairwise fits on-device.
-
-## Quick Start
-
-```python
-from rctd import Reference, run_rctd
-import anndata
-
-# Load data
-reference = Reference(anndata.read_h5ad("reference.h5ad"), cell_type_col="cell_type")
-spatial = anndata.read_h5ad("spatial.h5ad")
-
-# Run RCTD — handles normalization, sigma estimation, and deconvolution
-result = run_rctd(spatial, reference, mode="doublet")
-```
-
-📓 **[Tutorial notebook](examples/tutorial.py)** (marimo) · 🌐 **[Rendered tutorial](https://p-gueguen.github.io/rctd-py/)** · 🤖 **[Claude Code skill](.claude/skills/rctd-py/SKILL.md)** (drop into `~/.claude/skills/` to get assisted-coding help with rctd-py)
-
-## Command Line
-
-After installation, the `rctd` command is available with three subcommands:
-
-```bash
-# Check environment, versions, and GPU availability
-rctd info
-rctd info --json          # machine-readable output
-
-# Validate inputs before a long run (fast, no GPU needed)
-rctd validate spatial.h5ad reference.h5ad
-rctd validate spatial.h5ad reference.h5ad --json
-
-# Run deconvolution (default: doublet mode)
-rctd run spatial.h5ad reference.h5ad
-rctd run spatial.h5ad reference.h5ad --mode full
-rctd run spatial.h5ad reference.h5ad --mode multi
-
-# Common options
-rctd run spatial.h5ad reference.h5ad \
-    --mode doublet \
-    --output results.h5ad \
-    --device cuda \
-    --batch-size 5000 \
-    --umi-min 20 \
-    --cell-type-col cell_type \
-    --sigma-override 63
-
-# JSON output for pipelines / AI agents
-rctd run spatial.h5ad reference.h5ad --json --quiet
-```
-
-Both positional arguments accept a `.h5ad` file, an AnnData Zarr store, or a
-SpatialData Zarr store — no conversion step needed ([#28](https://github.com/p-gueguen/rctd-py/issues/28)):
-
-```bash
-# SpatialData store: the single table under tables/ is used
-rctd run experiment.zarr reference.h5ad
-
-# Several tables in the store? Name the one you want
-rctd run experiment.zarr reference.h5ad --table cell_table
-rctd run experiment.zarr/tables/cell_table reference.h5ad   # equivalent: point at the table
-```
-
-`--table` applies to the spatial store only (it is an error on an `.h5ad`, or on a path
-already inside a table, rather than being ignored), and a store with several tables and no
-`--table` stops with the list of names to choose from.
-
-Results are always written as `.h5ad`; the input store is never modified.
-
-<details>
-<summary><strong>Output format</strong></summary>
-
-Results are written into a copy of the input spatial h5ad. Default output path is `<spatial_stem>_rctd.h5ad`.
-
-| Slot | Content | Modes |
-|------|---------|-------|
-| `.obsm["rctd_weights"]` | Cell type weights (N x K) | all |
-| `.obs["rctd_dominant_type"]` | Top cell type per pixel | all |
-| `.obs["rctd_spot_class"]` | singlet / doublet_certain / doublet_uncertain / reject | doublet |
-| `.obs["rctd_first_type"]` | Primary cell type | doublet |
-| `.obs["rctd_second_type"]` | Secondary cell type | doublet |
-| `.obsm["rctd_weights_doublet"]` | Doublet weights (N x 2) | doublet |
-| `.obs["rctd_converged"]` | Convergence flag | full |
-| `.obs["rctd_n_types"]` | Number of types per pixel | multi |
-| `.obsm["rctd_sub_weights"]` | Per-selected-type weights | multi |
-| `.obsm["rctd_cell_type_indices"]` | Selected type indices | multi |
-| `.uns["rctd_mode"]` | Mode used | all |
-| `.uns["rctd_config"]` | Full config dict | all |
-| `.uns["rctd_cell_type_names"]` | Cell type name list | all |
-
-Filtered pixels (below `--umi-min`) have `NaN` weights and `"filtered"` labels.
-
-</details>
-
-<details>
-<summary><strong>All <code>rctd run</code> options</strong></summary>
-
-| Option | Default | Description |
-|--------|---------|-------------|
-| `--mode` | `doublet` | `full`, `doublet`, or `multi` |
-| `--table` | _(none)_ | SpatialData stores only: table to read from the spatial store when it holds several |
-| `--class-df` | _(none)_ | Doublet mode: TSV with `cell_type` and `class` columns (see [Hierarchical cell types](#hierarchical-cell-types-class_df)) |
-| `--output` / `-o` | `<stem>_rctd.h5ad` | Output path |
-| `--device` | `auto` | `auto`, `cpu`, or `cuda` |
-| `--batch-size` | `10000` | GPU batch size (lower = less VRAM) |
-| `--no-compile` | off | Disable `torch.compile` (environments without CUDA headers) |
-| `--eigh-threshold` | _(arch-based)_ | K cutoff for GPU eigh: K above it offloads to CPU LAPACK. Default 16 on sm_<9, 128 on sm_≥9 ([#22](https://github.com/p-gueguen/rctd-py/issues/22)) |
-| `--cell-type-col` | `cell_type` | Reference obs column for cell types |
-| `--sigma-override` | _(auto)_ | Skip sigma estimation, use this value |
-| `--umi-min` | `100` | Minimum UMI per pixel |
-| `--umi-max` | `20000000` | Maximum UMI per pixel |
-| `--umi-min-sigma` | `300` | Minimum UMI for sigma-estimation pixels |
-| `--json` | off | Print JSON summary to stdout |
-| `--quiet` / `-q` | off | Suppress progress messages |
-| `--dtype` | `float64` | `float32` or `float64` |
-| `--gene-cutoff` | `0.000125` | Bulk gene expression threshold |
-| `--fc-cutoff` | `0.5` | Bulk fold-change threshold |
-| `--gene-cutoff-reg` | `0.0002` | Reg gene expression threshold |
-| `--fc-cutoff-reg` | `0.75` | Reg fold-change threshold |
-| `--max-multi-types` | `4` | Max types per pixel (multi mode) |
-| `--confidence-threshold` | `5.0` | Singlet confidence threshold |
-| `--doublet-threshold` | `20.0` | Doublet certainty threshold |
-| `--cell-min` | `25` | Min cells per type in reference |
-| `--n-max-cells` | `10000` | Max cells per type (downsampling) |
-| `--min-umi-ref` | `100` | Min UMI for reference cells |
-
-</details>
+| 🎯 **Agrees with R spacexr** | 99.2–99.7% dominant-type agreement, 100% when given R's sigma ([details](https://rctd-py.readthedocs.io/en/latest/r_spacexr.html)) |
+| 🔧 **Drop-in replacement** | Same algorithm, same parameters and defaults as spacexr |
+| 📦 **`pip install rctd-py`** | Pure Python, works on CPU out of the box, uses a GPU when there is one |
+| 🧬 **Whole-transcriptome ready** | 10x **Atera** WTA (18,028 genes): 714k cells deconvolved in ~10 min on GPU |
 
 ## Installation
 
@@ -210,312 +40,48 @@ Filtered pixels (below `--umi-min`) have `NaN` weights and `"filtered"` labels.
 uv pip install rctd-py   # or: pip install rctd-py
 ```
 
-### Q-matrices (offline and HPC setups)
+GPU builds of PyTorch, older NVIDIA drivers and offline / HPC installs (the 404 MB Q-matrices
+file) are covered in the [installation guide](https://rctd-py.readthedocs.io/en/latest/installation.html).
 
-The first run needs `q_matrices.npz`, the precomputed Poisson-Lognormal likelihood tables
-for every sigma between 0.10 and 2.00. It is **404 MB** and does not compress, so it ships
-as a [release asset](https://github.com/p-gueguen/rctd-py/releases/download/v0.1.1/q_matrices.npz)
-rather than inside the wheel, and is fetched once into `~/.cache/rctd/` on first use.
-
-That download fails on a compute node with no internet access, which is a common way to
-run a cluster. Stage the file from a host that does have access and point rctd-py at it
-([#29](https://github.com/p-gueguen/rctd-py/issues/29)):
-
-```bash
-# once, somewhere every node can read
-wget -P /shared/rctd https://github.com/p-gueguen/rctd-py/releases/download/v0.1.1/q_matrices.npz
-export RCTD_Q_MATRICES=/shared/rctd          # a directory, or the .npz itself
-```
-
-`RCTD_Q_MATRICES` takes precedence over the cache, so one shared read-only copy serves
-every user instead of a 404 MB download per home directory. If it is unset and the download
-fails, the error names the URL and the exact path to place the file at. A file you point to
-deliberately is never silently re-downloaded over: if it is unreadable, you are told so.
-
-<details>
-<summary>GPU setup and CUDA compatibility</summary>
-
-### Recommended setup
-
-On Linux x86_64, `pip install rctd-py` already pulls a CUDA build of PyTorch: the default PyPI wheel has bundled CUDA 13.0 since torch 2.11. That needs an NVIDIA driver >= 580. On an older driver, install a CUDA 12 build of PyTorch **before** rctd-py:
-
-```bash
-# Driver >= 580: default wheel, nothing extra to do
-uv pip install rctd-py
-
-# Driver 525-579: CUDA 12.6 build (not for Blackwell, which needs CUDA >= 12.8)
-uv pip install torch --index-url https://download.pytorch.org/whl/cu126
-uv pip install rctd-py
-```
-
-macOS and Windows get the CPU (or MPS) wheel from PyPI; for other combinations use the selector at [pytorch.org/get-started](https://pytorch.org/get-started/locally/).
-
-### Verify GPU detection
+## Quick Start
 
 ```python
-import torch
-print(torch.cuda.is_available())    # True  (False means CPU-only torch or driver issue)
-print(torch.cuda.get_device_name()) # e.g. 'NVIDIA L40S'
-print(torch.version.cuda)           # e.g. '13.0'
+from rctd import Reference, run_rctd
+import anndata
+
+reference = Reference(anndata.read_h5ad("reference.h5ad"), cell_type_col="cell_type")
+spatial = anndata.read_h5ad("spatial.h5ad")
+
+# normalisation, sigma estimation and deconvolution in one call
+result = run_rctd(spatial, reference, mode="doublet")
 ```
-
-### CUDA compatibility table
-
-**No separate CUDA toolkit installation needed.** PyTorch ships its own CUDA runtime — you only need a compatible NVIDIA driver.
-
-| PyTorch wheel | Bundled CUDA | Minimum NVIDIA driver | Blackwell (sm_100 / sm_120) |
-|---------------|-------------|----------------------|-----------------------------|
-| PyPI default, or `cu130` / `cu132` index | CUDA 13.x | >= 580 | yes |
-| `cu128` / `cu129` index | CUDA 12.8 / 12.9 | >= 525 | yes |
-| `cu126` index | CUDA 12.6 | >= 525 | no |
-
-> **Tip:** Check your driver version with `nvidia-smi` (top right of the output). This is the *driver* version, not the CUDA toolkit version — `nvcc --version` shows the toolkit version, which is irrelevant here since PyTorch bundles its own runtime.
-
-### Tested GPUs
-
-| GPU | VRAM | Speedup vs R (doublet) |
-|-----|------|------------------------|
-| NVIDIA RTX PRO 6000 Blackwell | 96 GB | 6–11x (see benchmarks above) |
-| NVIDIA L40S | 48 GB | 4.2x (K=45, 14k cells) |
-
-### Memory management
-
-Peak VRAM scales with `batch_size * K^2`. Use the `batch_size` parameter to control GPU memory:
-
-| Available VRAM | Recommended `batch_size` | Peak VRAM (K=45) |
-|----------------|-------------------------|-------------------|
-| 24+ GB | 10,000 (default) | ~4 GB |
-| 8–16 GB | 5,000 | ~2 GB |
-| < 8 GB | 2,000 | ~1 GB |
-
-Peak CPU RAM (RSS) is typically 2–3x peak VRAM, dominated by intermediate arrays.
-
-</details>
-
-## Known issue: NVRTC missing on Blackwell + CUDA 13 setups
-
-If you are running on an NVIDIA Blackwell GPU (`sm_100` / `sm_120`, e.g. RTX PRO 6000 Blackwell) with CUDA 13.0 driver (`580.x`), the `--no-compile` path that v0.3.2+ uses for the doublet QP solver triggers `nvrtc` runtime compilation of TorchScript-fused kernels. On many such systems, `nvrtc` will then fail to load `libnvrtc-builtins.so.13.0`, with an error like:
-
-```text
-ERROR: nvrtc: error: failed to open libnvrtc-builtins.so.13.0.
-  Make sure that libnvrtc-builtins.so.13.0 is installed correctly.
-nvrtc compilation failed:
-  ... fused_sub_mul_add_div(...) ...
-```
-
-This is a runtime-library mismatch, **not** a `rctd-py` bug: the PyTorch wheel commonly bundles only the CUDA 12-era `libnvrtc-builtins.so.12.x`, and the system `/usr/lib/x86_64-linux-gnu/` typically contains only `.12.x` as well. The CUDA 13.0 nvrtc runtime simply isn't present in either location until you install it explicitly.
-
-The CUDA 13 PyTorch wheels (the PyPI default on Linux since torch 2.11) pull the CUDA 13 nvrtc in as a dependency, so this mostly affects a CUDA 12 build of PyTorch running on a CUDA 13 driver.
-
-### Fix
-
-Install the CUDA 13 nvrtc runtime from PyPI and add its directory to `LD_LIBRARY_PATH`:
-
-```bash
-# 1. Install (provides version 13.0.88+)
-pip install nvidia-cuda-nvrtc                # or: uv pip install nvidia-cuda-nvrtc
-
-# 2. Locate the .so (correct subdir is nvidia/cu13/lib/, NOT nvidia/cuda_nvrtc/lib/)
-find $CONDA_PREFIX -name "libnvrtc-builtins.so.13*"
-# expected:  $CONDA_PREFIX/lib/python3.X/site-packages/nvidia/cu13/lib/libnvrtc-builtins.so.13.0
-
-# 3. Prepend to LD_LIBRARY_PATH
-export LD_LIBRARY_PATH=$CONDA_PREFIX/lib/python3.X/site-packages/nvidia/cu13/lib:$LD_LIBRARY_PATH
-
-# 4. Run rctd-py as usual; nvrtc will now find the matching builtins
-```
-
-### Notes
-
-- The PyPI package name is `nvidia-cuda-nvrtc` (no version suffix). The older alias `nvidia-cuda-nvrtc-cu13` is **deprecated** as of 2025-Q4 and will fail to install (the upload now prints a deprecation notice and exits).
-- The same package keeps both CUDA 12 (`nvidia/cuda_nvrtc/lib/libnvrtc-builtins.so.12.x`) and CUDA 13 (`nvidia/cu13/lib/libnvrtc-builtins.so.13.0`) variants. On a CUDA 13 driver, you must point `LD_LIBRARY_PATH` at `nvidia/cu13/lib/`, not `nvidia/cuda_nvrtc/lib/`.
-- This step is **not needed** on CUDA 11 / 12 deployments, A100 / H100, RTX 40-series, or anywhere the standard PyTorch wheel's bundled nvrtc already matches the system driver. Adding `nvidia-cuda-nvrtc` as a hard dependency to `pyproject.toml` would force an unnecessary download for the majority of users — documenting it here keeps the install slim for everyone else.
-
-### Sanity check after fix
-
-A quick way to confirm the CUDA 13 nvrtc runtime is now reachable:
-
-```bash
-python -c "
-import ctypes
-ctypes.CDLL('libnvrtc-builtins.so.13.0')
-print('nvrtc 13.0 builtins loadable: OK')
-"
-```
-
-If that prints `OK`, run any rctd-py workflow with `--no-compile`; the `[doublet] Step 1/6: full-mode fit` phase should now stay on GPU (`nvidia-smi` Util > 70%) instead of stalling indefinitely.
-
-## Deconvolution Modes
 
 | Mode | What it does | Best for |
 |------|-------------|----------|
-| **`full`** | Estimates weights for all K cell types per pixel (constrained IRWLS) | Visium, continuous mixtures |
-| **`doublet`** | Classifies each pixel as singlet or doublet, estimates top 1–2 types | Slide-seq, sparse spatial |
-| **`multi`** | Greedy forward selection of up to 4 cell types per pixel | Xenium, MERFISH, dense platforms |
+| **`full`** | Weights for all K cell types per pixel | Visium spots, continuous mixtures |
+| **`doublet`** | Singlet or doublet call per pixel, top 1–2 types | Slide-seq, Visium HD bins, segmented cells |
+| **`multi`** | Greedy selection of up to 4 types per pixel | Xenium, MERFISH, dense platforms |
 
-## Hierarchical cell types (`class_df`)
+📓 [Tutorial](https://rctd-py.readthedocs.io/en/latest/tutorials/slideseq_cerebellum.html) ([marimo notebook](examples/tutorial.py)) · 🤖 [Claude Code skill](.claude/skills/rctd-py/SKILL.md) (drop into `~/.claude/skills/` for assisted coding with rctd-py)
 
-When your reference has granular subtypes (e.g. `CD4_TH1` vs `CD4_TH2`, or several macrophage subsets), doublet mode may struggle to pick one subtype confidently. R spacexr solves this with a `class_df` parameter that maps each subtype to a higher-level class. If RCTD can't decide the subtype, it still reports the two best subtypes but flags that the call is only trustworthy at the class level. rctd-py v0.3.2 ports this directly.
-
-```python
-from rctd import RCTDConfig, run_rctd
-
-class_df = {
-    "CD4_TH1":    "T_cell",
-    "CD4_TH2":    "T_cell",
-    "CD8":        "T_cell",
-    "B_naive":    "B_cell",
-    "B_memory":   "B_cell",
-    "Macrophage": "Macrophage",
-}
-config = RCTDConfig(class_df=class_df)
-result = run_rctd(spatial, reference, mode="doublet", config=config)
-
-# result.first_class[n]      == True  → subtype ambiguous, trust the class label
-# result.first_class_name[n] == "T_cell"  (the parent class)
-# result.first_type[n]       → still the best-scoring subtype
-```
-
-On the CLI, pass a TSV with `cell_type` and `class` columns:
+## Command Line
 
 ```bash
-rctd run spatial.h5ad reference.h5ad --mode doublet --class-df class_df.tsv -o out.h5ad
+rctd info                                                # versions, GPU availability
+rctd validate spatial.h5ad reference.h5ad                # fast input checks
+rctd run spatial.h5ad reference.h5ad --mode doublet -o results.h5ad
+rctd run experiment.zarr reference.h5ad --table cell_table   # SpatialData stores work too
 ```
 
-The output h5ad adds four new `obs` columns in doublet mode: `rctd_first_class`, `rctd_second_class` (bool), and `rctd_first_class_name`, `rctd_second_class_name` (class strings). With `class_df=None` (the default) the class flags stay False and the class-name columns are omitted — behaviour is identical to pre-v0.3.2. See [GitHub #14](https://github.com/p-gueguen/rctd-py/issues/14) for motivation.
+All options and the output layout: [command line reference](https://rctd-py.readthedocs.io/en/latest/cli.html).
 
-## Validation
+## Benchmarks
 
-Validated against R spacexr on two Xenium liver datasets (45 cell types, 380 genes, doublet mode, `UMI_min=20`):
+<p align="center">
+  <img src="docs/benchmark.png" alt="Benchmark: CPU vs GPU scalability, runtime, and memory" width="900">
+</p>
 
-| Dataset | # cells | Dominant type agreement | With `sigma_override` |
-|---------|--------|------------------------|-----------------------|
-| Xenium Liver (small) | 13,940 | **99.73%** | **100%** |
-| Xenium Liver (large) | 58,191 | **99.71%** | — |
-| Atera WTA Breast (FFPE, subsample) | 4,998 | **99.22%** | — |
-| Atera WTA Cervical (FFPE, subsample) | 5,977 | **99.26%** | — |
-
-The tiny default gap (0.27%) traces entirely to platform-effect estimation (`fit_bulk`), not the per-pixel solver — which is bit-identical to R. All disagreeing pixels are genuinely ambiguous (margin < 0.05 between top two types).
-
-Concordance also holds at **whole transcriptome**: on Atera subsamples (18,028-gene panel, deconvolved against public CZ CELLxGENE references) rctd-py reproduces R spacexr's dominant-type calls at **99.2%** for both breast (K=40) and cervix (K=7), with median per-pixel weight correlation ≥ 0.9996. These are measured on subsamples because a full-data R baseline is impractical at this gene count (R spacexr takes ~31 min on 5k breast cells vs ~5 min for rctd-py).
-
-**`sigma_override` is not needed for normal use.** The default Python-estimated sigma is valid and produces near-identical results. It exists for specific scenarios:
-
-- **Validation** — proving solver equivalence with R
-- **Migration** — replicating exact R spacexr results when you already have R's sigma
-- **Reproducibility** — locking sigma to a known value across runs
-
-```python
-# Only if you need exact R concordance and know R's sigma value:
-result = run_rctd(spatial, reference, mode="doublet", sigma_override=63)
-```
-
-## Migrating from R spacexr
-
-<details>
-<summary><strong>Parameter correspondence table</strong></summary>
-
-All defaults match R spacexr, so default R results reproduce with default rctd-py parameters.
-
-### Reference construction
-
-| R spacexr (`Reference()`) | rctd-py (`Reference()`) | Default | Description |
-|---------------------------|-------------------------|---------|-------------|
-| `cell_type_col` (in meta.data) | `cell_type_col` | `"cell_type"` | Column name for cell type labels |
-| `CELL_MIN_INSTANCE` | `cell_min` | `25` | Min cells per type to include |
-| `n_max_cells` | `n_max_cells` | `10000` | Max cells per type (downsampled) |
-| `min_UMI` | `min_UMI` | `100` | Min UMI for reference cells |
-
-### RCTD configuration
-
-| R spacexr (`create.RCTD()`) | rctd-py (`RCTDConfig()`) | Default | Description |
-|-----------------------------|--------------------------|---------|-------------|
-| `gene_cutoff` | `gene_cutoff` | `0.000125` | Min normalized expression (bulk gene list) |
-| `fc_cutoff` | `fc_cutoff` | `0.5` | Min log-FC (bulk gene list) |
-| `gene_cutoff_reg` | `gene_cutoff_reg` | `0.0002` | Min normalized expression (DE gene list) |
-| `fc_cutoff_reg` | `fc_cutoff_reg` | `0.75` | Min log-FC (DE gene list) |
-| `UMI_min` | `UMI_min` | `100` | Min UMI per spatial pixel |
-| `UMI_max` | `UMI_max` | `20000000` | Max UMI per spatial pixel |
-| `counts_MIN` | `counts_MIN` | `10` | Min total counts for a gene |
-| `UMI_min_sigma` | `UMI_min_sigma` | `300` | Min UMI for sigma estimation pixels |
-| `N_epoch` | `N_epoch` | `8` | Epochs for platform effect estimation |
-| `N_fit` | `N_fit` | `100` | Pixels sampled for sigma fitting |
-| `MIN_CHANGE_BULK` | `MIN_CHANGE_BULK` | `0.0001` | Convergence threshold (bulk fitting) |
-| `MIN_CHANGE_REG` | `MIN_CHANGE_REG` | `0.001` | Convergence threshold (per-pixel) |
-| `MIN_OBS` | `MIN_OBS` | `3` | Min observations for DE gene selection |
-| `MAX_MULTI_TYPES` | `MAX_MULTI_TYPES` | `4` | Max cell types per pixel (multi mode) |
-| `CONFIDENCE_THRESHOLD` | `CONFIDENCE_THRESHOLD` | `5.0` | Singlet confidence threshold |
-| `DOUBLET_THRESHOLD` | `DOUBLET_THRESHOLD` | `20.0` | Doublet certainty threshold |
-| `max_cores` | N/A | — | See parallelism note below |
-
-### rctd-py only (no R equivalent)
-
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `max_iter` | `50` | Max IRWLS iterations per pixel |
-| `step_size` | `0.3` | IRWLS step size |
-| `K_val` | `1000` | Spline discretization points |
-| `dtype` | `"float64"` | `"float32"` saves GPU memory and is much faster on consumer GPUs (see note) |
-| `device` | `"auto"` | `"cpu"`, `"cuda"`, or `"auto"` |
-
-#### `float32` on GPU
-
-The default `"float64"` matches R spacexr arithmetic. On data-center GPUs with high fp64 throughput (A100, H100) the difference is small. On consumer / workstation GPUs with limited fp64 (RTX, L40S, Blackwell sm_120) `dtype="float32"` is roughly **2× faster** on doublet mode at moderate K. Empirically (L40S, sm_89, N=20000, K=30, doublet mode) total runtime drops from 76s to 39s while every cell-type call agrees with the fp64 result; the test that locks this concordance lives at `tests/test_fp32_concordance.py`.
-
-### Parallelism
-
-R spacexr uses `max_cores` to parallelize across pixels via `doParallel`. rctd-py uses **vectorized PyTorch tensor operations** instead — no `max_cores` parameter needed. For CPU thread control, set the `OMP_NUM_THREADS` environment variable before running:
-
-```bash
-export OMP_NUM_THREADS=8
-```
-
-For GPU acceleration, set `device="cuda"` in `RCTDConfig()` or pass `--device cuda` on the CLI.
-
-</details>
-
-## API
-
-<details>
-<summary><strong>Click to expand full API reference</strong></summary>
-
-### `run_rctd(spatial, reference, mode, config, batch_size, sigma_override)`
-
-End-to-end pipeline. Takes an `AnnData` spatial object and a `Reference`, returns a typed result (`FullResult`, `DoubletResult`, or `MultiResult`). `batch_size` defaults to `"auto"` (sized from free GPU memory; the CLI instead defaults to 10000). Pass `sigma_override` (int) to skip sigma estimation and use a known value (e.g. from R).
-
-### `Reference(adata, cell_type_col, cell_min, n_max_cells, min_UMI)`
-
-Constructs cell type profiles from a scRNA-seq `AnnData`. Filters cell types below `cell_min`, caps per-type cells at `n_max_cells`.
-
-### `RCTD(spatial, reference, config)`
-
-Stateful class for step-by-step control. Call `fit_platform_effects()`, then `run_full_mode`, `run_doublet_mode`, or `run_multi_mode`.
-
-### `RCTDConfig` — key parameters
-
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `UMI_min` | 100 | Minimum UMI count per pixel |
-| `UMI_min_sigma` | 300 | Minimum UMI for sigma estimation |
-| `N_fit` | 100 | # pixels sampled for sigma fitting |
-| `MAX_MULTI_TYPES` | 4 | Max cell types in multi mode |
-| `CONFIDENCE_THRESHOLD` | 5.0 | Singlet confidence threshold |
-| `DOUBLET_THRESHOLD` | 20.0 | Doublet certainty threshold |
-| `device` | `"auto"` | `"auto"`, `"cpu"`, or `"cuda"` — force CPU/GPU |
-| `dtype` | `"float64"` | `"float32"` is ~2x faster on consumer GPUs |
-| `compile` | `True` | `False` skips `torch.compile` (eager mode) |
-| `class_df` | `None` | Doublet mode: `{cell_type: class}` for hierarchical fallback |
-| `eigh_threshold` | `None` | Override the arch-based K cutoff for GPU eigh |
-
-### Result types
-
-- **`FullResult`** — `weights` (N×K), `cell_type_names`, `converged`, `pixel_mask`
-- **`DoubletResult`** — `weights`, `weights_doublet` (N×2), `spot_class` (0=reject, 1=singlet, 2=doublet_certain, 3=doublet_uncertain), `first_type`, `second_type` (indices into `cell_type_names`), `first_class`, `second_class` (bool), `min_score`, `singlet_score`, `cell_type_names`, `pixel_mask`, `first_class_name`, `second_class_name` (set only with `class_df`)
-- **`MultiResult`** — `weights`, `sub_weights` (N×`MAX_MULTI_TYPES`), `cell_type_indices` (padded with -1), `n_types`, `conf_list`, `min_score`, `cell_type_names`, `pixel_mask`
-
-Result arrays cover only the pixels that passed the `UMI_min`/`UMI_max` and `counts_MIN` filters, so N can be smaller than the input. `pixel_mask` (length = all input pixels) marks which ones they are: `spatial[result.pixel_mask]` lines up row-for-row with the result.
-
-</details>
+Runtime and memory tables per dataset and mode: [benchmarks](https://rctd-py.readthedocs.io/en/latest/benchmarks.html).
 
 ## Citation
 

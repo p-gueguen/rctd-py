@@ -341,4 +341,4 @@ Joint RNA + protein deconvolution (Gaussian/WLS protein block sharing the per-sp
 - **Source + issues:** https://github.com/p-gueguen/rctd-py
 - **CHANGELOG:** https://github.com/p-gueguen/rctd-py/blob/main/CHANGELOG.md
 - **Original RCTD paper:** Cable et al., *Nature Biotechnology* 2022 (R `spacexr`)
-- **Tutorial notebook (Slide-seq cerebellum, end-to-end):** https://p-gueguen.github.io/rctd-py/
+- **Tutorial notebook (Slide-seq cerebellum, end-to-end):** https://rctd-py.readthedocs.io/en/latest/tutorials/slideseq_cerebellum.html
