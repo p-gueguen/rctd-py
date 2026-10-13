@@ -31,6 +31,20 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=7.0", "pytest-cov", "ruff", "pandas>=1.5", "spatialdata>=0.2", "pre-commit"]
+doc = [
+    # sphinx-click 6.2 imports `mock` from sphinx.ext.autodoc, which Sphinx 9 turned into a module
+    "sphinx>=7,<9",
+    "sphinx-book-theme>=1",
+    "myst-nb>=1.1",
+    "sphinx-autodoc-typehints",
+    "sphinx-copybutton",
+    "sphinx-design",
+    "sphinx-click",
+    "sphinxcontrib-bibtex>=2",
+    "sphinxext-opengraph",
+    "ipython",
+    "pandas",
+]
 
 [project.urls]
 Homepage = "https://github.com/p-gueguen/rctd-py"

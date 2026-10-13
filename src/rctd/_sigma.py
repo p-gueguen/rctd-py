@@ -27,7 +27,8 @@ def choose_sigma(
 ) -> int:
     """Estimate the optimal sigma parameter for the Poisson-Lognormal model.
 
-    Exactly ports choose_sigma_c / chooseSigma from spacexr R:
+    Ports choose_sigma_c / chooseSigma from spacexr R:
+
     - Each epoch: fit IRWLS weights at *current* sigma (fixed Q_mat).
     - Then call chooseSigma: evaluate all candidate sigmas on the FIXED
       prediction (weights x profiles x nUMI), pick the sigma that minimizes

@@ -118,6 +118,7 @@ class RCTD:
         """Estimate platform effects and compute normalized reference profiles.
 
         Mirrors R spacexr ``create.RCTD`` two-gene-list strategy:
+
         * ``gene_list_bulk`` — broad set (gene_cutoff / fc_cutoff) for fitBulk
         * ``gene_list_reg``  — DE set  (gene_cutoff_reg / fc_cutoff_reg) for
           choose_sigma and per-pixel IRWLS

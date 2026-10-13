@@ -321,24 +321,15 @@ def _(mo):
     return
 
 
-@app.cell
-def _(cell_type_names, plt, spatial_adata, t_doublet, t_full, t_multi):
-    # --- Plot 1: Runtime comparison ---
-    fig_runtime, ax_runtime = plt.subplots(figsize=(6, 3))
-    modes = ['full', 'doublet', 'multi']
-    times = [t_full, t_doublet, t_multi]
-    colors = ['#4C78A8', '#F58518', '#54A24B']
-    bars = ax_runtime.barh(modes, times, color=colors, edgecolor='white', height=0.5)
-    ax_runtime.bar_label(bars, fmt='%.1fs', padding=4, fontsize=10)
-    ax_runtime.set_xlabel('Time (seconds)')
-    n_beads = spatial_adata.n_obs
-    n_genes = spatial_adata.n_vars
-    n_types = len(cell_type_names)
-    ax_runtime.set_title(f'RCTD Runtime by Mode\n({n_beads} beads, {n_genes} genes, {n_types} cell types)')
-    ax_runtime.set_xlim(0, max(times) * 1.35)
-    ax_runtime.spines[['top', 'right']].set_visible(False)
-    plt.tight_layout()
-    fig_runtime
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
+    The first `run_rctd` call in a session also compiles the solver kernels with
+    `torch.compile`. That one-off cost dominates the runtime on a dataset this small, so the
+    timings printed above say little about speed; see the
+    [benchmarks](https://github.com/p-gueguen/rctd-py#benchmarks) for runtimes on real data.
+    """)
+    return
 
 
 @app.cell(hide_code=True)

@@ -1,0 +1,21 @@
+# https://docs.readthedocs.io/page/config-file/v2.html
+version: 2
+build:
+  os: ubuntu-24.04
+  tools:
+    python: "3.12"
+  jobs:
+    # hatch-vcs derives the version from git tags, which a shallow clone lacks
+    post_checkout:
+      - git fetch --unshallow --tags || true
+    # CPU-only torch: the docs only import rctd, and the default CUDA wheel is several GB
+    pre_install:
+      - pip install torch --index-url https://download.pytorch.org/whl/cpu
+python:
+  install:
+    - method: pip
+      path: .
+      extra_requirements:
+        - doc
+sphinx:
+  configuration: docs/conf.py

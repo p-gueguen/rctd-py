@@ -97,3 +97,7 @@ graphify-out/
 results.tsv
 examples/__marimo__/
 tests/performance_metrics_*.csv
+
+# Sphinx build output
+docs/_build/
+docs/generated/

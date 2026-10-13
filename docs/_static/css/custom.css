@@ -1,0 +1,2 @@
+/* Wide tables (parameter and output references) scroll instead of overflowing the page. */
+.bd-article table { display: block; overflow-x: auto; }

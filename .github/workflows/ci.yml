@@ -68,3 +68,26 @@ jobs:
       - name: Run slow integration + R concordance tests
         run: pytest tests/ -v -m slow
 
+  docs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # hatch-vcs needs the tags for the version
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        run: pip install uv
+
+      - name: Install dependencies (CPU-only torch)
+        run: |
+          uv pip install --system torch --index-url https://download.pytorch.org/whl/cpu
+          uv pip install --system ".[doc]"
+
+      - name: Build docs (warnings are errors)
+        run: sphinx-build -W --keep-going -n -b html docs docs/_build/html
+

@@ -524,9 +524,10 @@ If you use rctd-py, please cite the original RCTD paper:
 ```bibtex
 @article{cable2022robust,
   title={Robust decomposition of cell type mixtures in spatial transcriptomics},
-  author={Cable, Dylan M and Murray, Evan and Zou, Luli S and Goeva, Aleksandrina and Macosko, Evan Z and Chen, Fei and Bhatt, Shreya and Denber, Hannah S and others},
+  author={Cable, Dylan M and Murray, Evan and Zou, Luli S and Goeva, Aleksandrina and Macosko, Evan Z and Chen, Fei and Irizarry, Rafael A},
   journal={Nature Biotechnology},
   volume={40},
+  number={4},
   pages={517--526},
   year={2022},
   doi={10.1038/s41587-021-00830-w}

@@ -38,8 +38,8 @@ def fit_bulk(
         max_iter: max iterations for IRWLS
 
     Returns:
-        bulk_weights: (K,) array of estimated cell type proportions
-        norm_profiles: (G, K) array of platform-effect normalized reference profiles
+        Tuple ``(bulk_weights, norm_profiles)``: the (K,) estimated cell type proportions and the
+        (G, K) platform-effect normalized reference profiles.
     """
     device = cell_type_profiles.device
     dtype = cell_type_profiles.dtype
