@@ -9,8 +9,8 @@ import torch
 class RCTDConfig(NamedTuple):
     """RCTD configuration parameters.
 
-    Defaults match R spacexr's ``create.RCTD()``; field names keep R's spelling so an R
-    configuration carries over one to one.
+    Field names keep R spacexr's spelling. Defaults match R's ``create.RCTD()`` and its internal
+    config, except ``N_fit`` (100 here, 1000 in R).
     """
 
     #: Min normalised expression for the bulk gene list (``gene_cutoff`` in R).
@@ -35,7 +35,7 @@ class RCTDConfig(NamedTuple):
     N_fit: int = 100
     #: Convergence threshold of the bulk platform-effect fit.
     MIN_CHANGE_BULK: float = 0.0001
-    #: Convergence threshold of the per-pixel fits.
+    #: Convergence threshold of the per-pixel fits. Not read yet; the solvers use a fixed 0.001.
     MIN_CHANGE_REG: float = 0.001
     #: Min observations for a gene in DE gene selection.
     MIN_OBS: int = 3
@@ -43,15 +43,16 @@ class RCTDConfig(NamedTuple):
     MAX_MULTI_TYPES: int = 4
     #: Score margin within which two fits count as a tie (doublet and multi mode).
     CONFIDENCE_THRESHOLD: float = 5.0
-    #: Score gain a second type needs over a singlet fit (doublet mode).
+    #: Score gain needed to call a doublet (doublet mode) or to add another type (multi mode).
     DOUBLET_THRESHOLD: float = 20.0
-    #: Max IRWLS iterations per pixel (no R equivalent).
+    #: Max IRWLS iterations per pixel. Not read yet; the solvers use a fixed 50 (25 for scoring).
     max_iter: int = 50
-    #: IRWLS step size (no R equivalent).
+    #: IRWLS step size. Not read yet; the solvers use a fixed 0.3.
     step_size: float = 0.3
     #: Largest count value in the likelihood tables.
     K_val: int = 1000
-    #: ``"float64"`` (R arithmetic) or ``"float32"`` (about 2x faster on consumer GPUs).
+    #: ``"float64"`` (R arithmetic) or ``"float32"`` (1.2-2x faster and half the VRAM on GPUs
+    #: with limited fp64 throughput; measured on an L40S).
     dtype: str = "float64"
     #: ``"auto"`` (GPU if available), ``"cpu"`` or ``"cuda"``.
     device: str = "auto"

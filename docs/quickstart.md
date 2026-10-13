@@ -44,8 +44,9 @@ config = RCTDConfig(UMI_min=20, device="cuda", dtype="float32")
 result = run_rctd(spatial, reference, mode="doublet", config=config, batch_size=5000)
 ```
 
-`dtype="float32"` is about 2x faster on GPUs with limited fp64 throughput (RTX, L40S, Blackwell
-workstation cards); the default `float64` matches R's arithmetic.
+`dtype="float32"` is 1.2-2x faster and needs half the VRAM on GPUs with limited fp64 throughput
+(measured on an L40S; also the case for RTX and Blackwell workstation cards). The default
+`float64` matches R's arithmetic.
 
 ## Hierarchical cell types (`class_df`)
 

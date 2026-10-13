@@ -66,8 +66,8 @@ intersphinx_mapping = {
     "torch": ("https://docs.pytorch.org/docs/stable/", None),
 }
 
-# index.html / tutorial.html are the pre-Sphinx GitHub Pages site, kept until Read the Docs is live;
-# plans/ are internal design notes.
+# index.html / tutorial.html redirect the old GitHub Pages URLs to Read the Docs; plans/ are
+# internal design notes.
 exclude_patterns = ["_build", "Thumbs.db", ".DS_Store", "**.ipynb_checkpoints", "plans", "*.html"]
 
 html_theme = "sphinx_book_theme"

@@ -36,7 +36,8 @@ Results are written into a copy of the spatial input, by default `<spatial_stem>
 | `.obsm["rctd_sub_weights"]`, `.obsm["rctd_cell_type_indices"]` | selected types and their weights | multi |
 | `.uns["rctd_mode"]`, `.uns["rctd_config"]`, `.uns["rctd_cell_type_names"]` | run metadata | all |
 
-Filtered pixels (below `--umi-min`) get `NaN` weights and `"filtered"` labels.
+Pixels that were not fitted get `NaN` weights and `"filtered"` labels: total UMI outside
+`--umi-min` / `--umi-max`, or fewer than `counts_MIN` (10) counts on the bulk gene list.
 
 ## Reference
 

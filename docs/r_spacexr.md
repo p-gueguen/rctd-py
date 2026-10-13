@@ -1,7 +1,7 @@
 # Coming from R spacexr
 
-rctd-py implements the same algorithm as R spacexr's RCTD with the same parameters and the same
-defaults, so an R configuration carries over one to one.
+rctd-py implements the same algorithm as R spacexr's RCTD, with R's parameter names and, apart
+from `N_fit`, R's defaults.
 
 ## Agreement with R
 
@@ -57,11 +57,16 @@ the type and continues.
 
 ### `create.RCTD()`
 
-Every `create.RCTD()` argument has a field of the same name in {class}`~rctd.RCTDConfig`, with
-the same default: `gene_cutoff`, `fc_cutoff`, `gene_cutoff_reg`, `fc_cutoff_reg`, `UMI_min`,
-`UMI_max`, `counts_MIN`, `UMI_min_sigma`, `N_epoch`, `N_fit`, `MIN_CHANGE_BULK`,
-`MIN_CHANGE_REG`, `MIN_OBS`, `MAX_MULTI_TYPES`, `CONFIDENCE_THRESHOLD`, `DOUBLET_THRESHOLD`,
-`class_df`. The {class}`~rctd.RCTDConfig` reference lists what each one does.
+These `create.RCTD()` arguments are fields of the same name and default in
+{class}`~rctd.RCTDConfig`: `gene_cutoff`, `fc_cutoff`, `gene_cutoff_reg`, `fc_cutoff_reg`,
+`UMI_min`, `UMI_max`, `counts_MIN`, `UMI_min_sigma`, `MAX_MULTI_TYPES`,
+`CONFIDENCE_THRESHOLD` (5), `DOUBLET_THRESHOLD` (20) and `class_df`. `CELL_MIN_INSTANCE` is
+`cell_min` on {class}`~rctd.Reference`.
+
+R's internal config entries are fields too: `N_epoch`, `MIN_CHANGE_BULK`, `MIN_CHANGE_REG`,
+`MIN_OBS` and `N_fit`. The one default that differs is `N_fit`, the number of pixels sampled for
+sigma estimation: 100 in rctd-py, 1000 in R. Set `RCTDConfig(N_fit=1000)` to sample as R does.
+The {class}`~rctd.RCTDConfig` reference lists what each field does.
 
 `max_cores` has no equivalent: rctd-py vectorises across pixels instead of forking workers. On
 CPU, set the thread count with `OMP_NUM_THREADS`; on GPU, pass `device="cuda"`.

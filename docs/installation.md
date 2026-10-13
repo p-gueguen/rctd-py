@@ -65,11 +65,13 @@ version matters (`nvidia-smi`, top right).
 
 ### GPU memory
 
-Peak VRAM scales with `batch_size * K^2`; lower `batch_size` to fit a smaller card.
+Peak VRAM scales with `batch_size * K^2`. From Python, `run_rctd` defaults to
+`batch_size="auto"`, sized from the free GPU memory; the CLI defaults to `--batch-size 10000`.
+Set it explicitly to fit a smaller card or a shared GPU:
 
 | Available VRAM | Recommended `batch_size` | Peak VRAM (K=45) |
 |---|---|---|
-| 24+ GB | 10,000 (default) | ~4 GB |
+| 24+ GB | 10,000 | ~4 GB |
 | 8-16 GB | 5,000 | ~2 GB |
 | < 8 GB | 2,000 | ~1 GB |
 

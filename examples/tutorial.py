@@ -274,6 +274,17 @@ def _(RCTDConfig, reference, run_rctd, spatial_adata, time):
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
+    The first `run_rctd` call in a session also compiles the solver kernels with
+    `torch.compile`. That one-off cost dominates the runtime on a dataset this small, so the
+    timings printed above say little about speed; see the
+    [benchmarks](https://rctd-py.readthedocs.io/en/latest/benchmarks.html) for runtimes on real data.
+    """)
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
     ## 5. Interpreting Results
 
     The `result_full.weights` matrix has shape `(n_beads, n_types)`. Following
@@ -317,17 +328,6 @@ def _(np, reference, result_full):
 def _(mo):
     mo.md(r"""
     ## 6. Visualization
-    """)
-    return
-
-
-@app.cell(hide_code=True)
-def _(mo):
-    mo.md(r"""
-    The first `run_rctd` call in a session also compiles the solver kernels with
-    `torch.compile`. That one-off cost dominates the runtime on a dataset this small, so the
-    timings printed above say little about speed; see the
-    [benchmarks](https://github.com/p-gueguen/rctd-py#benchmarks) for runtimes on real data.
     """)
     return
 

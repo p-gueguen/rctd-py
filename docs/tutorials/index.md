@@ -6,7 +6,8 @@
 slideseq_cerebellum
 ```
 
-The notebooks are executed ahead of time and stored with their outputs. Each one also exists as
+The notebooks are executed ahead of time and stored with their outputs (`docs/tutorials/export.py`
+regenerates them). Each one also exists as
 an interactive [marimo](https://marimo.io) notebook under `examples/` in the repository:
 
 ```bash
