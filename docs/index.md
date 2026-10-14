@@ -3,7 +3,7 @@
 GPU-accelerated Robust Cell Type Decomposition (RCTD) for spatial transcriptomics.
 
 rctd-py is a Python reimplementation of the [spacexr](https://github.com/dmcable/spacexr) RCTD
-algorithm {cite:p}`cable2022robust`, with GPU acceleration through [PyTorch](https://pytorch.org/).
+algorithm of {cite:t}`cable2022robust`, with GPU acceleration through [PyTorch](https://pytorch.org/).
 It deconvolves spatial transcriptomics pixels (Visium, Visium HD, Xenium, CosMx, MERFISH,
 Slide-seq, ...) into cell type proportions using a single-cell RNA-seq reference, in minutes
 instead of hours.

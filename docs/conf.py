@@ -1,7 +1,55 @@
 # Sphinx configuration for rctd-py, following the scverse cookiecutter layout.
 # https://www.sphinx-doc.org/page/usage/configuration.html
+from dataclasses import dataclass, field
 from datetime import datetime
 from importlib.metadata import metadata
+
+import pybtex.plugin
+import sphinxcontrib.bibtex.plugin
+from pybtex.style.formatting.unsrt import Style as UnsrtStyle
+from pybtex.style.labels import BaseLabelStyle
+from sphinxcontrib.bibtex.style.referencing import BracketStyle
+from sphinxcontrib.bibtex.style.referencing.author_year import AuthorYearReferenceStyle
+
+
+# sphinxcontrib-bibtex's built-in author_year style uses square brackets; this is its documented
+# way to get round ones.
+def _round():
+    return field(default_factory=lambda: BracketStyle(left="(", right=")"))
+
+
+@dataclass
+class _AuthorYearRound(AuthorYearReferenceStyle):
+    bracket_parenthetical: BracketStyle = _round()
+    bracket_textual: BracketStyle = _round()
+    bracket_author: BracketStyle = _round()
+    bracket_label: BracketStyle = _round()
+    bracket_year: BracketStyle = _round()
+
+
+sphinxcontrib.bibtex.plugin.register_plugin(
+    "sphinxcontrib.bibtex.style.referencing", "author_year_round", _AuthorYearRound
+)
+
+
+class _AuthorYearLabels(BaseLabelStyle):
+    """Bibliography labels like "Cable et al., 2022" instead of pybtex's alpha "CMZ+22"."""
+
+    def format_labels(self, sorted_entries):
+        for entry in sorted_entries:
+            names = [p.last_names[0] for p in entry.persons.get("author", [])]
+            if len(names) > 2:
+                who = f"{names[0]} et al."
+            else:
+                who = " and ".join(names)
+            yield f"{who}, {entry.fields.get('year', 'n.d.')}"
+
+
+class _AuthorYearStyle(UnsrtStyle):
+    default_label_style = _AuthorYearLabels
+
+
+pybtex.plugin.register_plugin("pybtex.style.formatting", "author_year_labels", _AuthorYearStyle)
 
 info = metadata("rctd-py")
 project = info["Name"]
@@ -11,6 +59,8 @@ version = release = info["Version"]
 repository_url = "https://github.com/p-gueguen/rctd-py"
 
 bibtex_bibfiles = ["references.bib"]
+bibtex_reference_style = "author_year_round"  # "Cable et al. (2022)", as in the scverse docs
+bibtex_default_style = "author_year_labels"
 templates_path = ["_templates"]
 needs_sphinx = "7.0"
 nitpicky = True  # warn on every unresolved reference; CI builds with -W
@@ -49,7 +99,14 @@ typehints_defaults = "braces"
 always_use_bars_union = True
 
 myst_heading_anchors = 6
-myst_enable_extensions = ["amsmath", "colon_fence", "deflist", "dollarmath", "html_image", "html_admonition"]
+myst_enable_extensions = [
+    "amsmath",
+    "colon_fence",
+    "deflist",
+    "dollarmath",
+    "html_image",
+    "html_admonition",
+]
 myst_url_schemes = ("http", "https", "mailto")
 # Tutorials are executed offline and committed with outputs: Read the Docs has no GPU and would
 # re-download the 404 MB Q-matrices on every build.
