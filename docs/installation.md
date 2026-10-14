@@ -49,9 +49,10 @@ Check that the GPU is visible:
 
 ```python
 import torch
-print(torch.cuda.is_available())    # False means CPU-only torch or a driver issue
-print(torch.cuda.get_device_name()) # e.g. 'NVIDIA L40S'
-print(torch.version.cuda)           # e.g. '13.0'
+
+print(torch.cuda.is_available())  # False means CPU-only torch or a driver issue
+print(torch.cuda.get_device_name())  # e.g. 'NVIDIA L40S'
+print(torch.version.cuda)  # e.g. '13.0'
 ```
 
 No separate CUDA toolkit is needed: PyTorch ships its own CUDA runtime, so only the driver

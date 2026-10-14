@@ -19,8 +19,8 @@ jobs:
 
       - name: Install ruff
         # Same version as the pre-commit hook (.pre-commit-config.yaml rev); bump both together.
-        # Unpinned, ruff 0.17 started formatting code blocks in docs/*.md and failed CI.
-        run: pip install ruff==0.15.6
+        # Pinned because new ruff releases change what is checked (0.17 added Markdown code blocks).
+        run: pip install ruff==0.17.0
 
       - name: Check linting
         run: ruff check src/ tests/ docs/

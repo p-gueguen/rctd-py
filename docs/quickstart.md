@@ -56,8 +56,11 @@ class; if only the class is certain, the call is flagged instead of forced:
 
 ```python
 class_df = {
-    "CD4_TH1": "T_cell", "CD4_TH2": "T_cell", "CD8": "T_cell",
-    "B_naive": "B_cell", "B_memory": "B_cell",
+    "CD4_TH1": "T_cell",
+    "CD4_TH2": "T_cell",
+    "CD8": "T_cell",
+    "B_naive": "B_cell",
+    "B_memory": "B_cell",
     "Macrophage": "Macrophage",
 }
 result = run_rctd(spatial, reference, mode="doublet", config=RCTDConfig(class_df=class_df))
@@ -78,6 +81,6 @@ platform-effect fit before deconvolving:
 from rctd import RCTD
 
 rctd = RCTD(spatial, reference, RCTDConfig())
-rctd.fit_platform_effects()        # gene lists, bulk fit, sigma
-print(rctd.sigma / 100)            # sigma chosen for this dataset
+rctd.fit_platform_effects()  # gene lists, bulk fit, sigma
+print(rctd.sigma / 100)  # sigma chosen for this dataset
 ```
