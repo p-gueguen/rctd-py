@@ -153,26 +153,32 @@ pattern but its `compile=False` path still routes to the eager
 
 ## R spacexr Concordance
 
-### Current: 99.8% dominant type agreement (matched reference)
+**The remaining R/py gap is sigma, and R does not reproduce itself.** Both sides pick sigma from a
+random pixel sample and spacexr sets no seed: two R runs that land on different sigmas agree on
+~99.3% of spot classes, the same level as rctd-py vs R; at the same sigma the calls match. Compare
+like for like with `run_rctd(..., sigma_override=round(100 * rctd@internal_vars$sigma))`.
 
-The per-pixel IRWLS solver is **bit-identical** to R spacexr given the same `norm_profiles` and `sigma`. The remaining ~0.2% gap comes from `fit_bulk()` platform effect estimation producing slightly different normalized profiles.
+**Measure `first_type` too, not only dominant type or spot class.** The 2026-10 audit found four
+per-pixel differences on `main` that both of those metrics hid: singlets relabelled to the best
+singlet-score type, cell types sorted by code point instead of R's factor order, `N_fit` 100 vs
+R's 1000, and an inexact 50-sweep QP. Fixes and a pixel-level parity test (R's own per-pixel
+inputs in, identical calls out) are on branch `fix/r-parity`.
 
-### Key findings (2026-03-21, comparison against an internal R spacexr Xenium pipeline)
+Comparison hygiene:
 
-1. **Reference preparation matters**: Using a different reference (e.g. full Seurat object vs pre-downsampled spacexr Reference) drops agreement to ~95%. Always use the SAME reference cells for fair comparisons.
-2. **Weight normalization**: spacexr stores `normalize_weights()` output (sum=1, clipped [0,1]). rctd-py stores raw full-mode weights in `obsm["rctd_weights"]`. **Always normalize rctd-py weights before comparing.**
-3. **`_longdouble_sum` in `_normalize.py`**: Uses 80-bit extended precision for `bulk_Y`/`bulk_nUMI` sums, matching R's long double accumulation on x86-64. Zero performance impact.
-4. **Cell type naming**: R spacexr/zarr may normalize names (e.g. `L2/3 IT` → `L2_3 IT`). Always normalize names before comparing.
-
-### Concordance testing
-
-See `docs/plans/100-percent-matching-roadmap.md` for the detailed investigation
-plan and the test fixtures in `tests/fixtures/vignette/` for the canonical
-R-vs-Python concordance comparison.
+1. **Same reference cells**: a different reference (full Seurat object vs pre-downsampled spacexr
+   Reference) drops agreement to ~95%.
+2. **Weight normalization**: spacexr stores `normalize_weights()` output (sum=1, clipped [0,1]);
+   rctd-py stores raw full-mode weights in `obsm["rctd_weights"]`. Normalize before comparing.
+3. **Cell type naming**: R spacexr/zarr may normalize names (e.g. `L2/3 IT` -> `L2_3 IT`).
+4. `_longdouble_sum` in `_normalize.py` uses 80-bit sums for `bulk_Y`/`bulk_nUMI`, matching R's
+   long double accumulation on x86-64.
 
 ## Tutorial
 
-The tutorial is a marimo notebook at `examples/tutorial.py`, exported to `examples/tutorial.html`.
+The tutorial is a marimo notebook at `examples/tutorial.py`. The docs ship it as an executed
+notebook, `docs/tutorials/slideseq_cerebellum.ipynb`; regenerate it on a GPU host with
+`python docs/tutorials/export.py` (see its docstring).
 
 ### Marimo gotchas
 
@@ -194,18 +200,6 @@ fig_plot  # last expression, non-underscore name
 **Underscore-prefixed names are cell-private**: Functions/variables starting with `_` (e.g., `_fig`, `_detect_ct_col`) are NOT exported from a cell to other cells or to static HTML output.
 
 **Deprecated matplotlib API**: Use `plt.colormaps.get_cmap('tab20').resampled(n)` instead of `plt.cm.get_cmap('tab20', n)` (deprecated in matplotlib 3.7+).
-
-### Rendering
-
-```bash
-uv run marimo export html examples/tutorial.py -o examples/tutorial.html --no-include-code
-```
-
-`examples/tutorial.html` is gitignored (local artifact). The tracked,
-GitHub-Pages-served copy is `docs/tutorial.html`. After re-rendering,
-copy `examples/tutorial.html` → `docs/tutorial.html`. Re-render takes
-~13 min (sigma estimation runs 3× because the tutorial calls `run_rctd`
-for full / doublet / multi separately, each from scratch).
 
 ### Doc-vs-code drift audits
 
