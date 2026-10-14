@@ -3,6 +3,11 @@
 All notable changes to rctd-py are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **Bulk platform-effect fit used genes R leaves out, lowering concordance with R on sparse data.** R's `fitBulk` (`prepareBulkData`) decomposes the bulk only on genes with at least 10 total counts across the tissue (`MIN_OBS = 10`, hard-coded) and then renormalises every bulk gene; `fit_bulk` decomposed on all of them. Imaging panels have almost no such genes, so Xenium/CosMx/Atera concordance was unaffected (99.7-100%), but on sequencing-based data the extra genes moved the bulk proportions by up to 7 points (StrataMap breast: keratinocyte 33.3% vs R's 26.1%) and every cell was then fitted against shifted profiles. Against R spacexr 2.2.1 doublet calls (K=40 breast reference, same inputs), spot-class agreement goes from 80.7% to 99.5% on StrataMap breast (21,425 cells), 85.9% to 100% on Visium HD breast segmented cells (38,990) and 91.5% to 100% on Visium v1 breast (3,798 spots); bulk proportions now match R to 1e-7. `tests/test_normalize.py::test_fit_bulk_drops_genes_below_min_obs` covers it.
+
 ## [0.3.9] — 2026-10-02
 
 ### Added
