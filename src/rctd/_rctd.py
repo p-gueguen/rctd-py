@@ -307,6 +307,9 @@ def run_rctd(
         config: Configuration parameters
         batch_size: GPU batch size for pixel processing. "auto" calculates
             optimal size from available VRAM.
+        sigma_override: Skip sigma estimation and use this value, as an integer
+            100 times sigma (63 means sigma 0.63). From an R run:
+            ``round(100 * myRCTD@internal_vars$sigma)``.
 
     Returns:
         Result object containing weights and predictions.

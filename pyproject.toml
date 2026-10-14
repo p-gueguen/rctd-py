@@ -48,6 +48,7 @@ doc = [
 
 [project.urls]
 Homepage = "https://github.com/p-gueguen/rctd-py"
+Documentation = "https://rctd-py.readthedocs.io"
 Repository = "https://github.com/p-gueguen/rctd-py"
 Issues = "https://github.com/p-gueguen/rctd-py/issues"
 

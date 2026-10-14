@@ -30,12 +30,16 @@ fitted.obs["first_type"] = names[result.first_type]
 | Mode | What it does | Best for |
 |---|---|---|
 | `full` | Weights for all K cell types per pixel | Visium spots, continuous mixtures |
-| `doublet` | Classifies each pixel as singlet or doublet and reports the top 1-2 types | Slide-seq, Visium HD bins, segmented cells |
-| `multi` | Greedy forward selection of up to 4 types per pixel | dense imaging platforms (Xenium, MERFISH) |
+| `doublet` | Classifies each pixel as singlet or doublet and reports the top 1-2 types | Slide-seq, Visium HD bins, segmented cells (Xenium, MERFISH, CosMx) |
+| `multi` | Greedy forward selection of up to 4 types per pixel | Spots expected to hold more than 2 types (an alternative to `full`) |
+
+These follow R spacexr's own recommendations: doublet mode for high-resolution data, full or
+multi mode for larger spots.
 
 ## Configuration
 
-{class}`~rctd.RCTDConfig` holds every parameter; its defaults match R spacexr.
+{class}`~rctd.RCTDConfig` holds every parameter; its defaults match R spacexr's except `N_fit`
+(100 here, 1000 in R; see {doc}`r_spacexr`).
 
 ```python
 from rctd import RCTDConfig
@@ -44,9 +48,11 @@ config = RCTDConfig(UMI_min=20, device="cuda", dtype="float32")
 result = run_rctd(spatial, reference, mode="doublet", config=config, batch_size=5000)
 ```
 
-`dtype="float32"` is 1.2-2x faster and needs half the VRAM on GPUs with limited fp64 throughput
-(measured on an L40S; also the case for RTX and Blackwell workstation cards). The default
-`float64` matches R's arithmetic.
+On GPUs with limited fp64 throughput (L40S, RTX and Blackwell workstation cards),
+`dtype="float32"` is usually faster and needs about half the VRAM on whole-transcriptome data. On
+an L40S in doublet mode it was up to 2.3x faster (median 1.6x; no gain on the smallest dataset) on
+the 15 {doc}`benchmark <benchmarks>` datasets, with 99.997% or more of the spot classes unchanged. The default `float64` matches R's
+arithmetic.
 
 ## Hierarchical cell types (`class_df`)
 

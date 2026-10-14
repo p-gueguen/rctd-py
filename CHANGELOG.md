@@ -3,6 +3,13 @@
 All notable changes to rctd-py are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Documentation
+- **Documentation site** at [rctd-py.readthedocs.io](https://rctd-py.readthedocs.io): installation, quick start, tutorial, CLI and API reference, and a page for R spacexr users (#33, #34).
+- **Benchmarks refreshed**: 15 datasets from eight platforms (3,798 to 714,535 cells) in all three modes, rctd-py on one NVIDIA L40S and on 8 CPU threads against R spacexr 2.2.1 on 8 cores, median of 3 runs. GPU vs R: 10-57x in doublet mode, 5-119x in full mode, 5-21x in multi mode.
+- **Corrections from a docs audit**: R spacexr does not normalise full-mode weights either; the CLI's `--batch-size` defaults to 10000 (`"auto"` is Python-only); mode recommendations now follow spacexr (doublet for segmented cells and high-resolution data); float32 speed-up re-measured (up to 2.3x, median 1.6x); `max_iter` removed from the tutorial, since it is not read yet; README links and images work on PyPI.
+
 ## [0.3.9] — 2026-10-02
 
 ### Added
@@ -84,7 +91,7 @@ Bundles two `_psd_batch` improvements. v0.3.3 was prepared and merged to `main` 
 
   Convergence rate 1.000, GPU util sustained at 85%. The `OMP_NUM_THREADS=1` env var is still recommended on Blackwell to prevent OpenBLAS from spawning threads for incidental CPU LAPACK calls.
 
-- **L40S / Ampere unaffected by the dispatch change.** Regression-tested on fgcz-r-023 (L40S, sm_89): the JIT box-QP path is **1.6–1.85× faster than the previous eager Python loop** at K=45 and K=78, with max numerical diff ~1e-6. Arch gating preserves the CPU eigh offload that earlier L40S benchmarks validated.
+- **L40S (Ada) and Ampere unaffected by the dispatch change.** Regression-tested on fgcz-r-023 (L40S, sm_89): the JIT box-QP path is **1.6–1.85× faster than the previous eager Python loop** at K=45 and K=78, with max numerical diff ~1e-6. Arch gating preserves the CPU eigh offload that earlier L40S benchmarks validated.
 
 ### Notes
 - `--no-compile` and `RCTDConfig(compile=False)` semantics are unchanged. Users who previously selected this path now get the JIT-script box-QP automatically; no API change.

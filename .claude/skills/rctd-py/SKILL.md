@@ -5,7 +5,7 @@ description: GPU-accelerated Python RCTD cell type deconvolution for spatial tra
 
 # rctd-py: GPU-Accelerated Spatial Deconvolution
 
-Python reimplementation of RCTD (Cable et al., *Nature Biotechnology* 2022) with PyTorch GPU acceleration. ~4-41× faster than R `spacexr` with >99% cell-type-call concordance on identical pixel sets. Pure GPU implementation -- no R runtime required.
+Python reimplementation of RCTD (Cable et al., *Nature Biotechnology* 2022) with PyTorch GPU acceleration. 10-57× faster than R `spacexr` in doublet mode (15 datasets, one L40S vs 8 R cores) with >99% cell-type-call concordance on identical pixel sets. Pure Python on PyTorch; runs on CPU or GPU, no R runtime required.
 
 ## When to use
 
@@ -20,9 +20,10 @@ For the R `spacexr` workflow itself, use that package directly; this skill assum
 
 ```bash
 # 1. PyTorch with CUDA matching your driver (one of):
-uv pip install torch                                                # CPU only
+uv pip install torch --index-url https://download.pytorch.org/whl/cpu    # CPU only
 uv pip install torch --index-url https://download.pytorch.org/whl/cu126  # CUDA 12.6
 uv pip install torch --index-url https://download.pytorch.org/whl/cu128  # CUDA 12.8
+# A plain `uv pip install torch` on Linux gets the CUDA 13 build (needs NVIDIA driver >= 580)
 
 # 2. rctd-py
 uv pip install rctd-py
@@ -31,7 +32,7 @@ uv pip install rctd-py
 rctd info
 ```
 
-`rctd info` prints torch version + CUDA availability + GPU name. If `cuda: False` is reported on a machine with a GPU, the wrong torch wheel was installed -- reinstall from the CUDA-matched index URL.
+`rctd info` prints torch version + CUDA availability + GPU name. If it prints `CUDA    not available` (`"cuda_available": false` with `--json`) on a machine with a GPU, the wrong torch wheel was installed -- reinstall from the CUDA-matched index URL.
 
 ## Quick start: CLI
 
@@ -48,7 +49,7 @@ rctd run spatial.h5ad reference.h5ad \
     --json
 ```
 
-`--json` prints a one-line summary on completion (mode, pixel count, runtime, output path). Default output is `<input_stem>_rctd.h5ad`.
+`--json` prints an indented JSON summary to stdout on completion (status, mode, output path, pixel and gene counts, config, sigma, runtime, device, per-mode counts); progress goes to stderr. Default output is `<input_stem>_rctd.h5ad`.
 
 ## Quick start: Python API
 
@@ -73,7 +74,7 @@ For results stored back into the spatial AnnData, use the CLI -- it does the mer
 |------|----------|-----------------|
 | `doublet` (default) | Xenium, MERFISH, Slide-seq, any single-cell-resolution data | 1-2 cell types per spot with confidence class |
 | `multi` | Dense spatial with several contributing types (Xenium with heavy contamination) | Up to `MAX_MULTI_TYPES` (default 4) types per spot via greedy forward selection |
-| `full` | Visium, VisiumHD, anything with multi-cell spots | Continuous weight vector over all K types (unconstrained LS) |
+| `full` | Visium, VisiumHD, anything with multi-cell spots | Non-negative weight vector over all K types (IRWLS fit of the Poisson-lognormal likelihood; not normalised) |
 
 For single-cell-resolution platforms, prefer `doublet`. Reach for `multi` only when a domain-specific reason makes >2 types per spot biologically expected.
 
@@ -108,12 +109,13 @@ ref.write_h5ad("reference.h5ad")
 
 ```r
 library(anndataR)
+library(Seurat)
 
 seurat_ref <- readRDS("reference.rds")          # or qs2::qs_read
 Idents(seurat_ref) <- "cell_type"
 seurat_ref <- subset(seurat_ref, downsample = 500)
 
-adata <- as_anndata(seurat_ref, x_layer = "counts")  # MUST be raw counts
+adata <- as_AnnData(seurat_ref, x_mapping = "counts")  # MUST be raw counts
 adata$obs$cell_type <- as.character(seurat_ref$cell_type)
 write_h5ad(adata, "reference.h5ad")
 ```
@@ -156,19 +158,19 @@ assert "cell_type" in adata.obs.columns
 | `--mode` | `doublet` | `full`, `doublet`, `multi` |
 | `--output / -o` | `<stem>_rctd.h5ad` | Output h5ad path |
 | `--device` | `auto` | `auto`, `cpu`, `cuda` |
-| `--batch-size` | `auto` | Pixels per IRWLS launch; `auto` sizes from free VRAM |
-| `--dtype` | `float64` | `float32` is ~2× faster on consumer GPUs (see GPU note below) with identical cell-type calls |
+| `--batch-size` | `10000` | Pixels per IRWLS launch (integer). `"auto"` (sized from free VRAM) exists only in Python `run_rctd(batch_size="auto")` |
+| `--dtype` | `float64` | `float32` is up to 2.3× faster in doublet mode (median 1.6× on the 15 benchmark datasets, L40S; no gain on the smallest), with ≥ 99.997% of spot classes unchanged (see GPU notes below) |
 | `--cell-type-col` | `cell_type` | Reference `obs` column with labels |
 | `--umi-min` | `100` | **Use 20 for Xenium**; 100 is the R `spacexr` default |
 | `--umi-max` | `20000000` | Per-pixel UMI ceiling |
-| `--sigma-override` | _(auto)_ | Skip sigma estimation, force a fixed value (use for exact R concordance testing) |
+| `--sigma-override` | _(auto)_ | Skip sigma estimation, force a fixed value (pass R's sigma when validating against R) |
 | `--gene-cutoff` | `0.000125` | Bulk gene expression threshold |
 | `--fc-cutoff` | `0.5` | Bulk fold-change threshold |
 | `--gene-cutoff-reg` | `0.0002` | DE gene expression threshold |
 | `--fc-cutoff-reg` | `0.75` | DE fold-change threshold |
 | `--max-multi-types` | `4` | Max types per spot (`multi` mode) |
-| `--confidence-threshold` | `5.0` | Singlet confidence margin |
-| `--doublet-threshold` | `20.0` | Doublet certainty margin |
+| `--confidence-threshold` | `5.0` | Score margin within which two fits count as a tie (doublet certain vs uncertain; multi-mode `conf_list`) |
+| `--doublet-threshold` | `20.0` | Score gain over the best singlet needed to call a doublet, or to add another type in multi mode |
 | `--cell-min` | `25` | Min cells per reference type |
 | `--n-max-cells` | `10000` | Max cells per reference type (downsampling) |
 | `--eigh-threshold` | _(arch default)_ | Force the K cutoff for the GPU-vs-CPU eigh dispatch (issue #22 diagnostic) |
@@ -181,9 +183,9 @@ assert "cell_type" in adata.obs.columns
 
 ### `dtype="float32"` is usually the better default on GPU
 
-The default `dtype="float64"` matches R `spacexr` arithmetic and is the safest choice when validating against R. On a data-center GPU with strong fp64 (A100, H100) the cost is small. On consumer / workstation GPUs (RTX, L40S, anything Blackwell sm_120, anything pre-Hopper) fp64 throughput is 1/32-1/64 of fp32, and `dtype="float32"` is roughly **2× faster on doublet mode** with the same cell-type calls. Empirically (L40S, sm_89, N=20000 spots, K=30 types): 76 s → 39 s; `spot_class` agreement with the fp64 run is **100%**, weights diff `<1e-6`. See `tests/test_fp32_concordance.py` for the locked-in assertion.
+The default `dtype="float64"` matches R `spacexr` arithmetic and is the safest choice when validating against R. On a data-center GPU with strong fp64 (A100, H100) the cost is small. On consumer / workstation GPUs (RTX, L40S, Blackwell sm_120) fp64 throughput is 1/32-1/64 of fp32, and `dtype="float32"` is **up to 2.3× faster in doublet mode (median 1.6× on the 15 benchmark datasets, L40S; no gain on the smallest), with ≥ 99.997% of spot classes unchanged**. In a synthetic example (L40S, sm_89, N=20000 spots, K=30 types): 76 s → 39 s; `spot_class` agreement with the fp64 run was 100%, weights diff `<1e-6`. See `tests/test_fp32_concordance.py` for the locked-in assertion.
 
-If you need bit-for-bit R `spacexr` concordance for validation, stay on fp64.
+For validation against R `spacexr`, stay on fp64 (closest to R's arithmetic) and pass R's sigma with `--sigma-override` / `sigma_override`; results agree closely, not bit for bit.
 
 ### Per-architecture K cutoff for the eigh dispatch
 
@@ -203,13 +205,17 @@ On hosts with many cores running on Volta / Turing / Ampere / Ada (i.e. forced i
 
 ### VRAM guidance
 
-| Available VRAM | Recommended `--batch-size` | Peak VRAM (K=45) |
-|----------------|---------------------------:|-----------------:|
-| ≥ 24 GB | `auto` (often 10000+)      | ~4 GB |
-| 8-16 GB | 5000                       | ~2 GB |
-| < 8 GB  | 2000                       | ~1 GB |
+Peak VRAM grows with the batch size and with the number of genes and cell types; on large whole-transcriptome datasets it also rises with the number of pixels. Measured at the CLI default `--batch-size 10000`, float64, L40S, highest of the three modes (on the small Xenium panels the peak comes from multi mode; full and doublet stay under 1 GiB):
 
-`--batch-size auto` reads *free* VRAM at startup. On a shared GPU where another job's allocation can grow during the run, pin an explicit `--batch-size` to avoid mid-run OOM, and consider `PYTORCH_ALLOC_CONF=expandable_segments:True`.
+| Data | Genes | K | Peak VRAM |
+|------|------:|--:|----------:|
+| Xenium panels | 242-376 | 22-45 | 5.3-5.6 GiB |
+| Xenium Prime 5K | 4,929 | 40 | 13 GiB |
+| Whole transcriptome (Visium, Visium HD, Slide-seq, CosMx, Atera) | 15-23k | 7-78 | 7-16 GiB |
+
+On a smaller GPU, lower `--batch-size` (e.g. 2000-5000), or use `--dtype float32`, which about halves the peak on whole-transcriptome data.
+
+`run_rctd(batch_size="auto")` (Python API only; the CLI takes an integer) reads *free* VRAM at startup and budgets 70% of it, using a per-pixel estimate of the IRWLS intermediates. On a shared GPU where another job's allocation can grow during the run, pin an explicit batch size to avoid mid-run OOM, and consider `PYTORCH_ALLOC_CONF=expandable_segments:True`.
 
 ### Generic SLURM template
 
@@ -267,7 +273,7 @@ The CLI writes results into a copy of the spatial AnnData:
 | 2 | `doublet_certain` | Two types, high confidence |
 | 3 | `doublet_uncertain` | Two types, lower confidence |
 
-Filtered spots (below `UMI_min`) carry `NaN` weights and `"filtered"` labels.
+Filtered spots (total UMI below `UMI_min` or above `UMI_max`, or fewer than `counts_MIN` (default 10) counts on the bulk gene list) carry `NaN` weights and `"filtered"` labels.
 
 ```python
 import anndata
@@ -308,12 +314,12 @@ saveRDS(spatial_obj, "spatial_rctd.rds")
 
 ## Best practices
 
-1. **Validate first.** `rctd validate` checks gene overlap, count integrality, and label coverage in seconds without a GPU.
+1. **Validate first.** `rctd validate` checks in seconds, without a GPU, that both files read, the label column exists, ≥ 2 types have ≥ `--cell-min` cells, ≥ 50 genes are shared, and pixels pass `--umi-min` (it warns when over half are filtered). It does not check that counts are integers.
 2. **`--umi-min 20` for Xenium.** The 100 default is inherited from R `spacexr` and is set for Visium/Slide-seq UMI distributions.
 3. **Match reference to sample condition.** If your cohort mixes diagnoses (e.g. malignancy A vs B), do *not* run every sample against one combined reference containing disease-specific malignant prototypes -- RCTD will misassign healthy/reactive cells of the wrong-diagnosis samples to those prototypes. Branch on the sample's metadata column and pick the reference per sample.
 4. **Avoid `/` in cell-type names.** zarr/h5 may convert it to `_`. Pick consistent ASCII labels.
 5. **Downsample large references** to ~500 cells/type; more rarely improves the fit.
-6. **Prefer `dtype="float32"` on consumer GPUs.** Concordance is verified; speedup is ~2×. Stay fp64 only for exact R `spacexr` validation runs.
+6. **Prefer `dtype="float32"` on consumer GPUs.** Up to 2.3× faster in doublet mode (median 1.6× on the 15 benchmark datasets, L40S; no gain on the smallest), with ≥ 99.997% of spot classes unchanged. Stay on fp64 for validation runs against R `spacexr` (closest to R's arithmetic), with R's sigma passed via `--sigma-override`; results agree closely, not bit for bit.
 
 ## Gotchas
 
@@ -321,8 +327,8 @@ saveRDS(spatial_obj, "spatial_rctd.rds")
 - **MT-gene case sensitivity vs R `spacexr`.** The DE filter is case-insensitive (`.lower().startswith("mt-")`), which drops human `MT-CO1`-style symbols from the candidate pool. R `spacexr`'s case-sensitive `grep("mt-", ...)` keeps them. Net effect on real data: rctd-py keeps fewer pixels because the differing `gene_list_bulk` shifts the per-pixel `counts_MIN` filter. Cell-type calls on the pixels both runs keep agree at ~100%.
 - **Concordance metrics that count filtered pixels as mismatches understate agreement.** When the pixel-filtering decision differs between rctd-py and R `spacexr`, a `concordance = same_first_type / total_pixels` will appear low even when the kept-pixel calls agree exactly. Compare assignments only on the pixel intersection.
 - **Doublet mode under-assigns fine subtypes on small panels.** When a reference fine subtype has markers that the spatial panel can't reliably detect (e.g. CD4 markers on a 300-500-gene Xenium panel), doublet mode falls back to a coarser label or `doublet_uncertain` rather than over-calling the subtype. Always `value_counts()` your subtype × group counts before slicing by subtype for downstream analysis -- sparsity at the call layer can look like a biological finding. To re-split a coarse pool into subtypes, use a reference classifier (SingleR, ProjecTILs) rather than a per-cell marker argmax (low capture biases argmax toward high-capture markers).
-- **`batch_size="auto"` on a shared GPU can OOM mid-run.** It sizes from free VRAM at startup; if another job grows afterwards, the IRWLS launch can fail. Pin `--batch-size 5000`-`8000` on contested nodes.
-- **Determinism.** Python runs are bit-reproducible (`np.random.default_rng(42)` throughout). R `spacexr` with `max_cores > 1` is not (`mclapply` advances the parent's global RNG as a side effect, perturbing the later `sample()` in `chooseSigma`). Use `--sigma-override` for run-to-run determinism matching a fixed R baseline.
+- **`batch_size="auto"` on a shared GPU can OOM mid-run.** It sizes from free VRAM at startup; if another job grows afterwards, the IRWLS launch can fail. Pin an integer `batch_size` (e.g. 5000-8000) on contested nodes; the CLI's `--batch-size` is always an integer (default 10000).
+- **Determinism.** rctd-py seeds its sampling (seed 42), so reruns on the same input and install pick the same sigma; bitwise reproducibility of GPU results is not guaranteed. R does not seed `sample()` in `choose_sigma_c`, so R runs can differ. Use `--sigma-override` to match a given R run.
 
 ## Multi-modal (RNA + protein)
 
@@ -333,7 +339,7 @@ Joint RNA + protein deconvolution (Gaussian/WLS protein block sharing the per-sp
 - **Never route continuous protein through count-fusion.** `run_rctd_multimodal([RNA, protein], fusion="count")` treats every modality as Poisson counts; fed continuous intensity (~1e6-1e7) the protein likelihood is flat and the joint collapses to a single constant weight vector across all pixels (corr ~0, dominant-type accuracy ~chance) -- confirmed on a ~62-plex CosMx dataset and a synthetic RNA-degenerate-pair test. Use `fusion="protein_wls"` (protein enters as a Gaussian/WLS block), never `fusion="count"`, for any continuous protein modality.
 - **Raise the UMI ceiling for protein-intensity values.** The RNA-count ceiling (`--umi-max` default 2e7) silently filters out protein-scale per-cell sums (e.g. CosMx protein ~3e7, ~6e7 for a 2-cell pseudospot) -- nearly all pixels get dropped and scoring crashes on a shape mismatch. When feeding protein-scale values, set the ceiling to 1e9-1e12; RNA totals are hundreds-to-thousands, so a high ceiling leaves RNA membership unchanged.
 - **`protein_weight="auto"` underweights a rich, informative panel.** The per-feature heuristic balances gradient magnitude at init, not marker informativeness -- on a deep, trustworthy panel (60+ markers) it lands low (~0.1) and only ties RNA-only, while a fixed weight ~4 can be best-in-class. Sweep it up to 4+ even for sharpening (not just to override a wrong RNA call) when the panel is deep. `protein_norm="arcsinh_robust"` handles both IF intensity and protein counts; prefer it over per-cell CLR for IF (CLR couples the few channels via the per-cell geometric mean).
-- **`class_df` (doublet mode, also on this branch) relaxes the singlet/doublet/reject confidence threshold for within-class ambiguity -- it does NOT change which type wins.** Grouping same-lineage subtypes (e.g. several fibroblast subtypes into one `Fibroblast` class) recovers more usable singlets with no accuracy downside, but it will NOT fix a wrong-type-assignment problem (that lives upstream in candidate scoring). Keep ungrouped any ambiguity you actually need to resolve.
+- **`class_df` (doublet mode, on `main` since v0.3.2) relaxes the singlet/doublet/reject confidence threshold for within-class ambiguity -- it does NOT change which type wins.** Grouping same-lineage subtypes (e.g. several fibroblast subtypes into one `Fibroblast` class) recovers more usable singlets with no accuracy downside, but it will NOT fix a wrong-type-assignment problem (that lives upstream in candidate scoring). Keep ungrouped any ambiguity you actually need to resolve.
 
 ## Resources
 

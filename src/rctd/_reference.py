@@ -14,6 +14,14 @@ class Reference:
     """scRNA-seq reference for RCTD decomposition.
 
     Computes cell type mean expression profiles and selects DE genes.
+
+    Args:
+        adata: Reference counts (cells x genes) with cell type labels in ``.obs``.
+        cell_type_col: Column of ``adata.obs`` holding the cell type labels.
+        cell_min: Cell types with fewer cells are dropped (R's ``CELL_MIN_INSTANCE``,
+            where R stops instead). Raises ``ValueError`` if fewer than 2 types remain.
+        n_max_cells: Cells kept per type, sampled at random (seed 42) above this.
+        min_UMI: Cells with fewer total UMIs are dropped.
     """
 
     def __init__(

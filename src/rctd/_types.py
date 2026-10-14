@@ -51,12 +51,14 @@ class RCTDConfig(NamedTuple):
     step_size: float = 0.3
     #: Largest count value in the likelihood tables.
     K_val: int = 1000
-    #: ``"float64"`` (R arithmetic) or ``"float32"`` (1.2-2x faster and half the VRAM on GPUs
-    #: with limited fp64 throughput; measured on an L40S).
+    #: ``"float64"`` (R arithmetic) or ``"float32"`` (on GPUs with limited fp64 throughput:
+    #: up to 2.3x faster in doublet mode, median 1.6x, and about half the VRAM on
+    #: whole-transcriptome data; measured on an L40S).
     dtype: str = "float64"
     #: ``"auto"`` (GPU if available), ``"cpu"`` or ``"cuda"``.
     device: str = "auto"
-    #: Use ``torch.compile``; ``False`` forces eager mode.
+    #: Use ``torch.compile``. ``False`` skips it (the box-QP solver then uses TorchScript, the
+    #: rest runs eagerly), for environments without CUDA development headers.
     compile: bool = True
     #: ``{cell_type -> class}`` mapping for hierarchical fallback in doublet mode;
     #: ``None`` makes each type its own class.
@@ -149,7 +151,7 @@ class DoubletResult(NamedTuple):
     second_class: np.ndarray
     #: (N,) score of the best pair of types (negative log-likelihood).
     min_score: np.ndarray
-    #: (N,) score of the best single-type fit.
+    #: (N,) singlet score used for the singlet / doublet call (R's ``results_df$singlet_score``).
     singlet_score: np.ndarray
     #: Cell type names; column order of ``weights``.
     cell_type_names: list[str]
@@ -170,7 +172,7 @@ class MultiResult(NamedTuple):
 
     #: (N, K) full-mode weights fitted before type selection.
     weights: np.ndarray
-    #: (N, MAX_MULTI_TYPES) weights of the selected types, padded with 0.
+    #: (N, MAX_MULTI_TYPES) weights of the selected types (summing to 1), padded with 0.
     sub_weights: np.ndarray
     #: (N, MAX_MULTI_TYPES) indices of the selected types, padded with -1.
     cell_type_indices: np.ndarray

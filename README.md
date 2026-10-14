@@ -1,8 +1,8 @@
 <p align="center">
-  <img src="docs/logo_max.png" alt="rctd-py logo" width="500">
+  <img src="https://raw.githubusercontent.com/p-gueguen/rctd-py/main/docs/logo_max.png" alt="rctd-py logo" width="500">
   <h1 align="center">rctd-py</h1>
   <p align="center">
-    <strong>Spatial transcriptomics deconvolution — 4–41x faster than R spacexr with GPU</strong>
+    <strong>Spatial transcriptomics deconvolution, 10–57x faster than R spacexr on a GPU (doublet mode)</strong>
   </p>
   <p align="center">
     <a href="https://github.com/p-gueguen/rctd-py/actions/workflows/ci.yml"><img src="https://github.com/p-gueguen/rctd-py/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
@@ -14,7 +14,7 @@
   </p>
 </p>
 
-> **Latest: v0.3.9** — the CLI reads SpatialData / AnnData Zarr stores directly (`--table` picks one of several tables, #28), and `RCTD_Q_MATRICES` points offline / HPC installs at a staged copy of the Q-matrices (#29). See [CHANGELOG.md](CHANGELOG.md).
+> **Latest: v0.3.9**: `--table` picks one table from a SpatialData store with several (#28). v0.3.8 added SpatialData / AnnData Zarr input to the CLI (#28) and `RCTD_Q_MATRICES` for offline / HPC installs (#29). See the [changelog](https://github.com/p-gueguen/rctd-py/blob/main/CHANGELOG.md).
 
 ---
 
@@ -28,11 +28,11 @@ Deconvolve spatial transcriptomics spots (Visium, Xenium, MERFISH, Slide-seq, �
 
 | | |
 |---|---|
-| ⚡ **4–41x faster than R spacexr** | Xenium 58k cells, multi mode: **3.7 min** vs 2.6 hours in R |
+| ⚡ **10–57x faster than R spacexr** | Doublet mode on 15 datasets, one GPU vs 8 R cores. Xenium Prime 5K, 503k cells fitted: **34 min** vs 31 hours in R |
 | 🎯 **Agrees with R spacexr** | 99.2–99.7% dominant-type agreement; most of the gap is sigma, which R itself estimates differently run to run ([details](https://rctd-py.readthedocs.io/en/latest/r_spacexr.html)) |
-| 🔧 **Drop-in replacement** | Same algorithm and parameter names as spacexr |
-| 📦 **`pip install rctd-py`** | Pure Python, works on CPU out of the box, uses a GPU when there is one |
-| 🧬 **Whole-transcriptome ready** | 10x **Atera** WTA (18,028 genes): 714k cells deconvolved in ~10 min on GPU |
+| 🔧 **Familiar to spacexr users** | Same algorithm and, with a few exceptions, the same parameter names ([mapping](https://rctd-py.readthedocs.io/en/latest/r_spacexr.html)) |
+| 📦 **`pip install rctd-py`** | Pure Python, works on CPU out of the box (3.7–14x faster than R in doublet mode), uses a GPU when there is one |
+| 🧬 **Whole-transcriptome ready** | 10x **Atera** WTA (18,028-gene panel): 714k cells deconvolved in 9 min on GPU (doublet mode, 7 cell types) |
 
 ## Installation
 
@@ -59,10 +59,10 @@ result = run_rctd(spatial, reference, mode="doublet")
 | Mode | What it does | Best for |
 |------|-------------|----------|
 | **`full`** | Weights for all K cell types per pixel | Visium spots, continuous mixtures |
-| **`doublet`** | Singlet or doublet call per pixel, top 1–2 types | Slide-seq, Visium HD bins, segmented cells |
-| **`multi`** | Greedy selection of up to 4 types per pixel | Xenium, MERFISH, dense platforms |
+| **`doublet`** | Singlet or doublet call per pixel, top 1–2 types | Slide-seq, Visium HD bins, segmented cells (Xenium, MERFISH, CosMx) |
+| **`multi`** | Greedy selection of up to 4 types per pixel | Spots expected to hold more than 2 types (an alternative to `full`) |
 
-📓 [Tutorial](https://rctd-py.readthedocs.io/en/latest/tutorials/slideseq_cerebellum.html) ([marimo notebook](examples/tutorial.py)) · 🤖 [Claude Code skill](.claude/skills/rctd-py/SKILL.md) (drop into `~/.claude/skills/` for assisted coding with rctd-py)
+📓 [Tutorial](https://rctd-py.readthedocs.io/en/latest/tutorials/slideseq_cerebellum.html) ([marimo notebook](https://github.com/p-gueguen/rctd-py/blob/main/examples/tutorial.py)) · 🤖 [Claude Code skill](https://github.com/p-gueguen/rctd-py/blob/main/.claude/skills/rctd-py/SKILL.md) (copy the `.claude/skills/rctd-py/` folder into `~/.claude/skills/` for assisted coding with rctd-py)
 
 ## Command Line
 
@@ -78,10 +78,11 @@ All options and the output layout: [command line reference](https://rctd-py.read
 ## Benchmarks
 
 <p align="center">
-  <img src="docs/benchmark.png" alt="Benchmark: CPU vs GPU scalability, runtime, and memory" width="900">
+  <img src="https://raw.githubusercontent.com/p-gueguen/rctd-py/main/docs/benchmark.png" alt="Doublet mode wall time of R spacexr, rctd-py CPU and rctd-py GPU on 15 datasets" width="900">
 </p>
 
-Runtime and memory tables per dataset and mode: [benchmarks](https://rctd-py.readthedocs.io/en/latest/benchmarks.html).
+rctd-py on one NVIDIA L40S or 8 CPU threads, R spacexr 2.2.1 on 8 cores; rctd-py points are the
+median of 3 runs. Full and multi mode, per-dataset tables and memory: [benchmarks](https://rctd-py.readthedocs.io/en/latest/benchmarks.html).
 
 ## Citation
 
@@ -102,8 +103,8 @@ If you use rctd-py, please cite the original RCTD paper:
 
 ## Contributing
 
-Contributions welcome! See [CONTRIBUTING.md](CONTRIBUTING.md) for setup instructions, or open an [issue](https://github.com/p-gueguen/rctd-py/issues).
+Contributions welcome! See [CONTRIBUTING.md](https://github.com/p-gueguen/rctd-py/blob/main/CONTRIBUTING.md) for setup instructions, or open an [issue](https://github.com/p-gueguen/rctd-py/issues).
 
 ## License
 
-[GNU General Public License v3.0](LICENSE)
+[GNU General Public License v3.0](https://github.com/p-gueguen/rctd-py/blob/main/LICENSE)
