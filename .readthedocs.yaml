@@ -8,9 +8,11 @@ build:
     # hatch-vcs derives the version from git tags, which a shallow clone lacks
     post_checkout:
       - git fetch --unshallow --tags || true
-    # CPU-only torch: the docs only import rctd, and the default CUDA wheel is several GB
+    # CPU-only torch: the docs only import rctd, and the default CUDA wheel is several GB.
+    # PyPI stays reachable for torch's own dependencies (the CPU index alone breaks pip on
+    # typing-extensions); the "+cpu" local version still wins over PyPI's torch.
     pre_install:
-      - pip install torch --index-url https://download.pytorch.org/whl/cpu
+      - pip install torch --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple
 python:
   install:
     - method: pip
