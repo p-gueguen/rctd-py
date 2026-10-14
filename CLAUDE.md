@@ -125,31 +125,9 @@ Tests use `torch.compile(dynamic=True)` which has a ~60s JIT warmup on first run
 
 - `test_batch_matches_single` uses `atol=5e-5` — batch vs single-pixel IRWLS can differ slightly due to floating-point convergence order
 
-### Compile / JIT dispatch dynamics
+### Compile / JIT dispatch
 
-`_solve_box_qp_batch` (`_irwls.py:466-515`) has three paths:
-
-| `_USE_COMPILE` state | Path | Has fallback? |
-|---|---|---|
-| `False` (or `_solve_box_qp_batch_compiled is None`) | `_solve_box_qp_batch_adaptive_jit` (TorchScript JIT) | n/a |
-| `None` (first call) | try compiled, except RuntimeError → fall back to eager | yes |
-| `True` (after first success) | `_solve_box_qp_batch_compiled` directly | **no** |
-
-**Footgun:** the lazy try/except only protects the *first* call. If a later
-recompile fails (different shape, transient toolchain breakage), there is no
-automatic recovery. For environments with unreliable torch.compile, set
-`compile=False` explicitly via `RCTDConfig`.
-
-**v0.3.2 behavior change:** the `compile=False` path used to return
-`_solve_box_qp_batch_impl` (eager Python loop). It now returns
-`_solve_box_qp_batch_adaptive_jit`. The two paths converge to ~2e-4
-numerical agreement (different op ordering). When writing tests that
-assert equivalence, compare against `_solve_box_qp_batch_adaptive_jit`,
-not `_solve_box_qp_batch_impl`. See commit `c068109`.
-
-**`calc_q_all`** (`_likelihood.py:320-353`) has the same lazy fallback
-pattern but its `compile=False` path still routes to the eager
-`_calc_q_all_impl` — not changed in v0.3.2.
+Before touching `_solve_box_qp_batch` or `calc_q_all` dispatch, read `.claude/docs/compile-jit.md` (why `compile=False` takes the TorchScript path, `_USE_COMPILE` states).
 
 ## R spacexr Concordance
 
@@ -180,48 +158,7 @@ The tutorial is a marimo notebook at `examples/tutorial.py`. The docs ship it as
 notebook, `docs/tutorials/slideseq_cerebellum.ipynb`; regenerate it on a GPU host with
 `python docs/tutorials/export.py` (see its docstring).
 
-### Marimo gotchas
-
-**Figures in static HTML export**: `plt.show()` does NOT produce capturable output in marimo's static export. The figure must be the **last expression** in the cell (like a return value), and it must use a **non-underscore name** (underscore-prefixed variables are cell-private in marimo and won't be rendered):
-
-```python
-# WRONG — no output in static HTML
-_fig, _ax = plt.subplots()
-_ax.plot(x, y)
-plt.show()
-return
-
-# CORRECT — figure rendered in static HTML
-fig_plot, ax_plot = plt.subplots()
-ax_plot.plot(x, y)
-fig_plot  # last expression, non-underscore name
-```
-
-**Underscore-prefixed names are cell-private**: Functions/variables starting with `_` (e.g., `_fig`, `_detect_ct_col`) are NOT exported from a cell to other cells or to static HTML output.
-
-**Deprecated matplotlib API**: Use `plt.colormaps.get_cmap('tab20').resampled(n)` instead of `plt.cm.get_cmap('tab20', n)` (deprecated in matplotlib 3.7+).
-
-### Doc-vs-code drift audits
-
-Tutorial doc strings have drifted from code multiple times (e.g. v0.3.x
-shipped with three errors in `examples/tutorial.py`: a "weights sum to 1"
-claim that was never true under `constrain=FALSE`, a `N_fit` default of
-1000 vs actual 100, and a `doublet_mode_alpha` parameter that has never
-existed in any version — `git log --all -S doublet_mode_alpha` shows it
-only in tutorial commits).
-
-After non-trivial changes to `RCTDConfig` defaults, mode behavior, or
-weight normalization, run a verification script that executes the
-tutorial workflow end-to-end and prints the empirical answer next to the
-documented claim. Reference fix: commit `a05067f` (source) + `428da09`
-(re-rendered HTML). Cross-check parameter names against `RCTDConfig` in
-`_types.py` to catch hallucinated names early.
-
-**Spot class encoding** is 0-indexed (unlike R spacexr which is 1-indexed):
-```
-0 = reject, 1 = singlet, 2 = doublet_certain, 3 = doublet_uncertain
-```
-Use `SPOT_CLASS_NAMES` from `rctd._types` (exported in public API) — never hardcode the mapping.
+Before editing `examples/tutorial.py` or a tutorial claim, read `.claude/docs/tutorial.md` (marimo export gotchas, doc-vs-code drift audits, spot-class encoding).
 
 ## CI
 
@@ -232,25 +169,7 @@ uv run ruff check src/ tests/
 uv run ruff format src/ tests/
 ```
 
-### PyTorch API compatibility
-
-PyTorch renamed `cuda.get_device_properties().total_mem` → `total_memory` in 2.10+. Use `getattr` fallback pattern (see `cli.py:59`). CI runs an older PyTorch than the GPU nodes — test both paths.
-
-### GitHub Actions runner toolchain ICEs
-
-The ubuntu-24.04 runner image periodically rolls forward to a g++ that
-ICEs on Inductor's `vec512.h` C++ codegen:
-
-```
-internal compiler error: in gimple_duplicate_bb, at tree-cfg.cc:6545
-```
-
-This surfaces in `Run slow integration + R concordance tests` and is a
-GCC bug we don't control. **Workaround:** pin slow-test fixtures that
-exercise the box-QP solver to `compile=False` so they take the
-TorchScript JIT path (no g++ involved). Reference: `tests/test_concordance.py`
-fixture comment + commit `b2a206f`. Don't try to "fix" this by upgrading
-actions — it's intermittent and tied to the runner image version.
+CI failing on a PyTorch API change or a runner g++ ICE: `.claude/docs/ci-notes.md`.
 
 ### Publish workflow runs on tag, not on push
 
@@ -264,89 +183,14 @@ Before tagging, manually run the full matrix on the release branch.
 `publish.yml` already auto-creates the GitHub Release entity from
 `CHANGELOG.md` (PR #16 / commit `b80ae88`).
 
-## Common User Confusion (issue tracker patterns)
+## Answering issues
 
-### `result.weights` on `MultiResult` / `DoubletResult` is the **full-mode** matrix
+Recurring user confusions (full-mode `result.weights` in doublet/multi results, "R weights are on the simplex"): `.claude/docs/issue-patterns.md`.
 
-External users (e.g. issue #18) consistently expect `MultiResult.weights`
-to be the multi-mode answer. It's not — it's the full-mode candidate
-matrix used internally for type selection (`_multi.py:173, 348`),
-unnormalized.
+## R spacexr source
 
-The actual multi-mode answer is `sub_weights[n, :n_types[n]]` paired
-with `cell_type_indices[n, :n_types[n]]` and `n_types[n]` — these are
-normalized to sum=1. Same shape for doublet: `weights_doublet` is the
-(N, 2) normalized two-type result; `weights` is the unnormalized
-full-mode candidate matrix.
-
-This is preserved for R spacexr compatibility but it's a footgun. When
-extending the README "Output schema" table or doublet/multi tutorial
-sections, call this out explicitly.
-
-### "R weights are on the simplex" misconception
-
-R `myRCTD@results$weights` is **also** unnormalized — same
-`constrain=FALSE` NNLS output as ours. The R vignette explicitly calls
-`normalize_weights(results$weights)` before stuffing into the Seurat
-Assay. Users reading R Section 6 (about the Assay) easily miss the
-normalize step earlier and assume the raw `results$weights` is on the
-simplex.
-
-When responding to such questions, link to the R source line that does
-the normalize — it's the most convincing evidence. See R spacexr
-reference table below.
-
-## R spacexr Source Reference
-
-For citations and cross-checks (avoid re-grepping each time):
-
-| Topic | R location |
-|-------|------------|
-| IRWLS damping (alpha=0.3 → our `step_size`) | [`R/IRWLS.R:95`](https://github.com/dmcable/spacexr/blob/master/R/IRWLS.R#L95) |
-| Multi candidate threshold (0.01 → our `WEIGHT_THRESHOLD`) | [`R/RCTD_helper.R:76, 153`](https://github.com/dmcable/spacexr/blob/master/R/RCTD_helper.R) |
-| `normalize_weights` definition | [`R/postProcessing.R:135-137`](https://github.com/dmcable/spacexr/blob/master/R/postProcessing.R#L135-L137) |
-| Tutorial Assay construction (the `# normalize the cell type proportions to sum to 1.` line) | [`vignettes/spatial-transcriptomics.Rmd:135-143`](https://github.com/dmcable/spacexr/blob/master/vignettes/spatial-transcriptomics.Rmd#L135-L143) |
-| `solveOLS` / `solveIRWLS.weights` | `R/IRWLS.R:1-50` |
-| `process_bead_doublet` / `check_pairs_type` | `R/RCTD_helper.R:44-168` |
+Where each spacexr function lives and how to read the installed R source: `.claude/docs/r-spacexr-source.md`.
 
 ## Benchmarking
 
-GPU benchmarks are in `benchmarks/`. Submit via SLURM:
-
-```bash
-sbatch benchmarks/sbatch_bench_compare.sh   # baseline vs optimized comparison
-sbatch benchmarks/sbatch_bench_gpu.sh        # optimized-only timing
-```
-
-## Autoresearch
-
-Autonomous optimization framework inspired by [karpathy/autoresearch](https://github.com/karpathy/autoresearch). The agent modifies solver code, benchmarks, keeps/discards based on speed + correctness.
-
-### How to run
-
-1. Read `benchmarks/program.md` for full instructions
-2. Create branch: `git checkout -b autoresearch/<tag>`
-3. Establish baseline: run benchmark as-is
-4. Loop: modify → commit → benchmark → keep/discard
-
-### Key rules
-
-- **Metric**: `elapsed_s` (lower is better)
-- **Correctness**: `weights_hash` must match baseline — if it changes, discard
-- **Files to modify**: `src/rctd/_irwls.py`, `src/rctd/_likelihood.py`, `src/rctd/_simplex.py`
-- **Read-only**: `benchmarks/bench_gpu.py`, `tests/`
-- **Log results** to `results.tsv` (tab-separated)
-- **GPU partition**: target an L40S or Blackwell (sm_100+) node via your scheduler (e.g. `--partition=GPU --gres=gpu:1` for SLURM clusters that expose GPUs as a generic resource)
-
-### Profiling hot spots
-
-Pre-optimization CPU profiling (2k pixels): `calc_q_all` 36%, QP solver 27%, eigh (PSD) 14%, bmm 9%.
-
-Post-optimization: `calc_q_all` is now a fused Triton kernel (single launch), K=2 PSD/QP are analytical (zero cuSOLVER calls in doublet mode). Run `torch.profiler` to identify remaining GPU-specific bottlenecks.
-
-### Benchmarking tips
-
-- **GPU benchmarks must pin to a specific node** via `--nodelist=<your-node>` for reproducible comparisons (different GPU SKUs and even different nodes of the same SKU produce different timings)
-- **Warmup is mandatory**: torch.compile and Triton JIT have ~60s first-call overhead. Run a warmup dataset before the timed benchmarks
-- **A/B comparisons**: Use `benchmarks/SBATCH_compare_optimizations.sh` — checks out baseline vs optimized source files, runs both on the same GPU node back-to-back
-- **Spatial data loading**: Use `sc.read_10x_h5()` (scanpy), NOT `anndata.read_h5()` which doesn't exist
+Benchmark scripts, the autoresearch loop, profiling hot spots: `.claude/docs/benchmarking.md`.
