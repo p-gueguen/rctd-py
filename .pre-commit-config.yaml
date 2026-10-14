@@ -10,7 +10,7 @@ repos:
     rev: v0.15.6
     hooks:
       - id: ruff-format
-        files: ^(src|tests)/.*\.py$
+        files: ^(src|tests|docs)/.*\.py$
       - id: ruff-check
-        files: ^(src|tests)/.*\.py$
+        files: ^(src|tests|docs)/.*\.py$
         args: [--fix]
