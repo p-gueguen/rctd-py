@@ -41,9 +41,15 @@ jobs:
             echo "Release $tag already exists, skipping."
             exit 0
           fi
+          # A release candidate (v0.4.0rc1) is a GitHub pre-release and takes the notes of its
+          # final version (## [0.4.0]); pip skips it unless asked for it explicitly.
+          version="${tag#v}"
+          base="$(echo "$version" | sed -E 's/(a|b|rc)[0-9]+$//')"
+          prerelease=""
+          if [ "$base" != "$version" ]; then prerelease="--prerelease"; fi
           # Extract the section for this version from CHANGELOG.md (between "## [x.y.z]" and the next "## [")
           notes_file="$(mktemp)"
-          awk -v tag="${tag#v}" '
+          awk -v tag="$base" '
             $0 ~ "^## \\[" tag "\\]" {flag=1; next}
             flag && /^## \[/ {exit}
             flag {print}
@@ -51,7 +57,7 @@ jobs:
           if [ ! -s "$notes_file" ]; then
             echo "No CHANGELOG entry found for $tag; creating release with empty notes."
           fi
-          gh release create "$tag" \
+          gh release create "$tag" $prerelease \
             --repo "$GITHUB_REPOSITORY" \
             --title "$tag" \
             --notes-file "$notes_file" \

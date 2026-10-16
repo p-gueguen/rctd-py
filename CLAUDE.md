@@ -139,8 +139,8 @@ like for like with `run_rctd(..., sigma_override=round(100 * rctd@internal_vars$
 **Measure `first_type` too, not only dominant type or spot class.** The 2026-10 audit found four
 per-pixel differences on `main` that both of those metrics hid: singlets relabelled to the best
 singlet-score type, cell types sorted by code point instead of R's factor order, `N_fit` 100 vs
-R's 1000, and an inexact 50-sweep QP. Fixes and a pixel-level parity test (R's own per-pixel
-inputs in, identical calls out) are on branch `fix/r-parity`.
+R's 1000, and an inexact 50-sweep QP. All four are fixed in 0.4.0, with a pixel-level parity test
+(`tests/test_r_parity.py`: R's own per-pixel inputs in, identical calls out).
 
 Comparison hygiene:
 

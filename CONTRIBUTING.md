@@ -13,25 +13,25 @@ cd rctd-py
 ```
 
 2. **Install editable mode with development dependencies:**
-Using `uv`, this will automatically create a `.venv`, download strict dependencies, and install the package from source in an editable path:
+Using `uv`, create a `.venv` first, then install the package from source in an editable path with the development dependencies:
 ```bash
+uv venv
 uv pip install -e ".[dev]"
 ```
 
 3. **Install pre-commit hooks (recommended):**
 We use [pre-commit](https://pre-commit.com/) to mirror the CI lint/format checks locally so that `ruff format --check` failures are caught at commit time, not at PR review:
 ```bash
-uv pip install pre-commit
-pre-commit install
+pre-commit install   # pre-commit is part of the dev extra
 ```
-Once installed, `ruff format` and `ruff check --fix` run automatically on every commit against `src/` and `tests/`. To run them manually across the whole tree (e.g. after rebasing): `pre-commit run --all-files`.
+Once installed, `ruff format` and `ruff check --fix` run automatically on every commit against the Python files in `src/`, `tests/` and `docs/`. To run them manually across the whole tree (e.g. after rebasing): `pre-commit run --all-files`.
 
 ## Running Tests
 
-`rctd-py` heavily relies on `pytest` to guarantee mathematical correctness and exact equivalency against the R `spacexr` reference implementation.
+`rctd-py` relies on `pytest` to check mathematical correctness and agreement with the R `spacexr` reference implementation within set tolerances.
 
 ```bash
-# Run the full test suite
+# Run the test suite (performance tests are excluded by default; add -m performance to run them)
 uv run pytest tests/ -v
 
 # Run with coverage report
@@ -44,10 +44,10 @@ We use `ruff`, an extremely fast Python linter and formatter, to ensure all file
 
 ```bash
 # Automatically format all python files
-uv run ruff format src/ tests/
+uv run ruff format src/ tests/ docs/
 
 # Automatically fix any linting errors like unused imports
-uv run ruff check src/ tests/ --fix
+uv run ruff check src/ tests/ docs/ --fix
 ```
 
 ## Submitting Pull Requests

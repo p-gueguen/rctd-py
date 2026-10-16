@@ -13,7 +13,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from rctd import RCTDConfig, Reference
+from rctd import RCTDConfig, Reference, run_rctd
 from rctd._doublet import run_doublet_mode
 from rctd._rctd import RCTD
 
@@ -149,3 +149,34 @@ class TestRConcordance:
         assert metrics["median_corr"] >= 0.90, (
             f"Median per-bead correlation {metrics['median_corr']:.4f} < 0.90"
         )
+
+
+@pytest.mark.slow
+def test_doublet_calls_match_r_exactly(vignette_data):
+    """Same type order as R's factor levels -> identical spot class and types on every bead.
+
+    The vignette is small enough that sigma uses every eligible bead on both sides (no random
+    subset), so nothing random separates the two implementations.
+    """
+    ref = vignette_data["reference"].copy()
+    names = vignette_data["cluster_names"]
+    ref.obs["cell_type"] = pd.Categorical(ref.obs["cell_type"], categories=names)
+    res = run_rctd(
+        vignette_data["spatial"],
+        Reference(ref, cell_type_col="cell_type"),
+        mode="doublet",
+        config=RCTDConfig(UMI_min=100, compile=False),
+        batch_size=200,
+    )
+    r = pd.read_csv(FIXTURES / "r_results_df.csv").set_index("barcode")
+    bc = np.asarray(vignette_data["spatial"].obs_names)[res.pixel_mask]
+    r = r.loc[bc]
+    cls = np.array(["reject", "singlet", "doublet_certain", "doublet_uncertain"])
+    py_names = np.asarray(res.cell_type_names)
+    assert list(py_names) == names
+    np.testing.assert_array_equal(cls[res.spot_class], r["spot_class"].to_numpy())
+    np.testing.assert_array_equal(py_names[res.first_type], [names[i - 1] for i in r["first_type"]])
+    np.testing.assert_array_equal(
+        py_names[res.second_type], [names[i - 1] for i in r["second_type"]]
+    )
+    np.testing.assert_allclose(res.min_score, r["min_score"].to_numpy(), rtol=1e-3)

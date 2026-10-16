@@ -3,17 +3,58 @@
 Ports get_cell_type_info, get_norm_ref, get_de_genes from R spacexr.
 """
 
+import unicodedata
+import warnings
 from collections import Counter
 
 import anndata
 import numpy as np
+import pandas as pd
+from natsort import natsorted
 from scipy import sparse
+
+# R's default collation on Linux/macOS builds is ICU (CLDR root): spaces and punctuation, then
+# symbols, then digits, then letters case-insensitively, ties lowercase first. Order measured from
+# R's sort() of the printable ASCII characters.
+_R_ORDER = " _-,;:!?.'\"()[]{}@*/\\&#%`^+<=>|~$0123456789abcdefghijklmnopqrstuvwxyz"
+_R_RANK = {c: i for i, c in enumerate(_R_ORDER)}
+
+
+def r_sort_key(name: str):
+    """Sort key giving R's factor-level order, so cell-type indices match spacexr's.
+
+    spacexr falls back to "the first type" by index (doublet mode, one candidate), so the
+    order changes results, not only the column order.
+    """
+    if isinstance(name, (int, float, np.integer, np.floating)) and not isinstance(name, bool):
+        return (0, float(name), (), str(name))  # numeric labels: R's factor() sorts them by value
+    name = str(name)
+    base = "".join(c for c in unicodedata.normalize("NFD", name) if not unicodedata.combining(c))
+    primary = tuple(_R_RANK.get(c.lower(), len(_R_RANK) + ord(c.lower())) for c in base)
+    return (1, primary, tuple(c.isupper() for c in base), name)
+
+
+def _is_sorted(values) -> bool:
+    """True for an order that carries no meaning: sorted by code point (pandas) or natsorted
+    (anndata, when it writes string columns)."""
+    try:
+        return list(values) in (sorted(values), natsorted(values))
+    except TypeError:
+        return False
 
 
 class Reference:
     """scRNA-seq reference for RCTD decomposition.
 
     Computes cell type mean expression profiles and selects DE genes.
+
+    Args:
+        adata: Reference counts (cells x genes) with cell type labels in ``.obs``.
+        cell_type_col: Column of ``adata.obs`` holding the cell type labels.
+        cell_min: Cell types with fewer cells are dropped (R's ``CELL_MIN_INSTANCE``,
+            where R stops instead). Raises ``ValueError`` if fewer than 2 types remain.
+        n_max_cells: Cells kept per type, sampled at random (seed 42) above this.
+        min_UMI: Cells with fewer total UMIs are dropped.
     """
 
     def __init__(
@@ -27,20 +68,42 @@ class Reference:
         if cell_type_col not in adata.obs.columns:
             raise ValueError(f"Column '{cell_type_col}' not found in adata.obs")
 
-        cell_types = np.asarray(adata.obs[cell_type_col].values)
-        unique_types = sorted(set(cell_types))
+        col = adata.obs[cell_type_col]
+        n_missing = int(pd.isna(col).sum())
+        if n_missing:
+            raise ValueError(
+                f"{n_missing} cells have a missing cell type in '{cell_type_col}'; "
+                "remove them or give them a label."
+            )
+        cell_types = np.asarray(col.values)
+        # Type order follows spacexr, which uses levels(cell_types). A categorical with a
+        # deliberate order (an R factor's levels) keeps it; one sorted by code point (pandas) or
+        # natsorted (anndata, for every string column) carries no order and is sorted as R would.
+        cats = list(col.cat.categories) if isinstance(col.dtype, pd.CategoricalDtype) else None
+        if cats is not None and not _is_sorted(cats):
+            present = set(cell_types)
+            unique_types = [c for c in cats if c in present]
+        else:
+            unique_types = sorted(set(cell_types), key=r_sort_key)
 
         # Check minimum cell counts
         type_counts = Counter(cell_types)
         low_types = [ct for ct, count in type_counts.items() if count < cell_min]
         if low_types:
             remaining = [ct for ct in unique_types if ct not in low_types]
+            dropped = ", ".join(str(ct) for ct in low_types)
             if len(remaining) < 2:
                 raise ValueError(
                     f"After filtering cell types with fewer than {cell_min} cells "
-                    f"({', '.join(low_types)}), fewer than 2 cell types remain. "
+                    f"({dropped}), fewer than 2 cell types remain. "
                     f"Lower cell_min or add more cells."
                 )
+            warnings.warn(
+                f"Dropped {len(low_types)} cell type(s) with fewer than {cell_min} cells: "
+                f"{dropped}. R spacexr stops here instead; lower cell_min to keep them.",
+                UserWarning,
+                stacklevel=2,
+            )
             unique_types = remaining
             # Keep only cells from valid types
             keep_type_mask = np.isin(cell_types, unique_types)
@@ -153,8 +216,9 @@ class Reference:
         # Start with all gene indices
         gene_list = list(range(self.n_genes))
 
-        # Filter mitochondrial genes (case-insensitive mt- prefix)
-        gene_list = [g for g in gene_list if not self.gene_names[g].lower().startswith("mt-")]
+        # Drop mitochondrial genes as R does: grep("mt-", gene_list), case-sensitive and anywhere in
+        # the name, so mouse mt-Co1 goes and human MT-CO1 stays a candidate
+        gene_list = [g for g in gene_list if "mt-" not in self.gene_names[g]]
 
         # Filter by spatial observation count if provided
         if spatial_bulk is not None:

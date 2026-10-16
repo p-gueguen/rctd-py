@@ -38,7 +38,7 @@ class TestBoxQPFallback:
         """
         monkeypatch.setattr(_irwls, "_USE_COMPILE", False)
         D, d, lb = _make_small_qp_problem()
-        result = _irwls._solve_box_qp_batch(D, d, lb)
+        result = _irwls._solve_box_qp_batch_fixed(D, d, lb)
         expected = _irwls._solve_box_qp_batch_adaptive_jit(D, d, lb)
         torch.testing.assert_close(result, expected)
 
@@ -54,7 +54,7 @@ class TestBoxQPFallback:
         D, d, lb = _make_small_qp_problem()
         with warnings.catch_warnings(record=True) as w:
             warnings.simplefilter("always")
-            result = _irwls._solve_box_qp_batch(D, d, lb)
+            result = _irwls._solve_box_qp_batch_fixed(D, d, lb)
             assert len(w) == 1
             assert "torch.compile failed" in str(w[0].message)
 

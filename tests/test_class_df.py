@@ -6,7 +6,6 @@ import pytest
 from rctd._doublet import run_doublet_mode
 from rctd._likelihood import compute_spline_coefficients, load_cached_q_matrices
 from rctd._types import (
-    SPOT_CLASS_SINGLET,
     DoubletResult,
     RCTDConfig,
 )
@@ -180,20 +179,3 @@ def test_class_df_affects_first_class_flag(synthetic_data):
     assert any_flagged, (
         "Single-class class_df must flip at least one first/second_class flag to True"
     )
-
-
-def test_class_df_cross_class_pixels_keep_certain_classification(synthetic_data):
-    """Pixels that are clear cross-class doublets should remain doublet_certain without class flag.
-
-    A singlet pixel (one type dominant) under a two-class scheme should NOT have class flags
-    set -- the classification is confident at type level.
-    """
-    cell_type_names = synthetic_data["cell_type_names"]
-    two_class = {ct: ("ClassA" if i < 2 else "ClassB") for i, ct in enumerate(cell_type_names)}
-
-    res = _run(synthetic_data, class_df=two_class)
-
-    # For clear singlets, class flags should be False (no ambiguity)
-    singlet_mask = res.spot_class == SPOT_CLASS_SINGLET
-    if singlet_mask.any():
-        assert not res.first_class[singlet_mask].any(), "Singlets should not have first_class=True"

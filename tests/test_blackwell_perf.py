@@ -18,7 +18,6 @@ import torch
 from rctd._irwls import (
     _cuda_eigh_threshold,
     _psd_batch,
-    _solve_box_qp_batch,
     _solve_box_qp_batch_adaptive_jit,
     _solve_box_qp_batch_impl,
 )
@@ -327,7 +326,7 @@ def test_solve_box_qp_dispatch_uses_jit_when_compile_disabled():
     saved = _irwls._USE_COMPILE
     try:
         _irwls._USE_COMPILE = False
-        x_dispatch = _solve_box_qp_batch(D, d, lb, n_sweeps=50)
+        x_dispatch = _irwls._solve_box_qp_batch_fixed(D, d, lb, n_sweeps=50)
         x_jit = _solve_box_qp_batch_adaptive_jit(D, d, lb, n_sweeps=50)
         np.testing.assert_allclose(x_dispatch.numpy(), x_jit.numpy(), atol=1e-6)
     finally:

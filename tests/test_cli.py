@@ -103,6 +103,19 @@ def test_validate_missing_column(h5ad_pair):
     assert "fail" in result.output.lower() or "FAIL" in result.output
 
 
+def test_validate_fails_on_missing_labels(h5ad_pair):
+    """validate must fail on a reference that `run` rejects (missing cell-type labels)."""
+    sp_path, ref_path = h5ad_pair
+    ref = anndata.read_h5ad(ref_path)
+    ref.obs["cell_type"] = ref.obs["cell_type"].astype(object)
+    ref.obs.iloc[:3, ref.obs.columns.get_loc("cell_type")] = np.nan
+    ref.write_h5ad(ref_path)
+    result = CliRunner().invoke(main, ["validate", str(sp_path), str(ref_path), "--json"])
+    data = json.loads(result.output)
+    assert data["status"] == "fail"
+    assert "3 cells" in data["checks"]["cell_type_col_exists"]["detail"]
+
+
 def test_validate_no_gene_overlap(tmp_path):
     """rctd validate fails when spatial and reference share no genes."""
     rng = np.random.default_rng(42)
@@ -656,3 +669,46 @@ def test_run_table_flag_end_to_end(two_table_store, tmp_path):
     )
     assert result.exit_code == 0, result.output
     assert anndata.read_h5ad(out_path).n_obs == 60
+
+
+@pytest.mark.slow
+def test_run_integer_labels_with_filtered_pixels(h5ad_pair_for_run, tmp_path):
+    """Integer cell types plus filtered pixels used to crash the .h5ad write after the whole fit
+    (categories mixing ints and "filtered"); names are written as strings."""
+    sp_path, ref_path = h5ad_pair_for_run
+    ref = anndata.read_h5ad(ref_path)
+    ref.obs["cell_type"] = ref.obs["cell_type"].cat.codes.astype("int64").to_numpy()
+    ref.write_h5ad(ref_path)
+    sp = anndata.read_h5ad(sp_path)
+    sp.X[:3] = 0  # three empty pixels: filtered
+    sp.write_h5ad(sp_path)
+    out_path = tmp_path / "out.h5ad"
+    res = CliRunner().invoke(
+        main,
+        [
+            "run",
+            str(sp_path),
+            str(ref_path),
+            "--mode",
+            "doublet",
+            "--device",
+            "cpu",
+            "--output",
+            str(out_path),
+        ],
+    )
+    assert res.exit_code == 0, res.output
+    out = anndata.read_h5ad(out_path)
+    assert (out.obs["rctd_first_type"].iloc[:3] == "filtered").all()
+    assert set(out.obs["rctd_first_type"].astype(str)) - {"filtered"} <= {"0", "1", "2", "3", "4"}
+
+
+def test_umi_min_filtering_everything_names_umi_min(h5ad_pair):
+    """When UMI_min removes every pixel, the error says so (it used to blame UMI_min_sigma)."""
+    from rctd import RCTDConfig, Reference
+    from rctd._rctd import RCTD
+
+    sp_path, ref_path = h5ad_pair
+    ref = Reference(anndata.read_h5ad(ref_path), cell_type_col="cell_type")
+    with pytest.raises(ValueError, match="UMI_min"):
+        RCTD(anndata.read_h5ad(sp_path), ref, RCTDConfig(UMI_min=10**9, device="cpu"))

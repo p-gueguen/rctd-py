@@ -11,6 +11,6 @@ regenerates them). Each one also exists as
 an interactive [marimo](https://marimo.io) notebook under `examples/` in the repository:
 
 ```bash
-uv pip install rctd-py marimo
+uv pip install rctd-py marimo matplotlib
 marimo edit examples/tutorial.py
 ```

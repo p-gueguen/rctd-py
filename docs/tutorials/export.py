@@ -15,6 +15,11 @@ subprocess.run(["marimo", "export", "ipynb", SRC, "-o", OUT, "--include-outputs"
 nb = json.load(open(OUT))
 # marimo's own import cell: the notebook does not use it, and it would fail without marimo installed
 nb["cells"] = [c for c in nb["cells"] if "".join(c["source"]).strip() != "import marimo as mo"]
+# marimo records each figure's display size; MyST-NB turns it into a fixed width and height, and
+# the theme's max-width then narrows the image without its height, squashing it horizontally
+for c in nb["cells"]:
+    for o in c.get("outputs", []):
+        o.get("metadata", {}).pop("image/png", None)
 with open(OUT, "w") as f:
     json.dump(nb, f, indent=1, ensure_ascii=False)
     f.write("\n")

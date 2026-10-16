@@ -28,7 +28,7 @@ fig_plot  # last expression, non-underscore name
 Tutorial doc strings have drifted from code multiple times (e.g. v0.3.x
 shipped with three errors in `examples/tutorial.py`: a "weights sum to 1"
 claim that was never true under `constrain=FALSE`, a `N_fit` default of
-1000 vs actual 100, and a `doublet_mode_alpha` parameter that has never
+1000 when the code then used 100, and a `doublet_mode_alpha` parameter that has never
 existed in any version — `git log --all -S doublet_mode_alpha` shows it
 only in tutorial commits).
 

@@ -22,10 +22,11 @@ classifiers = [
     "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",
 ]
 dependencies = [
-    "torch>=2.0",
+    "torch>=2.3",  # older torch cannot read NumPy 2 arrays, which new environments get
     "numpy>=1.24",
     "scipy>=1.10",
     "anndata>=0.10",
+    "natsort",  # already an anndata dependency; used to recognise the order anndata writes
     "click>=8.0",
 ]
 
@@ -48,6 +49,7 @@ doc = [
 
 [project.urls]
 Homepage = "https://github.com/p-gueguen/rctd-py"
+Documentation = "https://rctd-py.readthedocs.io"
 Repository = "https://github.com/p-gueguen/rctd-py"
 Issues = "https://github.com/p-gueguen/rctd-py/issues"
 

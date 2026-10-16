@@ -73,7 +73,11 @@ class TestReference:
         assert np.all(renorm >= 0)
 
     def test_de_genes_filters_mt_genes(self):
-        """Mitochondrial genes (mt-*) should be excluded from DE genes."""
+        """Genes whose name contains "mt-" are excluded, case-sensitively, as in R.
+
+        spacexr's get_de_genes drops grep("mt-", gene_list): mouse mt-Co1 and any name holding
+        "mt-" go, human MT-ND1 stays a candidate.
+        """
         import anndata
 
         rng = np.random.default_rng(42)
@@ -94,6 +98,7 @@ class TestReference:
         gene_names = [f"Gene_{i}" for i in range(n_genes)]
         gene_names[0] = "mt-Co1"
         gene_names[1] = "MT-ND1"
+        gene_names[2] = "Xmt-1"
 
         adata = anndata.AnnData(X=counts, obs={"cell_type": cell_types})
         adata.var_names = gene_names
@@ -103,7 +108,8 @@ class TestReference:
         de_genes = ref.get_de_genes(fc_thresh=0.5, expr_thresh=1e-4)
 
         assert "mt-Co1" not in de_genes
-        assert "MT-ND1" not in de_genes
+        assert "Xmt-1" not in de_genes
+        assert "MT-ND1" in de_genes  # positive control: an equally DE gene that R keeps
 
     def test_missing_column_raises(self, synthetic_reference):
         ref_adata, _, _ = synthetic_reference
@@ -175,3 +181,143 @@ class TestReference:
         ref_sparse = Reference(adata_sparse, cell_type_col="cell_type", n_max_cells=n_max_cells)
 
         np.testing.assert_allclose(ref_sparse.profiles, ref_dense.profiles, rtol=1e-12)
+
+
+def test_cell_type_order_follows_r():
+    """Type indices must match spacexr's levels(cell_types): R's sort for plain strings, the
+    category order for a categorical (an R factor's levels). Expected orders are R 4.5's sort()."""
+    import anndata
+    import pandas as pd
+
+    from rctd._reference import r_sort_key
+
+    assert "".join(sorted("$+-_,.09aAbB", key=r_sort_key)) == "_-,.+$09aAbB"
+    r_order = [
+        "adipocyte",
+        "B cell",
+        "blood vessel endothelial cell",
+        "CD4-positive helper T cell",
+        "CD4-positive, alpha-beta T cell",
+        "gamma_delta_T_cells",
+        "Germinal_center_B_cells",
+        "Serpinf1",
+        "SMC",
+    ]
+    assert sorted(r_order[::-1], key=r_sort_key) == r_order
+
+    rng = np.random.default_rng(0)
+    types = ["Serpinf1", "SMC", "adipocyte", "B cell"]
+    X = rng.poisson(5, size=(400, 50)).astype(np.float32)
+    labels = np.repeat(types, 100)
+    ad = anndata.AnnData(
+        X=X, obs=pd.DataFrame({"cell_type": labels}, index=[f"c{i}" for i in range(400)])
+    )
+    ad.var_names = [f"g{i}" for i in range(50)]
+    assert Reference(ad, cell_min=25, min_UMI=1).cell_type_names == [
+        "adipocyte",
+        "B cell",
+        "Serpinf1",
+        "SMC",
+    ]
+    ad.obs["cell_type"] = pd.Categorical(
+        labels, categories=["SMC", "B cell", "Serpinf1", "adipocyte"]
+    )
+    assert Reference(ad, cell_min=25, min_UMI=1).cell_type_names == [
+        "SMC",
+        "B cell",
+        "Serpinf1",
+        "adipocyte",
+    ]
+
+
+def _labelled_reference(labels):
+    """Small reference whose types differ in one block of genes each, with the given labels."""
+    import anndata
+
+    rng = np.random.default_rng(0)
+    types = sorted(set(labels), key=str)
+    counts = rng.poisson(1, size=(len(labels), 10 * len(types))).astype(np.float32)
+    for i, lab in enumerate(labels):
+        j = types.index(lab)
+        counts[i, 10 * j : 10 * j + 10] += rng.poisson(20, size=10)
+    adata = anndata.AnnData(X=counts)
+    adata.obs["cell_type"] = labels
+    adata.obs_names = [f"c{i}" for i in range(len(labels))]
+    adata.var_names = [f"g{i}" for i in range(counts.shape[1])]
+    return adata
+
+
+def test_integer_cell_type_labels_sort_like_r_factor():
+    """Integer labels (e.g. cluster ids) are accepted, as in 0.3.9, and ordered numerically
+    like R's factor() levels: 2 before 10."""
+    labels = [10] * 30 + [2] * 30 + [1] * 30
+    ref = Reference(_labelled_reference(labels), cell_type_col="cell_type")
+    assert list(ref.cell_type_names) == [1, 2, 10]
+
+
+def test_categorical_labels_drop_unused_categories():
+    """A categorical keeps its category order but leaves out categories with no cells."""
+    import pandas as pd
+
+    labels = pd.Categorical(["b"] * 30 + ["a"] * 30, categories=["b", "unused", "a"])
+    adata = _labelled_reference(list(labels))
+    adata.obs["cell_type"] = labels
+    ref = Reference(adata, cell_type_col="cell_type")
+    assert list(ref.cell_type_names) == ["b", "a"]
+
+
+def test_h5ad_style_categorical_gets_r_order():
+    """anndata stores string labels as a categorical sorted by code point; that order carries no
+    meaning, so it is replaced by R's (the CLI and every .h5ad read must match R like the API)."""
+    import pandas as pd
+
+    labels = ["T cell"] * 30 + ["adipocyte"] * 30 + ["B cell"] * 30
+    adata = _labelled_reference(labels)
+    adata.obs["cell_type"] = pd.Categorical(labels)  # categories sorted: B cell, T cell, adipocyte
+    ref = Reference(adata, cell_type_col="cell_type")
+    assert list(ref.cell_type_names) == ["adipocyte", "B cell", "T cell"]
+
+
+def test_h5ad_roundtrip_with_digit_labels_gets_r_order(tmp_path):
+    """anndata natsorts the categories it writes (Type_1 before Type_17); that order is not a
+    deliberate one either, so a reference read back from .h5ad still gets R's order."""
+    import anndata
+
+    labels = ["Type_17_x"] * 30 + ["gamma_x"] * 30 + ["Type_1_x"] * 30
+    adata = _labelled_reference(labels)
+    adata.write_h5ad(tmp_path / "ref.h5ad")
+    ref = Reference(anndata.read_h5ad(tmp_path / "ref.h5ad"), cell_type_col="cell_type")
+    assert list(ref.cell_type_names) == ["gamma_x", "Type_1_x", "Type_17_x"]
+
+
+def test_custom_categorical_order_is_kept():
+    """A deliberate category order (e.g. an R factor's levels carried over) is kept."""
+    import pandas as pd
+
+    labels = ["T cell"] * 30 + ["adipocyte"] * 30 + ["B cell"] * 30
+    adata = _labelled_reference(labels)
+    adata.obs["cell_type"] = pd.Categorical(labels, categories=["T cell", "adipocyte", "B cell"])
+    ref = Reference(adata, cell_type_col="cell_type")
+    assert list(ref.cell_type_names) == ["T cell", "adipocyte", "B cell"]
+
+
+def test_missing_labels_raise():
+    """NaN / None labels are an error, not a silent drop or a 'None' cell type."""
+    import pandas as pd
+
+    labels = ["a"] * 30 + ["b"] * 30
+    for missing in (None, float("nan")):
+        adata = _labelled_reference(labels)
+        lab = list(labels)
+        lab[:5] = [missing] * 5
+        adata.obs["cell_type"] = pd.Series(lab, index=adata.obs_names, dtype=object)
+        with pytest.raises(ValueError, match="missing"):
+            Reference(adata, cell_type_col="cell_type")
+
+
+def test_dropped_cell_types_warn():
+    """Types below cell_min are dropped (R would stop); the user is told which."""
+    labels = ["a"] * 30 + ["b"] * 30 + ["rare"] * 5
+    with pytest.warns(UserWarning, match="rare"):
+        ref = Reference(_labelled_reference(labels), cell_type_col="cell_type")
+    assert "rare" not in list(ref.cell_type_names)

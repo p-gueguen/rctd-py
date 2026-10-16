@@ -31,8 +31,12 @@ def _(mo):
     ## Installation
 
     ```bash
-    pip install rctd-py   # CPU (works everywhere; GPU auto-detected if CUDA available)
+    uv pip install rctd-py   # or: pip install rctd-py
     ```
+
+    rctd-py uses a GPU when PyTorch sees one. GPU builds of PyTorch, older NVIDIA drivers and
+    offline installs are covered in the
+    [installation guide](https://rctd-py.readthedocs.io/en/latest/installation.html).
     """)
     return
 
@@ -74,6 +78,8 @@ def _(mo):
     - **Spatial**: 100 Slide-seq beads from mouse cerebellum
 
     The data is small (~500 KB) and downloaded directly from the spacexr GitHub repository.
+    The first `run_rctd` call also downloads the likelihood tables (Q-matrices, 404 MB) once and
+    caches them.
     """)
     return
 
@@ -160,6 +166,35 @@ def _(anndata, bead_locs, np, pd, spatial_dge):
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
+    ### The spatial data
+
+    Each bead at its position on the puck, coloured by its total UMI count. RCTD skips beads below
+    `UMI_min` (100 by default); the runs below set `UMI_min=1` to keep all 100 beads of this small
+    example.
+    """)
+    return
+
+
+@app.cell
+def _(np, plt, spatial_adata):
+    _numi = np.asarray(spatial_adata.X.sum(axis=1)).ravel()
+    fig_beads, _ax = plt.subplots(figsize=(7, 5.5))
+    _sc = _ax.scatter(spatial_adata.obs["x"], spatial_adata.obs["y"], c=np.log10(_numi), cmap="viridis",
+                      s=45, edgecolors="none")
+    _ax.set_aspect("equal")
+    _ax.set_xlabel("x")
+    _ax.set_ylabel("y")
+    _ax.set_title(f"{spatial_adata.n_obs} Slide-seq beads, mouse cerebellum")
+    fig_beads.colorbar(_sc, ax=_ax, shrink=0.8, label="log10 total UMI per bead")
+    print(f"Total UMI per bead: median {np.median(_numi):.0f}, range {_numi.min():.0f}-{_numi.max():.0f}; "
+          f"{(_numi >= 100).sum()} of {len(_numi)} beads have at least 100")
+    fig_beads
+    return
+
+
+@app.cell(hide_code=True)
+def _(mo):
+    mo.md(r"""
     ## 3. Build Reference
 
     The `Reference` class takes a single-cell `AnnData` object and computes per-type
@@ -187,8 +222,8 @@ def _(mo):
     | Mode | Description | Best for |
     |------|-------------|----------|
     | `full` | Estimates continuous weights for all cell types simultaneously | Visium, continuous mixtures |
-    | `doublet` | Classifies each bead as singlet or doublet, assigns 1–2 types | Slide-seq, sparse spatial |
-    | `multi` | Greedy forward selection of up to 4 cell types per bead | Xenium, MERFISH, dense platforms |
+    | `doublet` | Classifies each bead as singlet or doublet, assigns 1–2 types | Slide-seq, Visium HD bins, segmented cells (Xenium, MERFISH, CosMx) |
+    | `multi` | Greedy forward selection of up to 4 cell types per bead | Spots expected to hold more than 2 types (an alternative to `full`) |
     """)
     return
 
@@ -196,7 +231,7 @@ def _(mo):
 @app.cell(hide_code=True)
 def _(mo):
     mo.md(r"""
-    ### Doublet Mode (default for Slide-seq)
+    ### Doublet Mode (the default)
 
     This is the mode used in the original spacexr vignette. It classifies each bead as
     a singlet (one dominant cell type) or doublet (two cell types).
@@ -347,36 +382,46 @@ def _(
     cell_type_names,
     class_labels,
     dominant_idx,
+    np,
     plt,
     result_doublet,
     result_multi,
     spatial_adata,
 ):
-    fig_spatial, axes = plt.subplots(1, 3, figsize=(16, 5))
-    x = spatial_adata.obs['x'].values
-    y = spatial_adata.obs['y'].values
-    cmap = plt.colormaps.get_cmap('tab20').resampled(len(cell_type_names))
-    sc = axes[0].scatter(x, y, c=dominant_idx, cmap=cmap, vmin=-0.5, vmax=len(cell_type_names) - 0.5, s=30, alpha=0.9, edgecolors='none')
-    axes[0].set_title('Full mode\n(dominant cell type)')
-    axes[0].set_aspect('equal')
-    axes[0].set_xlabel('x')
-    axes[0].set_ylabel('y')
-    class_colors = {0: '#888888', 1: '#4C78A8', 2: '#F58518', 3: '#E45756'}
-    for cls_id, color in class_colors.items():
-        mask = result_doublet.spot_class == cls_id
-        if mask.any():
-            axes[1].scatter(x[mask], y[mask], c=color, s=30, alpha=0.9, edgecolors='none', label=class_labels[cls_id])
-    axes[1].set_title('Doublet mode\n(spot class)')
-    axes[1].set_aspect('equal')
-    axes[1].set_xlabel('x')
-    axes[1].legend(fontsize=8, markerscale=1.2, loc='upper right')
-    sc2 = axes[2].scatter(x, y, c=result_multi.n_types, cmap='viridis', vmin=0.5, vmax=4.5, s=30, alpha=0.9, edgecolors='none')
-    axes[2].set_title('Multi mode\n(# cell types per bead)')
-    axes[2].set_aspect('equal')
-    axes[2].set_xlabel('x')
-    plt.colorbar(sc2, ax=axes[2], ticks=[1, 2, 3, 4], label='# types')
-    plt.suptitle('RCTD Spatial Deconvolution — Slide-seq Cerebellum', fontsize=13, y=1.01)
-    plt.tight_layout()
+    _x = spatial_adata.obs["x"].values
+    _y = spatial_adata.obs["y"].values
+    fig_spatial = plt.figure(figsize=(9, 9.5), layout="constrained")
+    _gs = fig_spatial.add_gridspec(2, 2, height_ratios=[1.15, 1])
+    _full, _dbl, _multi = (fig_spatial.add_subplot(_gs[0, :]), fig_spatial.add_subplot(_gs[1, 0]),
+                           fig_spatial.add_subplot(_gs[1, 1]))
+
+    # Full mode: dominant cell type, one legend entry per type that is dominant somewhere
+    _cmap = plt.colormaps.get_cmap("tab20").resampled(len(cell_type_names))
+    for _k in np.unique(dominant_idx):
+        _m = dominant_idx == _k
+        _full.scatter(_x[_m], _y[_m], color=_cmap(_k), s=32, edgecolors="none", label=cell_type_names[_k])
+    _full.set_title("Full mode: dominant cell type")
+    _full.legend(fontsize=8, markerscale=1.3, loc="center left", bbox_to_anchor=(1.01, 0.5), frameon=False)
+
+    # Doublet mode: spot class
+    _class_colors = {0: "#888888", 1: "#4C78A8", 2: "#F58518", 3: "#E45756"}
+    for _cls, _color in _class_colors.items():
+        _m = result_doublet.spot_class == _cls
+        if _m.any():
+            _dbl.scatter(_x[_m], _y[_m], color=_color, s=22, edgecolors="none", label=class_labels[_cls])
+    _dbl.set_title("Doublet mode: spot class")
+    _dbl.legend(fontsize=8, markerscale=1.3, loc="lower left", frameon=False)
+
+    # Multi mode: number of cell types kept per bead
+    _sc = _multi.scatter(_x, _y, c=result_multi.n_types, cmap="viridis", vmin=0.5, vmax=4.5, s=22,
+                         edgecolors="none")
+    _multi.set_title("Multi mode: cell types per bead")
+    fig_spatial.colorbar(_sc, ax=_multi, ticks=[1, 2, 3, 4], shrink=0.8, label="# types")
+
+    for _ax in (_full, _dbl, _multi):
+        _ax.set_aspect("equal")
+        _ax.set_xlabel("x")
+        _ax.set_ylabel("y")
     fig_spatial
 
 
@@ -385,14 +430,15 @@ def _(mo):
     mo.md(r"""
     ### Weight Heatmap
 
-    Full-mode weights across all beads, showing the estimated proportion of each cell type.
+    Full-mode weights across all beads, for the cell types with a mean weight above 0.01. The
+    weights are not normalised (see above), so a bead's row need not sum to 1.
     """)
     return
 
 
 @app.cell
 def _(cell_type_names, dominant_idx, np, plt, result_full):
-    # --- Plot 3: Weight heatmap (full mode, top cell types) ---
+    # Weight heatmap (full mode, top cell types)
     # Sort beads by dominant type for cleaner visualization
     order = np.lexsort((result_full.weights.max(axis=1), dominant_idx))
     active_mask = result_full.weights.mean(axis=0) > 0.01
@@ -415,8 +461,9 @@ def _(mo):
     mo.md(r"""
     ### Doublet Mode Details
 
-    For each bead classified as a doublet, RCTD identifies the two most likely
-    cell types and their proportions.
+    Doublet mode reports two cell types and their weights for every bead, whatever its class.
+    Both types apply only to doublets; for a singlet the first type is the call, and rejects
+    should be discarded.
     """)
     return
 
@@ -448,14 +495,13 @@ def _(mo):
     |-----------|---------|-------------|
     | `UMI_min` | 100 | Minimum UMI count to include a bead |
     | `UMI_min_sigma` | 300 | Minimum UMI count for beads used in sigma estimation |
-    | `N_fit` | 100 | Number of beads used to estimate sigma |
+    | `N_fit` | 1000 | Number of beads used to estimate sigma |
     | `MAX_MULTI_TYPES` | 4 | Max cell types per bead in multi mode |
-    | `max_iter` | 50 | Maximum IRWLS iterations |
     | `DOUBLET_THRESHOLD` | 20.0 | Singlet-vs-doublet log-likelihood gap (doublet mode) |
     | `CONFIDENCE_THRESHOLD` | 5.0 | Confidence margin for selected types (doublet/multi) |
     | `compile` | `True` | Use `torch.compile`; set `False` (or pass `--no-compile`) to fall back to TorchScript JIT (no CUDA dev headers needed) |
 
-    See [`RCTDConfig` in `_types.py`](https://github.com/p-gueguen/rctd-py/blob/main/src/rctd/_types.py)
+    See the [`RCTDConfig` reference](https://rctd-py.readthedocs.io/en/latest/generated/rctd.RCTDConfig.html)
     for the full list including bulk-fit cutoffs (`gene_cutoff`, `fc_cutoff`, …).
 
     The `batch_size` argument to `run_rctd` controls how many beads are processed
@@ -467,7 +513,7 @@ def _(mo):
 @app.cell
 def _(RCTDConfig, reference, run_rctd, spatial_adata):
     # Custom configuration example
-    _config = RCTDConfig(UMI_min=100, N_fit=100, MAX_MULTI_TYPES=4, max_iter=50)
+    _config = RCTDConfig(UMI_min=100, MAX_MULTI_TYPES=4)
     result = run_rctd(spatial_adata, reference, mode='full', config=_config, batch_size=5000)
     print(f'Custom run: {result.weights.shape}')
     return

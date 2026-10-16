@@ -381,17 +381,10 @@ def run_doublet_mode(
             s = dw.sum()
             dw = dw / s if s > 0 else np.array([0.5, 0.5])
 
-        if s_class == SPOT_CLASS_SINGLET:
-            np.array([1.0, 0.0])
-            # For singlet, first_type = best singlet type
-            best_sing_type = min(sing_scores, key=sing_scores.get)
-            first_t = best_sing_type
-            second_t = best_t2 if best_t1 == best_sing_type else best_t1
-            f_class = False
-            sc_class = False
-        else:
-            first_t = best_t1
-            second_t = best_t2
+        # R relabels the spot class only: a singlet keeps the first/second type (and the
+        # class flags) chosen above, not the candidate with the best singlet score.
+        first_t = best_t1
+        second_t = best_t2
 
         spot_class[n] = s_class
         first_type[n] = first_t

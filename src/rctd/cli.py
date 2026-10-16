@@ -195,10 +195,12 @@ def validate(spatial, reference, table, cell_type_col, umi_min, cell_min, use_js
     # 3. Check cell_type_col
     if ref is not None:
         if cell_type_col in ref.obs.columns:
-            types = ref.obs[cell_type_col].unique()
+            types = ref.obs[cell_type_col].dropna().unique()
+            n_missing = int(ref.obs[cell_type_col].isna().sum())
             checks["cell_type_col_exists"] = {
-                "pass": True,
-                "detail": f"{cell_type_col}, {len(types)} types",
+                "pass": n_missing == 0,
+                "detail": f"{cell_type_col}, {len(types)} types"
+                + (f"; {n_missing} cells have a missing cell type" if n_missing else ""),
             }
         else:
             available = ", ".join(ref.obs.columns.tolist()[:10])
@@ -349,6 +351,8 @@ def _write_results_to_adata(
     spatial_adata, result, mode, pixel_mask, config_dict, cell_type_names, version
 ):
     """Expand results to full AnnData shape and write slots."""
+    # .h5ad categoricals cannot mix numeric cell-type labels with "filtered"
+    cell_type_names = [str(c) for c in cell_type_names]
     import numpy as np
     import pandas as pd
 

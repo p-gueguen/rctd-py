@@ -9,7 +9,7 @@ rctd-py runs on CPU out of the box and uses a GPU automatically when PyTorch can
 ## Q-matrices (offline and HPC setups)
 
 The first run needs `q_matrices.npz`, the precomputed Poisson-Lognormal likelihood tables for
-every sigma between 0.10 and 2.00. It is 404 MB and does not compress, so it ships as a
+126 sigma values from 0.10 to 2.00. It is 404 MB and already compressed, so it ships as a
 [release asset](https://github.com/p-gueguen/rctd-py/releases/download/v0.1.1/q_matrices.npz)
 rather than inside the wheel, and is fetched once into `~/.cache/rctd/` on first use.
 
@@ -42,7 +42,8 @@ uv pip install torch --index-url https://download.pytorch.org/whl/cu126
 uv pip install rctd-py
 ```
 
-macOS and Windows get the CPU (or MPS) wheel from PyPI; for other combinations use the selector
+macOS and Windows get a CPU build from PyPI, and rctd-py runs on the CPU there (Apple MPS is not
+used); for other combinations use the selector
 at [pytorch.org/get-started](https://pytorch.org/get-started/locally/).
 
 Check that the GPU is visible:
@@ -66,17 +67,24 @@ version matters (`nvidia-smi`, top right).
 
 ### GPU memory
 
-Peak VRAM scales with `batch_size * K^2`. From Python, `run_rctd` defaults to
-`batch_size="auto"`, sized from the free GPU memory; the CLI defaults to `--batch-size 10000`.
-Set it explicitly to fit a smaller card or a shared GPU:
+Peak VRAM grows with `batch_size` and with the number of genes and cell types. It also grows with
+the number of pixels, because rctd-py copies the whole count matrix (pixels x fitted genes) to the
+GPU: for 557,300 Visium HD bins and 4,638 genes that matrix alone is 19 GiB in float64, and the run
+peaked at 24-29 GiB whatever the mode. `batch_size` does not shrink that part; `dtype="float32"`
+halves it. From Python, `run_rctd` defaults to `batch_size="auto"`, sized from the free GPU memory;
+the CLI defaults to `--batch-size 10000`. At `batch_size=10000` in float64, the
+{doc}`benchmarks <benchmarks>` peaked at 5.3-5.6 GiB on the small Xenium panels (242-376 genes) and
+at 7-16 GiB on the other datasets (up to 714,535 pixels). Set it explicitly to fit a smaller card
+or a shared GPU:
 
-| Available VRAM | Recommended `batch_size` | Peak VRAM (K=45) |
-|---|---|---|
-| 24+ GB | 10,000 | ~4 GB |
-| 8-16 GB | 5,000 | ~2 GB |
-| < 8 GB | 2,000 | ~1 GB |
+| Available VRAM | Recommended `batch_size` |
+|---|---|
+| 24+ GB | 10,000 |
+| 8-16 GB | 5,000 |
+| < 8 GB | 2,000 |
 
-Peak CPU RAM (RSS) is typically 2-3x peak VRAM.
+Peak host RAM ranged from 4 to 136 GiB on the benchmark datasets and is highest on large
+whole-transcriptome data: 136 GiB for 557,300 Visium HD bins, 113 GiB for 714,535 Atera cells.
 
 ## Known issue: NVRTC missing on Blackwell + CUDA 13
 

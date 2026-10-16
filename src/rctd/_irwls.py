@@ -448,6 +448,84 @@ except Exception:
     _solve_box_qp_batch_compiled = None
 
 
+# Optimality tolerance; D is normalised to unit 2-norm before every solve.
+_QP_KKT_TOL = 1e-10
+
+
+def _kkt_tol(dtype: torch.dtype) -> float:
+    """1e-10 in float64; float32 cannot resolve that, so there it scales with machine epsilon."""
+    return max(_QP_KKT_TOL, 100 * torch.finfo(dtype).eps)
+
+
+def _finish_box_qp(
+    D: torch.Tensor, d: torch.Tensor, lower_bound: torch.Tensor, x: torch.Tensor
+) -> torch.Tensor:
+    """Make the Gauss-Seidel result exact, as R's quadprog::solve.QP is.
+
+    Fifty sweeps stop short on ill-conditioned pixels at high K, which can flip a candidate
+    type. Problems failing the KKT check get an active-set (Lawson-Hanson, Gram form) solve
+    warm-started from the sweep result: usually one or two masked K x K solves.
+    """
+    g = torch.bmm(D, x.unsqueeze(2)).squeeze(2) - d
+    viol = torch.where(x > lower_bound, g.abs(), torch.clamp(-g, min=0.0)).amax(1)
+    idx = torch.nonzero(viol > _kkt_tol(D.dtype)).squeeze(1)
+    if idx.numel() == 0:
+        return x
+    x = x.clone()
+    x[idx] = _active_set_box_qp(D[idx], d[idx], lower_bound[idx], x[idx])
+    return x
+
+
+def _active_set_box_qp(
+    D: torch.Tensor, d: torch.Tensor, lb: torch.Tensor, x0: torch.Tensor
+) -> torch.Tensor:
+    """min 0.5 x'Dx - d'x  s.t. x >= lb, batched; exact up to the linear solves.
+
+    A problem whose linear solve fails (singular or non-finite D) keeps x0, the Gauss-Seidel
+    result, instead of raising: Gauss-Seidel never stopped a run, and neither may this.
+    """
+    n, K = d.shape
+    c = d - torch.bmm(D, lb.unsqueeze(2)).squeeze(2)  # y = x - lb >= 0
+    y = torch.clamp(x0 - lb, min=0.0)
+    free = y > 0
+    done = torch.zeros(n, dtype=torch.bool, device=D.device)
+    failed = torch.zeros(n, dtype=torch.bool, device=D.device)
+    for _ in range(
+        3 * K + 10
+    ):  # ponytail: iteration cap; Lawson-Hanson ends far sooner in practice
+        m = free.to(D.dtype)
+        M = D * (m.unsqueeze(2) * m.unsqueeze(1)) + torch.diag_embed(1.0 - m)
+        s, info = torch.linalg.solve_ex(M, (c * m).unsqueeze(2))
+        s = s.squeeze(2)
+        bad_solve = (info != 0) | ~torch.isfinite(s).all(1)
+        failed = failed | bad_solve
+        done = done | bad_solve
+        s = torch.where(bad_solve.unsqueeze(1), y, s)
+        bad = free & (s <= 0)
+        back = bad.any(1) & ~done
+        # infeasible solve: step from y towards s until the first free variable hits zero
+        ratio = torch.where(
+            bad, y / torch.clamp(y - s, min=1e-300), torch.full_like(y, float("inf"))
+        )
+        alpha = torch.clamp(ratio.amin(1), max=1.0).unsqueeze(1)
+        y_back = y + alpha * (s - y)
+        fwd = ~back & ~done
+        y = torch.where(back.unsqueeze(1), y_back, torch.where(fwd.unsqueeze(1), s, y))
+        free = torch.where(back.unsqueeze(1), free & (y > 1e-14), free)
+        y = torch.where(free, y, torch.zeros_like(y))
+        # feasible solve: add the most violating bound variable, or stop
+        w = c - torch.bmm(D, y.unsqueeze(2)).squeeze(2)
+        cand = ~free & (w > _kkt_tol(D.dtype))
+        optimal = fwd & ~cand.any(1)
+        done = done | optimal
+        add = fwd & ~optimal
+        if not bool(add.any()) and not bool(back.any()):
+            break
+        j = torch.where(cand, w, torch.full_like(w, -float("inf"))).argmax(1)
+        free = free | (add.unsqueeze(1) & (torch.arange(K, device=D.device) == j.unsqueeze(1)))
+    return torch.where(failed.unsqueeze(1), x0, y + lb)
+
+
 @torch.jit.script
 def _solve_box_qp_batch_adaptive_jit(
     D: torch.Tensor,
@@ -521,6 +599,16 @@ def _solve_box_qp_batch(
     lower_bound: torch.Tensor,
     n_sweeps: int = 50,
 ) -> torch.Tensor:
+    x = _solve_box_qp_batch_fixed(D, d, lower_bound, n_sweeps)
+    return x if d.shape[1] <= 2 else _finish_box_qp(D, d, lower_bound, x)
+
+
+def _solve_box_qp_batch_fixed(
+    D: torch.Tensor,
+    d: torch.Tensor,
+    lower_bound: torch.Tensor,
+    n_sweeps: int = 50,
+) -> torch.Tensor:
     """Batched box-constrained QP: min 0.5 x^T D x - d^T x  s.t. x >= lb.
 
     For K=2, uses analytical closed-form (no iterative sweeps needed).
@@ -554,11 +642,11 @@ def _solve_box_qp_batch(
     # First call: try compiled, fall back to eager on failure
     try:
         result = _solve_box_qp_batch_compiled(D, d, lower_bound, n_sweeps)
-    except RuntimeError:
+    except RuntimeError as e:
         _USE_COMPILE = False
         warnings.warn(
-            "torch.compile failed for box-QP solver (missing CUDA headers or Triton); "
-            "falling back to eager mode. Use RCTDConfig(compile=False) to suppress.",
+            f"torch.compile failed for box-QP solver ({type(e).__name__}); results are "
+            "unaffected, falling back to eager mode. Use RCTDConfig(compile=False) to suppress.",
             RuntimeWarning,
             stacklevel=2,
         )

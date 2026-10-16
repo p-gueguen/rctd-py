@@ -120,7 +120,9 @@ def vignette_data():
     )
     spatial_adata.var_names = pd.Index(sp_gene_names)
 
-    return {"spatial": spatial_adata, "reference": ref_adata}
+    # spacexr's fixture outputs were made with the cluster numbers as factor levels (1..19)
+    cluster_names = [cluster_to_name[c] for c in sorted(cluster_to_name)]
+    return {"spatial": spatial_adata, "reference": ref_adata, "cluster_names": cluster_names}
 
 
 @pytest.fixture

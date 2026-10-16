@@ -301,3 +301,80 @@ class TestSolveIRWLSBatchShared:
         )
         assert w.shape == (0, K)
         assert c.shape == (0,)
+
+
+def test_box_qp_is_exact_like_quadprog(monkeypatch):
+    """The batched QP must reach the exact optimum (R uses quadprog), also when 50
+    Gauss-Seidel sweeps fall short on an ill-conditioned D."""
+    import scipy.optimize
+
+    from rctd import _irwls
+
+    monkeypatch.setattr(_irwls, "_USE_COMPILE", False)  # JIT path: no compile wait on CPU runners
+    rng = np.random.default_rng(0)
+    N, K = 200, 12
+    Q = np.linalg.qr(rng.normal(size=(N, K, K)))[0]
+    ev = np.exp(rng.uniform(np.log(1e-5), 0, size=(N, K)))
+    ev[:, 0] = 1
+    D = Q @ (ev[:, :, None] * Q.transpose(0, 2, 1)) + 1e-7 * np.eye(K)
+    d = rng.normal(size=(N, K)) * 0.1
+    lb = -np.abs(rng.normal(size=(N, K))) * 0.05
+    exact = []
+    for Di, di, li in zip(D, d, lb):  # x = lb + y, y >= 0: NNLS on the Cholesky factor
+        L = np.linalg.cholesky(Di)
+        y, _ = scipy.optimize.nnls(L.T, np.linalg.solve(L, di - Di @ li), maxiter=100_000)
+        exact.append(li + y)
+    exact = np.array(exact)
+    Dt, dt, lt = (torch.tensor(a) for a in (D, d, lb))
+    fixed = _irwls._solve_box_qp_batch_fixed(Dt.clone(), dt.clone(), lt.clone()).numpy()
+    assert (
+        np.abs(fixed - exact).max() > 1e-3
+    )  # positive control: 50 sweeps alone are not exact here
+    x = _irwls._solve_box_qp_batch(Dt, dt, lt).numpy()
+    np.testing.assert_allclose(x, exact, atol=1e-7)
+
+
+def test_box_qp_float32_finish_is_finite_and_no_worse(monkeypatch):
+    """In float32 the exact finish cannot reach float64's KKT tolerance; it must still return
+    finite, feasible solutions whose objective is no worse than Gauss-Seidel alone."""
+    from rctd import _irwls
+
+    monkeypatch.setattr(_irwls, "_USE_COMPILE", False)
+    torch.manual_seed(0)
+    for K in (5, 12, 40):
+        A = torch.randn(500, K, K)
+        D = A @ A.transpose(1, 2) + 1e-3 * torch.eye(K)
+        D = D / torch.linalg.matrix_norm(D, ord=2).view(-1, 1, 1)
+        d = torch.randn(500, K) * 0.1
+        lb = torch.zeros(500, K)
+        gs = _irwls._solve_box_qp_batch_fixed(D.clone(), d.clone(), lb.clone())
+        x = _irwls._solve_box_qp_batch(D, d, lb)
+        assert x.dtype == torch.float32 and torch.isfinite(x).all() and (x >= lb - 1e-6).all()
+
+        def obj(v):
+            return 0.5 * torch.bmm(v.unsqueeze(1), torch.bmm(D, v.unsqueeze(2))).view(-1) - (
+                d * v
+            ).sum(1)
+
+        assert (obj(x) <= obj(gs) + 1e-5).all(), K
+    # float32 cannot resolve float64's tolerance; float64 keeps R-exact 1e-10
+    assert _irwls._kkt_tol(torch.float64) == 1e-10 and 1e-6 < _irwls._kkt_tol(torch.float32) < 1e-4
+
+
+def test_box_qp_finish_survives_singular_and_nan(monkeypatch):
+    """A singular D (e.g. two near-identical cell types) or a non-finite one must not stop the
+    run, as Gauss-Seidel never did: those problems keep the Gauss-Seidel result (cf. issue #20).
+    """
+    from rctd import _irwls
+
+    monkeypatch.setattr(_irwls, "_USE_COMPILE", False)
+    torch.manual_seed(0)
+    for dtype in (torch.float64, torch.float32):
+        A = torch.randn(50, 12, 3, dtype=dtype)
+        D = A @ A.transpose(1, 2)  # rank 3 of 12: singular
+        D = D / torch.linalg.matrix_norm(D, ord=2).view(-1, 1, 1)
+        D[0, 0, 0] = float("nan")
+        d = torch.randn(50, 12, dtype=dtype)
+        lb = torch.zeros(50, 12, dtype=dtype)
+        x = _irwls._solve_box_qp_batch(D, d, lb)  # raised _LinAlgError before the fix
+        assert torch.isfinite(x[1:]).all() and (x[1:] >= -1e-6).all()
