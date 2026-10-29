@@ -510,10 +510,17 @@ def _write_results_to_adata(
 # Performance
 @click.option(
     "--batch-size",
-    default=10000,
-    show_default=True,
-    type=int,
-    help="GPU batch size for pixel processing.",
+    default=None,
+    type=click.IntRange(min=1),
+    help=(
+        "GPU batch size for pixel processing. Defaults to 10000, or a bounded "
+        "automatic size when --stream-gpu is enabled."
+    ),
+)
+@click.option(
+    "--stream-gpu",
+    is_flag=True,
+    help="Full mode only: transfer spatial inputs to the GPU one bounded batch at a time.",
 )
 @click.option(
     "--sigma-override",
@@ -577,6 +584,7 @@ def run(
     no_compile,
     eigh_threshold,
     batch_size,
+    stream_gpu,
     sigma_override,
     cell_min,
     n_max_cells,
@@ -594,7 +602,14 @@ def run(
     from rctd._multi import run_multi_mode
     from rctd._rctd import RCTD
     from rctd._reference import Reference
-    from rctd._types import RCTDConfig
+    from rctd._types import (
+        STREAM_GPU_AUTO_BATCH_MAX,
+        RCTDConfig,
+        auto_batch_size,
+    )
+
+    if stream_gpu and mode != "full":
+        raise click.BadParameter("--stream-gpu currently supports only --mode full")
 
     # Default output path
     if output is None:
@@ -670,6 +685,19 @@ def run(
             n_pixels_filtered = int(rctd_obj._pixel_mask.sum())
             n_genes_common = len(rctd_obj.common_genes)
 
+            if batch_size is None:
+                if stream_gpu:
+                    dtype_bytes = 8 if config.dtype == "float64" else 4
+                    batch_size = auto_batch_size(
+                        rctd_obj.norm_profiles.shape[0],
+                        rctd_obj.norm_profiles.shape[1],
+                        dtype_bytes,
+                        max_batch_size=STREAM_GPU_AUTO_BATCH_MAX,
+                    )
+                    print(f"Auto streaming batch size: {batch_size}")
+                else:
+                    batch_size = 10000
+
             print(f"Running in {mode} mode...")
 
             kwargs = {
@@ -686,7 +714,7 @@ def run(
             }
 
             if mode == "full":
-                result = run_full_mode(**kwargs)
+                result = run_full_mode(**kwargs, stream_gpu=stream_gpu)
             elif mode == "doublet":
                 result = run_doublet_mode(**kwargs, config=config)
             elif mode == "multi":

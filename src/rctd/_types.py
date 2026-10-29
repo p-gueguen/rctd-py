@@ -5,6 +5,8 @@ from typing import NamedTuple
 import numpy as np
 import torch
 
+STREAM_GPU_AUTO_BATCH_MAX = 1024
+
 
 class RCTDConfig(NamedTuple):
     """RCTD configuration parameters.
@@ -85,32 +87,40 @@ def auto_batch_size(
     dtype_bytes: int = 4,
     budget_fraction: float = 0.7,
     default: int = 10000,
+    max_batch_size: int | None = None,
 ) -> int:
     """Calculate optimal batch size based on available GPU VRAM.
 
     Estimates per-pixel memory footprint from all IRWLS intermediates
     and scales batch size to use ``budget_fraction`` of free VRAM.
+    ``max_batch_size`` can impose a deterministic upper bound for streaming.
     Falls back to ``default`` on CPU or if CUDA info is unavailable.
     """
+    if max_batch_size is not None and max_batch_size <= 0:
+        raise ValueError("max_batch_size must be positive")
+    fallback = min(default, max_batch_size) if max_batch_size is not None else default
     if not torch.cuda.is_available():
-        return default
+        return fallback
     try:
         free_mem, _ = torch.cuda.mem_get_info()
     except Exception:
-        return default
+        return fallback
 
     budget = int(free_mem * budget_fraction)
 
-    # Per-pixel intermediates in solve_irwls_batch_shared:
-    #   Y_batch(G) + prediction(G) + d1/d2(G) + solution(K) + grad(K)
+    # Per-pixel intermediates in solve_irwls_batch_shared. At the likelihood
+    # call peak, Y, prediction and the d0/d1/d2 outputs can overlap:
+    #   Y_batch(G) + prediction(G) + d0/d1/d2(3G) + solution(K) + grad(K)
     #   + hess(K*K) + D(K*K) + d_vec(K) + delta_w(K) + w_new(K)
-    bytes_per_pixel = (3 * G + 5 * K + 2 * K * K) * dtype_bytes
+    bytes_per_pixel = (5 * G + 5 * K + 2 * K * K) * dtype_bytes
 
     if bytes_per_pixel <= 0:
-        return default
+        return fallback
 
-    computed = budget // bytes_per_pixel
-    return max(1024, min(computed, 200000))
+    computed = max(1, min(budget // bytes_per_pixel, 200000))
+    if max_batch_size is not None:
+        computed = min(computed, max_batch_size)
+    return computed
 
 
 class FullResult(NamedTuple):

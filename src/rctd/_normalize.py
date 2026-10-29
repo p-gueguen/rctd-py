@@ -15,8 +15,8 @@ def _longdouble_sum(t: torch.Tensor, dim: int) -> torch.Tensor:
     R and Python for large reductions (e.g. summing 135k spatial pixels).
     """
     arr = t.detach().cpu().numpy()
-    result = arr.astype(np.longdouble).sum(axis=dim).astype(np.float64)
-    return torch.tensor(result, dtype=t.dtype, device=t.device)
+    result = np.sum(arr, axis=dim, dtype=np.longdouble).astype(np.float64)
+    return torch.as_tensor(result, dtype=t.dtype)
 
 
 def fit_bulk(
@@ -47,13 +47,11 @@ def fit_bulk(
     device = cell_type_profiles.device
     dtype = cell_type_profiles.dtype
 
-    # Sum counts across all pixels (N, G) -> (G,)
-    # Use longdouble accumulation to match R's long double precision,
-    # eliminating BLAS-order-dependent divergence in platform effects.
-    bulk_Y = _longdouble_sum(spatial_counts, dim=0)
-
-    # Total UMI across all pixels
-    bulk_nUMI = _longdouble_sum(spatial_nUMI, dim=0)
+    # Reduce the full spatial inputs in CPU RAM and transfer only the vector/scalar.
+    bulk_Y_cpu = _longdouble_sum(spatial_counts, dim=0)
+    bulk_nUMI_cpu = _longdouble_sum(spatial_nUMI, dim=0)
+    bulk_Y = bulk_Y_cpu.to(device=device, dtype=dtype)
+    bulk_nUMI = bulk_nUMI_cpu.to(device=device, dtype=dtype)
 
     # Scale reference profiles to bulk nUMI
     bulk_S = cell_type_profiles * bulk_nUMI

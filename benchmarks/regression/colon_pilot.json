@@ -1,0 +1,25 @@
+{
+  "spatial": "~/rctd_data/visiumhd_human_colon_cancer_03/st.h5ad",
+  "reference": "~/rctd_data/visiumhd_human_colon_cancer_03/sc.h5ad",
+  "annotation": "~/rctd_data/visiumhd_human_colon_cancer_03/annotation.csv",
+  "annotation_index": "spot_id",
+  "q_matrices": "~/.cache/rctd/q_matrices.npz",
+  "gene_id_column": "gene_ids",
+  "reference_options": {
+    "cell_type_col": "Level2",
+    "cell_min": 25,
+    "n_max_cells": 10000,
+    "min_UMI": 100
+  },
+  "rctd_config": {"device": "cuda", "dtype": "float64", "compile": false},
+  "seed": 2025,
+  "max_spots": 256,
+  "batch_size": 128,
+  "threads": 4,
+  "warmup": 1,
+  "repeats": 5,
+  "sigma_override": null,
+  "atol": 0.0,
+  "rtol": 0.0,
+  "timeout_s": 3600
+}

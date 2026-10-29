@@ -70,23 +70,26 @@ def choose_sigma(
             sq_matrices[key] = compute_spline_coefficients(q_mat, np.array(x_vals))
 
     # ── Pre-convert arrays to torch tensors ──
-    x_j = torch.tensor(x_vals, device=device)
-    P_gpu = torch.tensor(norm_profiles, device=device)
-    q_gpu = {k: torch.tensor(v, device=device) for k, v in q_matrices.items()}
-    sq_gpu = {k: torch.tensor(v, device=device) for k, v in sq_matrices.items()}
-    fit_counts = torch.tensor(spatial_counts[fit_idx], device=device)
-    fit_numi = torch.tensor(spatial_numi[fit_idx], device=device)
+    x_j = torch.as_tensor(x_vals, device=device)
+    P_gpu = torch.as_tensor(norm_profiles, device=device)
+    fit_counts = torch.as_tensor(spatial_counts[fit_idx], device=device)
+    fit_numi = torch.as_tensor(spatial_numi[fit_idx], device=device)
 
     sigma = sigma_init
 
+    def stage_sigma_tables(sigma):
+        key = str(sigma)
+        Q = torch.as_tensor(q_matrices[key], device=device)
+        SQ = torch.as_tensor(sq_matrices[key], device=device)
+        return Q, SQ
+
     for epoch in range(n_epoch):
         # ── Step 1: Fit weights at current sigma ──
-        if str(sigma) not in q_gpu:
+        if str(sigma) not in q_matrices:
             diffs = np.abs(SIGMA_ALL - sigma)
             sigma = int(SIGMA_ALL[np.argmin(diffs)])
 
-        Q_cur = q_gpu[str(sigma)]
-        SQ_cur = sq_gpu[str(sigma)]
+        Q_cur, SQ_cur = stage_sigma_tables(sigma)
 
         weights, _ = solve_irwls_batch_shared(
             P=P_gpu,
@@ -102,6 +105,7 @@ def choose_sigma(
             _calc_q_fn=_calc_q_all_eager,
         )
         weights = torch.clamp(weights, min=0.0)
+        del Q_cur, SQ_cur
 
         # ── Step 2: Fixed prediction ──
         prediction = (weights @ P_gpu.T) * fit_numi[:, None]  # (n, G)
@@ -133,21 +137,21 @@ def choose_sigma(
         mult_fac_vec = torch.arange(8, 13, dtype=X.dtype, device=device) / 10.0
 
         # Filter to available sigma candidates
-        valid_cands = [s for s in sigma_cands if str(s) in q_gpu]
+        valid_cands = [s for s in sigma_cands if str(s) in q_matrices]
         if not valid_cands:
             break
 
         # Evaluate each sigma candidate: pick best scale factor per sigma
         scores = torch.zeros(len(valid_cands), device=device)
         for sig_idx, s in enumerate(valid_cands):
-            Q_s = q_gpu[str(s)]
-            SQ_s = sq_gpu[str(s)]
+            Q_s, SQ_s = stage_sigma_tables(s)
             fac_scores = torch.zeros(len(mult_fac_vec), device=device)
             for fac_idx in range(len(mult_fac_vec)):
                 X_fac = X * mult_fac_vec[fac_idx]
                 d0, _, _ = _calc_q_all_eager(Y, X_fac, Q_s, SQ_s, x_j, k_val)
                 fac_scores[fac_idx] = -torch.sum(d0)
             scores[sig_idx] = fac_scores.min()
+            del Q_s, SQ_s
 
         best_idx = int(torch.argmin(scores).item())
         best_sigma = valid_cands[best_idx]

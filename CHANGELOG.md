@@ -3,6 +3,17 @@
 All notable changes to rctd-py are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **Bounded GPU input residency for full mode.** `run_rctd(..., mode="full", stream_gpu=True)` transfers one pixel batch at a time while preserving the existing resident path as the default. Automatic streaming batches are capped at 1,024 pixels, and the CLI exposes the same path through `--stream-gpu`.
+- **A fixed-data regression harness** under `benchmarks/regression` freezes source and input identities, runs stages in fresh processes, and compares raw outputs, runtime, CUDA allocated/reserved memory, process RSS, and optional annotation agreement.
+
+### Changed
+- **Bulk platform-effect reductions run in CPU RAM.** Only the reduced gene vector and total UMI scalar are transferred to the compute device, while long-double accumulation is retained.
+- **Sigma Q/SQ tables are staged on demand.** Sigma calibration transfers only the current table pair instead of keeping all 126 pairs resident on the GPU. On the documented 11,326-spot FP64 case this reduced end-to-end peak CUDA allocation from 2,112 MiB to 1,272 MiB with zero-difference outputs in the fixed regression comparison.
+- **IRWLS releases derivative workspaces earlier.** Derivative scaling and sign changes reuse their existing tensors, and large intermediates are released after their last use.
+
 ## [0.4.0] — 2026-10-19
 
 rctd-py 0.4.0 matches R spacexr: wherever both estimate the same sigma, every spot class and cell-type call is the same as R's. Getting there changed a few details of the fit (see Fixed), so **results can differ from 0.3.9**. On Visium about 15% of spots get a different dominant cell type, and on Visium HD and StrataMap 7-19% of spot classes. On imaging platforms (Xenium, CosMx, Atera) fewer than 1% of spot classes change, plus a few percent of first-type labels. Every difference we checked moves the call to R's. To reproduce 0.3.9 results exactly, pin `rctd-py==0.3.9`.

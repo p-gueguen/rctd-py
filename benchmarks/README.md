@@ -4,6 +4,10 @@ Development benchmarks used while optimising rctd-py. The published runtime and 
 against R spacexr (15 datasets, three modes) is in [docs/benchmarks.md](../docs/benchmarks.md),
 with its setup; its scripts are not in this repository.
 
+For repeatable comparisons of local code changes on fixed real data, see
+[regression/README.md](regression/README.md). That independent harness freezes source/data,
+checks numerical regression, and reports runtime, CUDA/RAM memory and annotation agreement.
+
 ## Files
 
 | File | Purpose |

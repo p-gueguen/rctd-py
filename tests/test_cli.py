@@ -40,6 +40,12 @@ def test_version():
     assert "version" in result.output.lower()
 
 
+def test_run_help_lists_stream_gpu():
+    result = CliRunner().invoke(main, ["run", "--help"])
+    assert result.exit_code == 0
+    assert "--stream-gpu" in result.output
+
+
 # ── validate tests ──────────────────────────────────────────────────
 
 
@@ -193,6 +199,25 @@ def test_run_doublet(h5ad_pair_for_run, tmp_path):
     assert out.uns["rctd_mode"] == "doublet"
 
 
+def test_run_rejects_stream_gpu_outside_full(h5ad_pair_for_run, tmp_path):
+    sp_path, ref_path = h5ad_pair_for_run
+    result = CliRunner().invoke(
+        main,
+        [
+            "run",
+            str(sp_path),
+            str(ref_path),
+            "--mode",
+            "doublet",
+            "--stream-gpu",
+            "--output",
+            str(tmp_path / "unused.h5ad"),
+        ],
+    )
+    assert result.exit_code == 2
+    assert "supports only --mode full" in result.output
+
+
 @pytest.mark.slow
 def test_run_full(h5ad_pair_for_run, tmp_path):
     """rctd run --mode full writes full-mode results."""
@@ -211,6 +236,7 @@ def test_run_full(h5ad_pair_for_run, tmp_path):
             str(out_path),
             "--device",
             "cpu",
+            "--stream-gpu",
         ],
     )
     assert result.exit_code == 0, f"CLI failed: {result.output}"
