@@ -56,20 +56,51 @@ def test_deconvolve_writes_run_rctd_results(synthetic_data, mode):
         np.testing.assert_array_equal(out.obsm["rctd_cell_type_indices"][m], res.cell_type_indices)
 
 
-def test_deconvolve_rerun_drops_previous_mode_keys(synthetic_data):
+def test_deconvolve_rerun_drops_previous_mode_keys_only(synthetic_data):
     spatial, ref = _inputs(synthetic_data)
+    spatial.obs["leiden"] = "0"
+    spatial.obs["rctd_my_label"] = "x"  # a user's own rctd_* key must survive
+    spatial.obsm["spatial"] = np.zeros((spatial.n_obs, 2))
+    spatial.uns["rctd_notes"] = "kept"
     deconvolve(spatial, ref, mode="doublet", batch_size=10, sigma_override=50)
     assert "rctd_spot_class" in spatial.obs
     deconvolve(spatial, ref, mode="full", batch_size=10, sigma_override=50)
     assert spatial.uns["rctd_mode"] == "full"
     assert "rctd_spot_class" not in spatial.obs and "rctd_weights_doublet" not in spatial.obsm
     assert "rctd_converged" in spatial.obs
+    assert {"leiden", "rctd_my_label"} <= set(spatial.obs.columns)
+    assert "spatial" in spatial.obsm and spatial.uns["rctd_notes"] == "kept"
+
+
+def test_deconvolve_class_df_names(synthetic_data):
+    spatial, ref = _inputs(synthetic_data)
+    class_df = {n: ("A" if i % 2 else "B") for i, n in enumerate(ref.cell_type_names)}
+    cfg = RCTDConfig(class_df=class_df)
+    res = run_rctd(spatial, ref, mode="doublet", config=cfg, batch_size=10, sigma_override=50)
+    deconvolve(spatial, ref, mode="doublet", config=cfg, batch_size=10, sigma_override=50)
+    m = res.pixel_mask
+    got = spatial.obs["rctd_first_class_name"].astype(str).values
+    assert (got[m] == np.asarray(res.first_class_name).astype(str)).all()
+    assert (got[~m] == "filtered").all()
+
+
+def test_deconvolve_rejects_backed(synthetic_data, tmp_path):
+    import anndata
+
+    spatial, ref = _inputs(synthetic_data)
+    spatial.write_h5ad(tmp_path / "s.h5ad")
+    backed = anndata.read_h5ad(tmp_path / "s.h5ad", backed="r")
+    with pytest.raises(ValueError, match="to_memory"):
+        deconvolve(backed, ref, mode="full", batch_size=10, sigma_override=50)
 
 
 def test_deconvolve_copy_leaves_input_unchanged(synthetic_data):
     spatial, ref = _inputs(synthetic_data)
+    spatial.uns["meta"] = {"a": 1}
     keys = (list(spatial.obs.columns), list(spatial.obsm.keys()), list(spatial.uns.keys()))
     out = deconvolve(spatial, ref, mode="full", batch_size=10, sigma_override=50, copy=True)
     assert out is not spatial
     assert "rctd_weights" in out.obsm and out.uns["rctd_mode"] == "full"
     assert (list(spatial.obs.columns), list(spatial.obsm.keys()), list(spatial.uns.keys())) == keys
+    out.uns["meta"]["a"] = 2
+    assert spatial.uns["meta"]["a"] == 1

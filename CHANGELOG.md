@@ -9,7 +9,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 - **`rctd.deconvolve(adata, reference, ...)` writes the results into the AnnData**, scanpy style: in place by default, or into a new object with `copy=True`. It takes the same arguments as `run_rctd`, computes the same result, and writes the same keys as `rctd run` does to its output file (`obsm["rctd_weights"]`, `obs["rctd_first_type"]`, `obs["rctd_spot_class"]`, ...), with `"filtered"` / NaN for pixels the UMI filters removed.
 
 ### Fixed
-- **A second run on the same data left the first run's keys behind.** Running another mode on an AnnData (or with `rctd run` on a file) that already held rctd-py results kept the earlier mode's `rctd_*` columns next to the new ones, e.g. `obs["rctd_spot_class"]` from a doublet run in a full-mode result. Earlier `rctd_*` keys in `obs`, `obsm` and `uns` are now removed before the new results are written.
+- **A second run on the same data left the first run's keys behind.** Running another mode on an AnnData (or with `rctd run` on a file) that already held rctd-py results kept the earlier mode's `rctd_*` columns next to the new ones, e.g. `obs["rctd_spot_class"]` from a doublet run in a full-mode result. The keys rctd-py writes are now replaced as a set, so an earlier mode's columns go; other keys, including your own `rctd_*` ones, are kept.
 
 ## [0.4.1] — 2026-10-30
 
