@@ -3,15 +3,23 @@
 All notable changes to rctd-py are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.4.1] — 2026-10-30
+
+rctd-py 0.4.1 needs less GPU memory, most of all in multi mode on imaging panels and, with the new `stream_gpu` option, in full mode on large datasets. Run time is unchanged. **Results are bit-identical to 0.4.0 at the same `batch_size`** in full, doublet and multi mode, float32 and float64, on CPU and GPU, with and without `stream_gpu` (checked against the released 0.4.0 on Xenium and Visium HD data, including a reference of 12 cell types and the CLI). One caveat: from Python, the default `batch_size="auto"` sizes the batch from free GPU memory, so 0.4.1 can pick a larger batch than 0.4.0 did, and a different batch size changes weights in the last digits on data larger than one batch. Pass an integer `batch_size` to reproduce a 0.4.0 run exactly; the CLI always does (`--batch-size 10000` by default).
+
+### Added
+- **`stream_gpu` for full mode** ([#42](https://github.com/p-gueguen/rctd-py/pull/42), by @Bowen-Man). `run_rctd(..., mode="full", stream_gpu=True)` (or `run_full_mode(..., stream_gpu=True)`) keeps the spatial count matrix in host memory and copies one batch at a time to the GPU, so that part of GPU memory follows `batch_size` rather than the number of pixels. On Visium HD (103k bins, 4,041 fitted genes, 79 types, float64, L40S) the full-mode peak goes from 6.9 GB to 4.0 GB at `batch_size=10000` in the same run time (1,100-1,200 s), and to about 1.1 GB at `batch_size=1024`. It is off by default. Doublet and multi mode still copy the whole count matrix to the GPU and raise `ValueError` with `stream_gpu=True`.
+- **`rctd run --stream-gpu`**, the same option on the command line. It applies to `--mode full` only; with another mode the command stops with a usage error before any work.
 
 ### Changed
+- **Sigma estimation stages one Q/SQ table pair on the GPU at a time** instead of all 126 ([#42](https://github.com/p-gueguen/rctd-py/pull/42)), which lowers the peak of that step from about 1 GB to about 0.2 GB.
+- **The bulk platform-effect fit reduces the counts on the CPU** ([#42](https://github.com/p-gueguen/rctd-py/pull/42)); only the reduced gene vector and total UMI move to the device.
+- **IRWLS reuses its temporaries** ([#42](https://github.com/p-gueguen/rctd-py/pull/42)): derivative workspaces are updated in place and freed after their last use.
+- **GPU eigh runs in chunks of 1,024 matrices in float64 for matrices up to 32 x 32.** cuSOLVER's batched workspace grows with the batch (about 5.2 GB for 10,000 matrices) and set the multi-mode peak. Multi mode always benefits, since it fits at most 4 types per pixel: in float64 it now peaks at 945 MiB instead of 5,378 MiB on Xenium and at 9.4 GB instead of 12.1 GB on Visium HD. Full and doublet mode benefit when they run eigh on the GPU with up to 32 cell types (on Ampere/Ada GPUs, up to 16). float32 keeps a single call, because chunking there moved full-mode weights by up to 4e-4.
+- **Peak GPU memory with all of the above** (allocated, L40S, 0.4.0 to 0.4.1): Xenium liver (14k cells, 45 types, 206 genes) in doublet and full mode 945 to 731 MiB in float64 and 945 to 365 MiB in float32; a 12-type reference on Xenium 5,839 to 1,440 MiB in all three modes (float64); Visium HD in float64, full mode 7.8 to 6.9 GB and multi mode 12.1 to 9.4 GB. Visium HD doublet mode is unchanged (8.3 GB in float64, 4.2 GB in float32).
 
-- **Lower GPU memory use in full mode.** `run_rctd(..., mode="full", stream_gpu=True)` can now keep the complete spatial count matrix in host memory and transfer only the current batch to the GPU. The existing resident path remains the default. Doublet and multi mode still pre-stage the full spatial count matrix.
-- **Lower GPU memory use during sigma estimation.** Q/SQ likelihood tables are staged one sigma pair at a time instead of retaining all 126 pairs on the GPU simultaneously.
-- **Lower GPU residency during bulk platform-effect fitting.** Spatial counts and nUMI remain CPU-resident for the bulk reductions; only the reduced gene vector and scalar are moved to the compute device.
-- **Reduced temporary allocations in shared IRWLS.** Derivative workspaces are reused in place and released after their last use. Numerical output remains bit-identical to 0.4.0 for the tested full, doublet and multi workflows.
-- **Documented CUDA allocator fragmentation mitigation.** `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` can reduce reserved CUDA memory on large workloads where allocator fragmentation is significant.
+### Documentation
+- **GPU memory in the [installation guide](https://rctd-py.readthedocs.io/en/stable/installation.html)**: `stream_gpu` as an alternative to a smaller `batch_size` in full mode, and `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` for reserved memory. PyTorch can reserve more than it allocates, and in doublet and multi mode on Visium HD it reserves more than with 0.4.0 (doublet, float32: 6.6 GB vs 5.2 GB); the setting brings that to 4.6 GB with identical output.
 
 ## [0.4.0] — 2026-10-19
 

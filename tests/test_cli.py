@@ -220,6 +220,39 @@ def test_run_full(h5ad_pair_for_run, tmp_path):
     assert out.uns["rctd_mode"] == "full"
 
 
+def test_run_rejects_stream_gpu_outside_full(h5ad_pair_for_run, tmp_path):
+    """--stream-gpu is full mode only and fails before any work."""
+    sp_path, ref_path = h5ad_pair_for_run
+    result = CliRunner().invoke(
+        main,
+        ["run", str(sp_path), str(ref_path), "--mode", "doublet", "--stream-gpu"]
+        + ["--output", str(tmp_path / "unused.h5ad")],
+    )
+    assert result.exit_code == 2
+    assert "supports only --mode full" in result.output
+    assert not (tmp_path / "unused.h5ad").exists()
+
+
+@pytest.mark.slow
+def test_run_full_stream_gpu_matches_resident(h5ad_pair_for_run, tmp_path):
+    """rctd run --mode full --stream-gpu writes the same weights as without it."""
+    sp_path, ref_path = h5ad_pair_for_run
+    outs = {}
+    for name, extra in (("resident", []), ("stream", ["--stream-gpu"])):
+        out_path = tmp_path / f"{name}.h5ad"
+        result = CliRunner().invoke(
+            main,
+            ["run", str(sp_path), str(ref_path), "--mode", "full", "--batch-size", "7"]
+            + ["--output", str(out_path), "--device", "cpu", "--sigma-override", "50"]
+            + extra,
+        )
+        assert result.exit_code == 0, f"CLI failed: {result.output}"
+        outs[name] = anndata.read_h5ad(out_path)
+    a, b = outs["resident"], outs["stream"]
+    np.testing.assert_array_equal(a.obsm["rctd_weights"], b.obsm["rctd_weights"])
+    assert a.obs.equals(b.obs)
+
+
 @pytest.mark.slow
 def test_run_multi(h5ad_pair_for_run, tmp_path):
     """rctd run --mode multi writes multi-mode results."""

@@ -62,6 +62,21 @@ Two optimization layers accelerate the hot path beyond basic `torch.compile`:
 
 2. **Auto batch sizing** (`_types.py:auto_batch_size`): Calculates optimal GPU batch size from available VRAM using per-pixel memory footprint estimation. Used by `run_rctd(batch_size="auto")` (default).
 
+### GPU memory (0.4.1)
+
+- Doublet and multi mode copy the whole spatial count matrix to the device once (`_doublet.py`,
+  `_multi.py`); full mode does too unless `stream_gpu=True` (`run_rctd` / `run_full_mode`, CLI
+  `--stream-gpu`), which copies one batch at a time. `run_rctd` rejects `stream_gpu` outside full
+  mode. Output is bit-identical either way at the same `batch_size`.
+- `choose_sigma` stages one Q/SQ table pair on the device at a time; `fit_bulk` reduces counts on
+  the CPU and moves only the reduced vector.
+- `_eigh_safe` (`_irwls.py`) runs float64 GPU eigh in chunks of 1024 when K <= 32, because the
+  cuSOLVER workspace grows with the batch (~5.2 GB for 10000 matrices, the old multi-mode peak).
+  Do not extend the chunking to float32: it moved full-mode weights by up to 4e-4.
+- Any memory change must keep output bit-identical to the previous release at a fixed integer
+  `batch_size`; a different batch size legitimately changes weights in the last digits, so
+  `batch_size="auto"` is not a valid comparison setting.
+
 **Why no custom Triton kernel**: A hand-written Triton kernel for `calc_q_all` was attempted but causes float64 precision divergence in the grid index computation (`sqrt → floor → m`). Even with dtype-preserving casts, Triton's `tl.math.sqrt` produces different rounding than PyTorch's `torch.sqrt` at float64 boundaries, shifting spline table lookups and changing results. `torch.compile` already generates fused Inductor/Triton kernels from `_calc_q_all_impl` that are both fast and hash-identical to the eager implementation.
 
 ## CLI
@@ -162,11 +177,13 @@ Before editing `examples/tutorial.py` or a tutorial claim, read `.claude/docs/tu
 
 ## CI
 
-CI runs `ruff check src/ tests/` AND `ruff format --check src/ tests/`. Both must pass. Always run both locally before pushing:
+CI runs `ruff check src/ tests/ docs/` AND `ruff format --check src/ tests/ docs/` (ruff pinned
+to 0.17.0, which also lints Python code blocks in Markdown). Both must pass. Always run both
+locally before pushing:
 
 ```bash
-uv run ruff check src/ tests/
-uv run ruff format src/ tests/
+uv run ruff check src/ tests/ docs/
+uv run ruff format src/ tests/ docs/
 ```
 
 CI failing on a PyTorch API change or a runner g++ ICE: `.claude/docs/ci-notes.md`.

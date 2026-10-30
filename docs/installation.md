@@ -67,13 +67,28 @@ version matters (`nvidia-smi`, top right).
 
 ### GPU memory
 
-Peak VRAM grows with `batch_size` and with the number of fitted genes and cell types. In the default resident path, the spatial count matrix is copied to the GPU: for 557,300 Visium HD bins and 4,638 fitted genes, that matrix alone is about 19 GiB in float64.
+Peak VRAM grows with `batch_size` and with the number of fitted genes and cell types. By default
+the whole spatial count matrix (pixels x fitted genes) is also copied to the GPU, so on large
+datasets it grows with the number of pixels too: for 557,300 Visium HD bins and 4,638 fitted
+genes, that matrix alone is about 19 GiB in float64. `dtype="float32"` about halves the count
+matrix and the solver's working memory.
 
-For full mode, `run_rctd(..., mode="full", stream_gpu=True)` avoids keeping the complete spatial count matrix on the GPU. Instead, counts and nUMI values are transferred batch by batch, so the spatial-input component of GPU memory scales with `batch_size` rather than the total number of pixels. On a tested Visium HD dataset this reduced full-mode peak GPU memory from about 11 GB to about 1 GB at the same run time, with output bit-identical to the default path.
+In full mode, `stream_gpu=True` keeps the count matrix in host memory and copies one batch at a
+time to the GPU, so that part follows `batch_size` instead of the number of pixels. From Python,
+`run_rctd(..., mode="full", stream_gpu=True)`; on the command line,
+`rctd run --mode full --stream-gpu`. On Visium HD (103k bins, 4,041 fitted genes, 79 types,
+float64, NVIDIA L40S) it lowered the full-mode peak from 6.9 GB to 4.0 GB at `batch_size=10000`
+with no change in run time, and to about 1.1 GB at `batch_size=1024`. The output is bit-identical
+to a run without it at the same `batch_size`. Doublet and multi mode always copy the whole count
+matrix and reject `stream_gpu`.
 
-`stream_gpu` currently applies only to full mode. Doublet and multi mode still pre-stage the complete spatial count matrix on the device. `dtype="float32"` approximately halves the storage required by floating-point count and workspace tensors.
-
-From Python, `run_rctd` defaults to `batch_size="auto"`, sized from the free GPU memory; the CLI defaults to `--batch-size 10000`. At `batch_size=10000` in float64, the {doc}`benchmarks <benchmarks>` peaked at 5.3-5.6 GiB on the small Xenium panels (242-376 genes) and at 7-16 GiB on the other datasets (up to 714,535 pixels). Set it explicitly to fit a smaller card or a shared GPU:
+From Python, `run_rctd` defaults to `batch_size="auto"`, sized from the free GPU memory; the CLI
+defaults to `--batch-size 10000`. At `batch_size=10000` in float64, the
+{doc}`benchmarks <benchmarks>` (0.4.0) peaked at 5.3-5.6 GiB on the small Xenium panels (242-376
+genes), from multi mode, and at 7-16 GiB on the other datasets (up to 714,535 pixels). 0.4.1
+brings the Xenium multi-mode peak to about 1 GiB (5,378 to 945 MiB on Xenium, float64). Set
+`batch_size` explicitly to fit a smaller card or a shared GPU, or, in full mode, use `stream_gpu`
+first:
 
 | Available VRAM | Recommended `batch_size` |
 |---|---|

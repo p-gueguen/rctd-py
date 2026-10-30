@@ -54,6 +54,10 @@ an L40S in doublet mode (0.4.0, CUDA 13) it was 1.3x faster on Xenium (K=45) and
 unchanged. The default `float64` matches R's
 arithmetic.
 
+In full mode on a large dataset, `run_rctd(spatial, reference, mode="full", stream_gpu=True)`
+copies the counts to the GPU one batch at a time instead of all at once, with the same output; see
+[GPU memory](installation.md#gpu-memory).
+
 ## Hierarchical cell types (`class_df`)
 
 When the reference has fine subtypes (for example several T cell states), doublet mode may not be

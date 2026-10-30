@@ -325,14 +325,17 @@ def run_rctd(
         mode: Deconvolution mode ('full', 'doublet', or 'multi')
         config: Configuration parameters
         batch_size: GPU batch size for pixel processing. "auto" calculates
-            optimal size from available VRAM.
+            optimal size from available VRAM. Pass an integer for reproducible
+            output: on data larger than one batch, a different batch size
+            changes weights in the last digits.
         sigma_override: Skip sigma estimation and use this value, as an integer
             100 times sigma (63 means sigma 0.63). From an R run:
             ``round(100 * myRCTD@internal_vars$sigma)``.
-        stream_gpu:
-            If True, keep full-mode spatial inputs CPU-resident and transfer
-            only the current batch to GPU. Currently supported only for
-            mode="full".
+        stream_gpu: Full mode only. If True, keep the spatial counts in host
+            memory and copy one batch at a time to the GPU instead of the whole
+            count matrix, which lowers peak GPU memory on large datasets. The
+            output is identical at the same ``batch_size``. Other modes raise
+            ``ValueError``.
 
     Returns:
         Result object containing weights and predictions.

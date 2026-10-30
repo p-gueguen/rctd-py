@@ -163,6 +163,7 @@ assert "cell_type" in adata.obs.columns
 | `--cell-type-col` | `cell_type` | Reference `obs` column with labels |
 | `--umi-min` | `100` | **Use 20 for Xenium**; 100 is the R `spacexr` default |
 | `--umi-max` | `20000000` | Per-pixel UMI ceiling |
+| `--umi-min-sigma` | `300` | Minimum UMI for the pixels sampled for sigma estimation |
 | `--sigma-override` | _(auto)_ | Skip sigma estimation, force a fixed value (pass R's sigma when validating against R) |
 | `--gene-cutoff` | `0.000125` | Bulk gene expression threshold |
 | `--fc-cutoff` | `0.5` | Bulk fold-change threshold |
@@ -173,7 +174,12 @@ assert "cell_type" in adata.obs.columns
 | `--doublet-threshold` | `20.0` | Score gain over the best singlet needed to call a doublet, or to add another type in multi mode |
 | `--cell-min` | `25` | Min cells per reference type |
 | `--n-max-cells` | `10000` | Max cells per reference type (downsampling) |
+| `--min-umi-ref` | `100` | Minimum UMI for reference cells |
 | `--eigh-threshold` | _(arch default)_ | Force the K cutoff for the GPU-vs-CPU eigh dispatch (issue #22 diagnostic) |
+| `--stream-gpu` | off | Full mode only (usage error otherwise): copy one batch of counts to the GPU at a time instead of the whole matrix. Same output at the same `--batch-size` |
+| `--no-compile` | off | Skip `torch.compile` (first-run compile cost, see below) at about 15% slower runs |
+| `--class-df` | _(none)_ | Doublet mode: TSV with `cell_type` and `class` columns for hierarchical fallback |
+| `--table` | _(none)_ | SpatialData store with several tables: the table to read from the spatial input |
 | `--json` | off | Machine-readable summary |
 | `--quiet / -q` | off | Suppress progress output |
 
@@ -207,7 +213,7 @@ On hosts with many cores running on Volta / Turing / Ampere / Ada (i.e. forced i
 
 ### VRAM guidance
 
-Peak VRAM grows with the batch size and with the number of genes and cell types; on large whole-transcriptome datasets it also rises with the number of pixels. Measured at the CLI default `--batch-size 10000`, float64, L40S, highest of the three modes (on the small Xenium panels the peak comes from multi mode; full and doublet stay under 1 GiB):
+Peak VRAM grows with the batch size and with the number of genes and cell types; on large whole-transcriptome datasets it also rises with the number of pixels. Measured with 0.4.0 at the CLI default `--batch-size 10000`, float64, L40S, highest of the three modes (on the small Xenium panels the peak comes from multi mode; full and doublet stay under 1 GiB). 0.4.1 lowers these peaks with bit-identical results: Xenium multi mode 5,378 to 945 MiB, Visium HD (103k bins) multi mode 12.1 to 9.4 GB:
 
 | Data | Genes | K | Peak VRAM |
 |------|------:|--:|----------:|
@@ -216,9 +222,9 @@ Peak VRAM grows with the batch size and with the number of genes and cell types;
 | Whole transcriptome (Visium, Visium HD, Slide-seq, CosMx, Atera), up to 714k pixels | 15-23k | 7-78 | 7-16 GiB |
 | Visium HD breast 8 µm bins, 557k pixels | 17.6k | 40 | 24-29 GiB |
 
-rctd-py copies the whole count matrix (pixels × fitted genes) to the GPU, so very large datasets need VRAM whatever the batch size: 557k bins × 4,638 genes is 19 GiB in float64 alone. On a smaller GPU, lower `--batch-size` (e.g. 2000-5000), or use `--dtype float32`, which about halves the peak on whole-transcriptome data, the count matrix included.
+By default rctd-py copies the whole count matrix (pixels × fitted genes) to the GPU, so very large datasets need VRAM whatever the batch size: 557k bins × 4,638 genes is 19 GiB in float64 alone. In full mode, `--stream-gpu` (`run_rctd(..., mode="full", stream_gpu=True)`) copies one batch at a time instead, with the same output at the same batch size: Visium HD (103k bins, 79 types, float64) full mode 6.9 GB to 4.0 GB at `--batch-size 10000`, about 1.1 GB at 1024, same run time. Doublet and multi mode always copy the whole matrix and reject it. On a smaller GPU, use `--stream-gpu` in full mode, lower `--batch-size` (e.g. 2000-5000), or use `--dtype float32`, which about halves the peak on whole-transcriptome data, the count matrix included.
 
-`run_rctd(batch_size="auto")` (Python API only; the CLI takes an integer) reads *free* VRAM at startup and budgets 70% of it, using a per-pixel estimate of the IRWLS intermediates. On a shared GPU where another job's allocation can grow during the run, pin an explicit batch size to avoid mid-run OOM, and consider `PYTORCH_ALLOC_CONF=expandable_segments:True`.
+`run_rctd(batch_size="auto")` (Python API only; the CLI takes an integer) reads *free* VRAM at startup and budgets 70% of it, using a per-pixel estimate of the IRWLS intermediates. On a shared GPU where another job's allocation can grow during the run, pin an explicit batch size to avoid mid-run OOM, and consider `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`, which lowers reserved (not allocated) memory with identical output (Visium HD doublet float32: 6.6 to 4.6 GB reserved).
 
 ### Generic SLURM template
 
@@ -332,17 +338,7 @@ saveRDS(spatial_obj, "spatial_rctd.rds")
 - **Doublet mode under-assigns fine subtypes on small panels.** When a reference fine subtype has markers that the spatial panel can't reliably detect (e.g. CD4 markers on a 300-500-gene Xenium panel), doublet mode falls back to a coarser label or `doublet_uncertain` rather than over-calling the subtype. Always `value_counts()` your subtype × group counts before slicing by subtype for downstream analysis -- sparsity at the call layer can look like a biological finding. To re-split a coarse pool into subtypes, use a reference classifier (SingleR, ProjecTILs) rather than a per-cell marker argmax (low capture biases argmax toward high-capture markers).
 - **`batch_size="auto"` on a shared GPU can OOM mid-run.** It sizes from free VRAM at startup; if another job grows afterwards, the IRWLS launch can fail. Pin an integer `batch_size` (e.g. 5000-8000) on contested nodes; the CLI's `--batch-size` is always an integer (default 10000).
 - **Determinism.** rctd-py seeds its sampling (seed 42), so reruns on the same input and install pick the same sigma; bitwise reproducibility of GPU results is not guaranteed. R does not seed `sample()` in `choose_sigma_c`, so R runs can differ. Use `--sigma-override` to match a given R run.
-
-## Multi-modal (RNA + protein)
-
-Joint RNA + protein deconvolution (Gaussian/WLS protein block sharing the per-spot cell-type weights) is in development on the `feat/multimodal-protein` branch. The objective is `L(w) = L_RNA(w) + λ · L_protein(w)`; protein enters the IRWLS gradient/Hessian and the doublet pair/singlet scores. Per-type protein profiles are bootstrapped from RNA-confident singlets, optionally combined with curated signed gates (positive + negative markers per type) to break RNA-degenerate types apart. Check the PR list on https://github.com/p-gueguen/rctd-py/pulls for current status before assuming the API is on `main`.
-
-**Gotchas observed on the branch** (API: `run_rctd_multimodal(...)`, `RCTDConfig(protein_weight=..., protein_norm=...)`):
-
-- **Never route continuous protein through count-fusion.** `run_rctd_multimodal([RNA, protein], fusion="count")` treats every modality as Poisson counts; fed continuous intensity (~1e6-1e7) the protein likelihood is flat and the joint collapses to a single constant weight vector across all pixels (corr ~0, dominant-type accuracy ~chance) -- confirmed on a ~62-plex CosMx dataset and a synthetic RNA-degenerate-pair test. Use `fusion="protein_wls"` (protein enters as a Gaussian/WLS block), never `fusion="count"`, for any continuous protein modality.
-- **Raise the UMI ceiling for protein-intensity values.** The RNA-count ceiling (`--umi-max` default 2e7) silently filters out protein-scale per-cell sums (e.g. CosMx protein ~3e7, ~6e7 for a 2-cell pseudospot) -- nearly all pixels get dropped and scoring crashes on a shape mismatch. When feeding protein-scale values, set the ceiling to 1e9-1e12; RNA totals are hundreds-to-thousands, so a high ceiling leaves RNA membership unchanged.
-- **`protein_weight="auto"` underweights a rich, informative panel.** The per-feature heuristic balances gradient magnitude at init, not marker informativeness -- on a deep, trustworthy panel (60+ markers) it lands low (~0.1) and only ties RNA-only, while a fixed weight ~4 can be best-in-class. Sweep it up to 4+ even for sharpening (not just to override a wrong RNA call) when the panel is deep. `protein_norm="arcsinh_robust"` handles both IF intensity and protein counts; prefer it over per-cell CLR for IF (CLR couples the few channels via the per-cell geometric mean).
-- **`class_df` (doublet mode, on `main` since v0.3.2) relaxes the singlet/doublet/reject confidence threshold for within-class ambiguity -- it does NOT change which type wins.** Grouping same-lineage subtypes (e.g. several fibroblast subtypes into one `Fibroblast` class) recovers more usable singlets with no accuracy downside, but it will NOT fix a wrong-type-assignment problem (that lives upstream in candidate scoring). Keep ungrouped any ambiguity you actually need to resolve.
+- **`class_df` (doublet mode, since v0.3.2) relaxes the singlet/doublet/reject confidence threshold for within-class ambiguity -- it does NOT change which type wins.** Grouping same-lineage subtypes (e.g. several fibroblast subtypes into one `Fibroblast` class) recovers more usable singlets with no accuracy downside, but it will NOT fix a wrong-type-assignment problem (that lives upstream in candidate scoring). Keep ungrouped any ambiguity you actually need to resolve.
 
 ## Resources
 
@@ -350,4 +346,4 @@ Joint RNA + protein deconvolution (Gaussian/WLS protein block sharing the per-sp
 - **Source + issues:** https://github.com/p-gueguen/rctd-py
 - **CHANGELOG:** https://github.com/p-gueguen/rctd-py/blob/main/CHANGELOG.md
 - **Original RCTD paper:** Cable et al., *Nature Biotechnology* 2022 (R `spacexr`)
-- **Tutorial notebook (Slide-seq cerebellum, end-to-end):** https://rctd-py.readthedocs.io/en/latest/tutorials/slideseq_cerebellum.html
+- **Tutorial notebook (Slide-seq cerebellum, end-to-end):** https://rctd-py.readthedocs.io/en/stable/tutorials/slideseq_cerebellum.html

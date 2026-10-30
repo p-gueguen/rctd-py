@@ -516,6 +516,14 @@ def _write_results_to_adata(
     help="GPU batch size for pixel processing.",
 )
 @click.option(
+    "--stream-gpu",
+    is_flag=True,
+    help=(
+        "Full mode only: copy one batch of pixels to the GPU at a time instead of the whole "
+        "count matrix. Same output as without it at the same --batch-size."
+    ),
+)
+@click.option(
     "--sigma-override",
     default=None,
     type=int,
@@ -577,6 +585,7 @@ def run(
     no_compile,
     eigh_threshold,
     batch_size,
+    stream_gpu,
     sigma_override,
     cell_min,
     n_max_cells,
@@ -595,6 +604,9 @@ def run(
     from rctd._rctd import RCTD
     from rctd._reference import Reference
     from rctd._types import RCTDConfig
+
+    if stream_gpu and mode != "full":
+        raise click.BadParameter("supports only --mode full", param_hint="--stream-gpu")
 
     # Default output path
     if output is None:
@@ -686,7 +698,7 @@ def run(
             }
 
             if mode == "full":
-                result = run_full_mode(**kwargs)
+                result = run_full_mode(**kwargs, stream_gpu=stream_gpu)
             elif mode == "doublet":
                 result = run_doublet_mode(**kwargs, config=config)
             elif mode == "multi":
