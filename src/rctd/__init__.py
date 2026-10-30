@@ -1,3 +1,4 @@
+from rctd._anndata import deconvolve
 from rctd._doublet import run_doublet_mode
 from rctd._full import run_full_mode
 from rctd._multi import run_multi_mode
@@ -22,6 +23,7 @@ __all__ = [
     "RCTD",
     "Reference",
     "run_rctd",
+    "deconvolve",
     "RCTDConfig",
     "FullResult",
     "DoubletResult",
