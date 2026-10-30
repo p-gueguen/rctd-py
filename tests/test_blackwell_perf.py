@@ -468,3 +468,29 @@ def test_doublet_mode_results_unchanged(synthetic_data):
     np.testing.assert_array_equal(res_a.second_type, res_b.second_type)
     # Continuous weights match within IRWLS tol
     np.testing.assert_allclose(res_a.weights_doublet, res_b.weights_doublet, atol=1e-3, rtol=1e-3)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
+@pytest.mark.parametrize("K", [3, 16, 45, 78])
+def test_eigh_safe_chunking_is_bit_identical_and_bounds_workspace(K):
+    """_eigh_safe sub-batches float64 GPU eigh: same eigenpairs bit for bit as one call, and
+    for K <= 32 the cuSOLVER workspace (multi mode's peak) is bounded by the chunk."""
+    from rctd._irwls import _MAX_EIGH_BATCH_SMALL_K, _eigh_safe
+
+    N = 4 * _MAX_EIGH_BATCH_SMALL_K + 7
+    H = _make_psd_batch(N, K, seed=3).to(device="cuda", dtype=torch.float64)
+    torch.cuda.synchronize()
+    base = torch.cuda.memory_allocated()
+    torch.cuda.reset_peak_memory_stats()
+    ev, V = _eigh_safe(H)
+    torch.cuda.synchronize()
+    chunked_peak = torch.cuda.max_memory_allocated() - base
+    del ev, V
+    torch.cuda.reset_peak_memory_stats()
+    ev0, V0 = torch.linalg.eigh(H)
+    torch.cuda.synchronize()
+    whole_peak = torch.cuda.max_memory_allocated() - base
+    ev, V = _eigh_safe(H)
+    assert torch.equal(ev, ev0) and torch.equal(V, V0)
+    if K <= 32:
+        assert chunked_peak < whole_peak / 2

@@ -274,20 +274,25 @@ def _psd_2x2(H: torch.Tensor, epsilon: float = 1e-3) -> tuple[torch.Tensor, torc
 # certain GPU architectures (e.g. Blackwell / compute capability 12.0,
 # confirmed with CUDA 12.8 + PyTorch 2.9).  The exact threshold depends on K
 # (e.g. ~31650 for K=3, ~27430 for K=16) but stays above 27000 for K≤16.
-# We sub-batch eigh calls at 25000 to stay safely below the limit for all K.
 _MAX_EIGH_BATCH: int = 25000
+# For K <= 32 the batched solver's workspace grows with the batch: ~5.2 GB in float64 for
+# 10000 matrices on an L40S, the peak of multi mode. Chunks of 1024 cut it ~10x with
+# bit-identical float64 results. Not in float32: there the chunking moved full-mode weights
+# by up to 4e-4 on real data, so float32 keeps one call. Larger K has no such workspace.
+_MAX_EIGH_BATCH_SMALL_K: int = 1024
 
 
 def _eigh_safe(H: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-    """torch.linalg.eigh with sub-batching to avoid cuSOLVER batch-size limits."""
+    """torch.linalg.eigh with sub-batching to bound cuSOLVER batch size and workspace."""
     N = H.shape[0]
-    if N <= _MAX_EIGH_BATCH or H.device.type != "cuda":
+    small = H.shape[-1] <= 32 and H.dtype == torch.float64
+    chunk = _MAX_EIGH_BATCH_SMALL_K if small else _MAX_EIGH_BATCH
+    if N <= chunk or H.device.type != "cuda":
         return torch.linalg.eigh(H)
-    # Sub-batch to stay under cuSOLVER limit
     all_evals = []
     all_evecs = []
-    for start in range(0, N, _MAX_EIGH_BATCH):
-        evals, evecs = torch.linalg.eigh(H[start : start + _MAX_EIGH_BATCH])
+    for start in range(0, N, chunk):
+        evals, evecs = torch.linalg.eigh(H[start : start + chunk])
         all_evals.append(evals)
         all_evecs.append(evecs)
     return torch.cat(all_evals), torch.cat(all_evecs)
