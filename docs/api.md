@@ -11,6 +11,7 @@
    :toctree: generated
 
    run_rctd
+   deconvolve
    RCTD
    Reference
    RCTDConfig

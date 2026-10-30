@@ -54,6 +54,10 @@ spatial = anndata.read_h5ad("spatial.h5ad")
 
 # normalisation, sigma estimation and deconvolution in one call
 result = run_rctd(spatial, reference, mode="doublet")
+
+# or write the results into the AnnData (obs["rctd_first_type"], obsm["rctd_weights"], ...)
+from rctd import deconvolve
+deconvolve(spatial, reference, mode="doublet")
 ```
 
 | Mode | What it does | Best for |

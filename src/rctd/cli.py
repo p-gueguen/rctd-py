@@ -8,6 +8,8 @@ from pathlib import Path
 
 import click
 
+from rctd._anndata import _write_results_to_adata
+
 
 @click.group()
 @click.version_option(package_name="rctd-py")
@@ -345,98 +347,6 @@ def _build_summary(result, mode, cell_type_names):
         dominant_names = [cell_type_names[i] for i in dominant_idx]
         summary["dominant_type_counts"] = dict(Counter(dominant_names).most_common())
     return summary
-
-
-def _write_results_to_adata(
-    spatial_adata, result, mode, pixel_mask, config_dict, cell_type_names, version
-):
-    """Expand results to full AnnData shape and write slots."""
-    # .h5ad categoricals cannot mix numeric cell-type labels with "filtered"
-    cell_type_names = [str(c) for c in cell_type_names]
-    import numpy as np
-    import pandas as pd
-
-    from rctd._types import SPOT_CLASS_NAMES
-
-    adata = spatial_adata.copy()
-    n_total = adata.n_obs
-    n_types = len(cell_type_names)
-
-    # Weights (all modes)
-    full_weights = np.full((n_total, n_types), np.nan, dtype=np.float32)
-    full_weights[pixel_mask] = result.weights
-    adata.obsm["rctd_weights"] = full_weights
-
-    # Dominant type (all modes)
-    dominant = np.full(n_total, "filtered", dtype=object)
-    dominant_idx = result.weights.argmax(axis=1)
-    dominant[pixel_mask] = [cell_type_names[i] for i in dominant_idx]
-    adata.obs["rctd_dominant_type"] = pd.Categorical(dominant)
-
-    if mode == "full":
-        converged = np.full(n_total, False)
-        converged[pixel_mask] = result.converged
-        adata.obs["rctd_converged"] = converged
-
-    elif mode == "doublet":
-        # Spot class
-        spot_class = np.full(n_total, "filtered", dtype=object)
-        spot_class[pixel_mask] = [SPOT_CLASS_NAMES[i] for i in result.spot_class]
-        adata.obs["rctd_spot_class"] = pd.Categorical(spot_class)
-
-        # First/second type
-        first_type = np.full(n_total, "filtered", dtype=object)
-        first_type[pixel_mask] = [cell_type_names[i] for i in result.first_type]
-        adata.obs["rctd_first_type"] = pd.Categorical(first_type)
-
-        second_type = np.full(n_total, "filtered", dtype=object)
-        second_type[pixel_mask] = [cell_type_names[i] for i in result.second_type]
-        adata.obs["rctd_second_type"] = pd.Categorical(second_type)
-
-        # Class-level ambiguity flags (True = assignment trustworthy only at class level)
-        first_class_flag = np.zeros(n_total, dtype=bool)
-        first_class_flag[pixel_mask] = result.first_class
-        adata.obs["rctd_first_class"] = first_class_flag
-        second_class_flag = np.zeros(n_total, dtype=bool)
-        second_class_flag[pixel_mask] = result.second_class
-        adata.obs["rctd_second_class"] = second_class_flag
-
-        # Class names (only when class_df was provided)
-        if result.first_class_name is not None:
-            first_cn = np.full(n_total, "filtered", dtype=object)
-            first_cn[pixel_mask] = result.first_class_name
-            adata.obs["rctd_first_class_name"] = pd.Categorical(first_cn)
-        if result.second_class_name is not None:
-            second_cn = np.full(n_total, "filtered", dtype=object)
-            second_cn[pixel_mask] = result.second_class_name
-            adata.obs["rctd_second_class_name"] = pd.Categorical(second_cn)
-
-        # Doublet weights
-        full_wt_doublet = np.full((n_total, 2), np.nan, dtype=np.float32)
-        full_wt_doublet[pixel_mask] = result.weights_doublet
-        adata.obsm["rctd_weights_doublet"] = full_wt_doublet
-
-    elif mode == "multi":
-        n_types_per_pixel = np.zeros(n_total, dtype=np.int32)
-        n_types_per_pixel[pixel_mask] = result.n_types
-        adata.obs["rctd_n_types"] = n_types_per_pixel
-
-        max_multi = result.sub_weights.shape[1]
-        full_sub_wt = np.full((n_total, max_multi), np.nan, dtype=np.float32)
-        full_sub_wt[pixel_mask] = result.sub_weights
-        adata.obsm["rctd_sub_weights"] = full_sub_wt
-
-        full_ct_idx = np.full((n_total, max_multi), -1, dtype=np.int32)
-        full_ct_idx[pixel_mask] = result.cell_type_indices
-        adata.obsm["rctd_cell_type_indices"] = full_ct_idx
-
-    # Metadata
-    adata.uns["rctd_mode"] = mode
-    adata.uns["rctd_config"] = config_dict
-    adata.uns["rctd_version"] = version
-    adata.uns["rctd_cell_type_names"] = cell_type_names
-
-    return adata
 
 
 @main.command()

@@ -25,6 +25,19 @@ fitted.obs["spot_class"] = np.asarray(SPOT_CLASS_NAMES)[result.spot_class]
 fitted.obs["first_type"] = names[result.first_type]
 ```
 
+To get the results straight into the AnnData instead, with the same keys `rctd run` writes to its
+output file, use {func}`~rctd.deconvolve` in place of `run_rctd`. It takes the same arguments,
+writes into `spatial` in place (scanpy style; `copy=True` returns a new object) and marks filtered
+pixels `"filtered"` / NaN:
+
+```python
+from rctd import deconvolve
+
+deconvolve(spatial, reference, mode="doublet")
+spatial.obs["rctd_first_type"]  # also rctd_spot_class, rctd_second_type, ...
+spatial.obsm["rctd_weights"]  # pixels x cell types, columns in uns["rctd_cell_type_names"]
+```
+
 ## Deconvolution modes
 
 | Mode | What it does | Best for |

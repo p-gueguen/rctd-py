@@ -3,6 +3,14 @@
 All notable changes to rctd-py are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **`rctd.deconvolve(adata, reference, ...)` writes the results into the AnnData**, scanpy style: in place by default, or into a new object with `copy=True`. It takes the same arguments as `run_rctd`, computes the same result, and writes the same keys as `rctd run` does to its output file (`obsm["rctd_weights"]`, `obs["rctd_first_type"]`, `obs["rctd_spot_class"]`, ...), with `"filtered"` / NaN for pixels the UMI filters removed.
+
+### Fixed
+- **A second run on the same data left the first run's keys behind.** Running another mode on an AnnData (or with `rctd run` on a file) that already held rctd-py results kept the earlier mode's `rctd_*` columns next to the new ones, e.g. `obs["rctd_spot_class"]` from a doublet run in a full-mode result. The keys rctd-py writes are now replaced as a set, so an earlier mode's columns go; other keys, including your own `rctd_*` ones, are kept.
+
 ## [0.4.1] — 2026-10-30
 
 rctd-py 0.4.1 needs less GPU memory, most of all in multi mode on imaging panels and, with the new `stream_gpu` option, in full mode on large datasets. Run time is unchanged. **Results are bit-identical to 0.4.0 at the same `batch_size`** in full, doublet and multi mode, float32 and float64, on CPU and GPU, with and without `stream_gpu` (checked against the released 0.4.0 on Xenium and Visium HD data, including a reference of 12 cell types and the CLI). One caveat: from Python, the default `batch_size="auto"` sizes the batch from free GPU memory, so 0.4.1 can pick a larger batch than 0.4.0 did, and a different batch size changes weights in the last digits on data larger than one batch. Pass an integer `batch_size` to reproduce a 0.4.0 run exactly; the CLI always does (`--batch-size 10000` by default).
