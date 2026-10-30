@@ -31,7 +31,11 @@ def run_full_mode(
         sq_mat: Likelihood spline table for selected sigma
         x_vals: Lambda grid points
         batch_size: Number of pixels to process simultaneously on GPU
-        stream_gpu: If true, transfer only the current pixel batch to GPU
+        device: "auto", "cpu" or "cuda"
+        pixel_mask: Boolean mask of the fitted pixels, stored on the result
+        stream_gpu: If True, keep the counts in host memory and copy only the
+            current batch to the device instead of the whole matrix. Lowers
+            peak GPU memory; the output is identical at the same batch_size.
 
     Returns:
         FullResult object containing weights per pixel.

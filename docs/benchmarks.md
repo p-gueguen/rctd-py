@@ -133,3 +133,8 @@ number of pixels on large whole-transcriptome datasets. On the small Xenium pane
 genes) the peak comes from multi mode; full and doublet mode stay under 1 GiB there. Lower
 `batch_size` to reduce it, or use `dtype="float32"`, which roughly halves it (0.50-0.62x in
 doublet mode on whole-transcriptome data). Peak RAM is the whole Python process, including reading the `.h5ad` files.
+
+These peaks predate 0.4.1, which lowers GPU memory without changing results at the same
+`batch_size`: multi mode on Xenium now peaks at 945 MiB instead of 5,378 MiB, and on Visium HD (103k bins) at
+9.4 GB instead of 12.1 GB (float64, `batch_size=10000`). In full mode, `stream_gpu` also keeps the
+count matrix off the GPU (see {doc}`installation`).
