@@ -67,15 +67,13 @@ version matters (`nvidia-smi`, top right).
 
 ### GPU memory
 
-Peak VRAM grows with `batch_size` and with the number of genes and cell types. It also grows with
-the number of pixels, because rctd-py copies the whole count matrix (pixels x fitted genes) to the
-GPU: for 557,300 Visium HD bins and 4,638 genes that matrix alone is 19 GiB in float64, and the run
-peaked at 24-29 GiB whatever the mode. `batch_size` does not shrink that part; `dtype="float32"`
-halves it. From Python, `run_rctd` defaults to `batch_size="auto"`, sized from the free GPU memory;
-the CLI defaults to `--batch-size 10000`. At `batch_size=10000` in float64, the
-{doc}`benchmarks <benchmarks>` peaked at 5.3-5.6 GiB on the small Xenium panels (242-376 genes) and
-at 7-16 GiB on the other datasets (up to 714,535 pixels). Set it explicitly to fit a smaller card
-or a shared GPU:
+Peak VRAM grows with `batch_size` and with the number of fitted genes and cell types. In the default resident path, the spatial count matrix is copied to the GPU: for 557,300 Visium HD bins and 4,638 fitted genes, that matrix alone is about 19 GiB in float64.
+
+For full mode, `run_rctd(..., mode="full", stream_gpu=True)` avoids keeping the complete spatial count matrix on the GPU. Instead, counts and nUMI values are transferred batch by batch, so the spatial-input component of GPU memory scales with `batch_size` rather than the total number of pixels. On a tested Visium HD dataset this reduced full-mode peak GPU memory from about 11 GB to about 1 GB at the same run time, with output bit-identical to the default path.
+
+`stream_gpu` currently applies only to full mode. Doublet and multi mode still pre-stage the complete spatial count matrix on the device. `dtype="float32"` approximately halves the storage required by floating-point count and workspace tensors.
+
+From Python, `run_rctd` defaults to `batch_size="auto"`, sized from the free GPU memory; the CLI defaults to `--batch-size 10000`. At `batch_size=10000` in float64, the {doc}`benchmarks <benchmarks>` peaked at 5.3-5.6 GiB on the small Xenium panels (242-376 genes) and at 7-16 GiB on the other datasets (up to 714,535 pixels). Set it explicitly to fit a smaller card or a shared GPU:
 
 | Available VRAM | Recommended `batch_size` |
 |---|---|
@@ -85,6 +83,14 @@ or a shared GPU:
 
 Peak host RAM ranged from 4 to 136 GiB on the benchmark datasets and is highest on large
 whole-transcriptome data: 136 GiB for 557,300 Visium HD bins, 113 GiB for 714,535 Atera cells.
+
+PyTorch's CUDA caching allocator may reserve substantially more memory than is currently allocated by live tensors, especially on large workloads with changing allocation sizes. If reserved memory is much higher than allocated memory, setting
+
+```bash
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+```
+
+can reduce allocator fragmentation. On the tested Visium HD doublet workload in float32, this reduced peak reserved memory from 6.6 GB to 4.6 GB without changing the output. This affects allocator reservation and fragmentation; it does not reduce the memory required by live tensors themselves.
 
 ## Known issue: NVRTC missing on Blackwell + CUDA 13
 

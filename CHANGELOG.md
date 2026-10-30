@@ -3,6 +3,16 @@
 All notable changes to rctd-py are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **Lower GPU memory use in full mode.** `run_rctd(..., mode="full", stream_gpu=True)` can now keep the complete spatial count matrix in host memory and transfer only the current batch to the GPU. The existing resident path remains the default. Doublet and multi mode still pre-stage the full spatial count matrix.
+- **Lower GPU memory use during sigma estimation.** Q/SQ likelihood tables are staged one sigma pair at a time instead of retaining all 126 pairs on the GPU simultaneously.
+- **Lower GPU residency during bulk platform-effect fitting.** Spatial counts and nUMI remain CPU-resident for the bulk reductions; only the reduced gene vector and scalar are moved to the compute device.
+- **Reduced temporary allocations in shared IRWLS.** Derivative workspaces are reused in place and released after their last use. Numerical output remains bit-identical to 0.4.0 for the tested full, doublet and multi workflows.
+- **Documented CUDA allocator fragmentation mitigation.** `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` can reduce reserved CUDA memory on large workloads where allocator fragmentation is significant.
+
 ## [0.4.0] — 2026-10-19
 
 rctd-py 0.4.0 matches R spacexr: wherever both estimate the same sigma, every spot class and cell-type call is the same as R's. Getting there changed a few details of the fit (see Fixed), so **results can differ from 0.3.9**. On Visium about 15% of spots get a different dominant cell type, and on Visium HD and StrataMap 7-19% of spot classes. On imaging platforms (Xenium, CosMx, Atera) fewer than 1% of spot classes change, plus a few percent of first-type labels. Every difference we checked moves the call to R's. To reproduce 0.3.9 results exactly, pin `rctd-py==0.3.9`.

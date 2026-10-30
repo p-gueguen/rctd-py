@@ -223,12 +223,14 @@ class RCTD:
         # R: fitBulk uses puck@counts (restricted to gene_list_bulk) and
         #    puck@nUMI (total across ALL original genes, never recomputed)
         print("Fitting bulk platform effects...")
+
         bulk_profiles = self.reference.get_profiles_for_genes(gene_list_bulk)
 
         bulk_weights, norm_prof_bulk = fit_bulk(
-            cell_type_profiles=torch.tensor(bulk_profiles, device=device),
-            spatial_counts=torch.tensor(bulk_counts, device=device),
-            spatial_nUMI=torch.tensor(self.nUMI, device=device),
+            cell_type_profiles=torch.as_tensor(bulk_profiles, device=device),
+            # Keep full spatial data in CPU RAM.
+            spatial_counts=torch.as_tensor(bulk_counts),
+            spatial_nUMI=torch.as_tensor(self.nUMI),
             min_change=self.config.MIN_CHANGE_BULK,
         )
 
@@ -313,6 +315,7 @@ def run_rctd(
     config: RCTDConfig | None = None,
     batch_size: int | str = "auto",
     sigma_override: int | None = None,
+    stream_gpu: bool = False,
 ) -> Union[FullResult, DoubletResult, MultiResult]:  # noqa: UP007
     """Run RCTD pipeline on spatial data.
 
@@ -326,12 +329,18 @@ def run_rctd(
         sigma_override: Skip sigma estimation and use this value, as an integer
             100 times sigma (63 means sigma 0.63). From an R run:
             ``round(100 * myRCTD@internal_vars$sigma)``.
+        stream_gpu:
+            If True, keep full-mode spatial inputs CPU-resident and transfer
+            only the current batch to GPU. Currently supported only for
+            mode="full".
 
     Returns:
         Result object containing weights and predictions.
     """
     if mode not in ["full", "doublet", "multi"]:
         raise ValueError(f"Unknown mode: {mode}")
+    if stream_gpu and mode != "full":
+        raise ValueError("stream_gpu currently supports only mode='full'")
 
     rctd = RCTD(spatial, reference, config)
     rctd.fit_platform_effects(sigma_override=sigma_override)
@@ -341,7 +350,7 @@ def run_rctd(
     dtype_bytes = 8 if rctd.config.dtype == "float64" else 4
 
     if batch_size == "auto":
-        batch_size = auto_batch_size(G, K, dtype_bytes)
+        batch_size = auto_batch_size(G, K, dtype_bytes=dtype_bytes)
         print(f"Auto batch size: {batch_size}")
 
     print(f"Running in {mode} mode...")
@@ -360,7 +369,7 @@ def run_rctd(
     }
 
     if mode == "full":
-        res = run_full_mode(**kwargs)
+        res = run_full_mode(**kwargs, stream_gpu=stream_gpu)
     elif mode == "doublet":
         res = run_doublet_mode(**kwargs, config=rctd.config)
     elif mode == "multi":

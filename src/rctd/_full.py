@@ -18,6 +18,7 @@ def run_full_mode(
     batch_size: int = 10000,
     device: str = "auto",
     pixel_mask: np.ndarray | None = None,
+    stream_gpu: bool = False,
 ) -> FullResult:
     """Run full mode deconvolution across all spatial pixels.
 
@@ -30,6 +31,7 @@ def run_full_mode(
         sq_mat: Likelihood spline table for selected sigma
         x_vals: Lambda grid points
         batch_size: Number of pixels to process simultaneously on GPU
+        stream_gpu: If true, transfer only the current pixel batch to GPU
 
     Returns:
         FullResult object containing weights per pixel.
@@ -38,13 +40,16 @@ def run_full_mode(
     device = resolve_device(device)
 
     P_gpu = torch.tensor(norm_profiles, device=device)
-    Q_gpu = torch.tensor(q_mat, device=device)
-    SQ_gpu = torch.tensor(sq_mat, device=device)
+    Q_gpu = torch.as_tensor(q_mat, device=device)
+    SQ_gpu = torch.as_tensor(sq_mat, device=device)
     X_gpu = torch.tensor(x_vals, device=device)
 
-    # Pre-transfer all spatial data to GPU at once (avoids per-batch numpy→CUDA copy)
-    Y_gpu = torch.tensor(spatial_counts, device=device)
-    nUMI_gpu = torch.tensor(spatial_numi, device=device)
+    # The default resident path avoids per-batch NumPy-to-device copies.
+    if stream_gpu:
+        Y_gpu = nUMI_gpu = None
+    else:
+        Y_gpu = torch.tensor(spatial_counts, device=device)
+        nUMI_gpu = torch.tensor(spatial_numi, device=device)
 
     all_weights = []
     all_converged = []
@@ -52,14 +57,23 @@ def run_full_mode(
     for start in range(0, N, batch_size):
         end = min(start + batch_size, N)
 
+        if stream_gpu:
+            # Only current batch occupies GPU; no full spatial matrix allocation.
+            Y_batch = torch.as_tensor(spatial_counts[start:end], device=device)
+            nUMI_batch = torch.as_tensor(spatial_numi[start:end], device=device)
+        else:
+            assert Y_gpu is not None and nUMI_gpu is not None
+            Y_batch = Y_gpu[start:end]
+            nUMI_batch = nUMI_gpu[start:end]
+
         # R's full-mode decomposition uses constrain=FALSE:
         # - Full mode (fitPixels "full"): constrain=FALSE
         # - Doublet mode initial full fit: constrain=FALSE
         # Weights are NOT constrained to simplex; they can be negative.
         weights, converged = solve_irwls_batch_shared(
             P=P_gpu,
-            Y_batch=Y_gpu[start:end],
-            nUMI_batch=nUMI_gpu[start:end],
+            Y_batch=Y_batch,
+            nUMI_batch=nUMI_batch,
             Q_mat=Q_gpu,
             SQ_mat=SQ_gpu,
             x_vals=X_gpu,
@@ -71,6 +85,8 @@ def run_full_mode(
 
         all_weights.append(weights.cpu().numpy())
         all_converged.append(converged.cpu().numpy())
+        if stream_gpu:
+            del Y_batch, nUMI_batch, weights, converged
 
     final_weights = np.vstack(all_weights)
     final_converged = np.concatenate(all_converged)
