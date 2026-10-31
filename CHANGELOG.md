@@ -3,7 +3,9 @@
 All notable changes to rctd-py are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.4.2] — 2026-10-31
+
+rctd-py 0.4.2 adds `rctd.deconvolve`, which writes the results straight into the AnnData. Results are unchanged: `rctd run` writes the same output as 0.4.1, apart from the fix below.
 
 ### Added
 - **`rctd.deconvolve(adata, reference, ...)` writes the results into the AnnData**, scanpy style: in place by default, or into a new object with `copy=True`. It takes the same arguments as `run_rctd`, computes the same result, and writes the same keys as `rctd run` does to its output file (`obsm["rctd_weights"]`, `obs["rctd_first_type"]`, `obs["rctd_spot_class"]`, ...), with `"filtered"` / NaN for pixels the UMI filters removed.
