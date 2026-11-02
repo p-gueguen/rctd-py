@@ -38,6 +38,20 @@ spatial.obs["rctd_first_type"]  # also rctd_spot_class, rctd_second_type, ...
 spatial.obsm["rctd_weights"]  # pixels x cell types, columns in uns["rctd_cell_type_names"]
 ```
 
+The same step in the scverse layout, with functions in `rctd.pp` and `rctd.tl` and AnnData in and
+out. {func}`rctd.pp.reference` builds the reference (or pass the reference AnnData straight to
+`tl.deconvolve` with `cell_type_key` when its `X` holds raw counts), `layer` reads raw counts from
+a layer when `X` is already normalised (RCTD needs raw counts in both objects and does not check), and `key_added` changes the `rctd` prefix so several runs can sit in one object:
+
+```python
+import rctd
+
+ref = rctd.pp.reference(ref_adata, cell_type_key="cell_type", layer="counts")
+rctd.tl.deconvolve(spatial, ref, mode="doublet", layer="counts", key_added="dbl")
+rctd.tl.deconvolve(spatial, ref, mode="full", layer="counts", key_added="full")
+spatial.obs["dbl_first_type"], spatial.obsm["full_weights"]
+```
+
 ## Deconvolution modes
 
 | Mode | What it does | Best for |

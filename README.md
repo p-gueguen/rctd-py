@@ -60,6 +60,15 @@ from rctd import deconvolve
 deconvolve(spatial, reference, mode="doublet")
 ```
 
+scverse style, AnnData in and out (`layer=` for raw counts kept in a layer, `key_added=` for the key prefix). Both steps need raw counts:
+
+```python
+import rctd
+
+ref = rctd.pp.reference(ref_adata, cell_type_key="cell_type", layer="counts")
+rctd.tl.deconvolve(spatial, ref, mode="doublet", layer="counts")
+```
+
 | Mode | What it does | Best for |
 |------|-------------|----------|
 | **`full`** | Weights for all K cell types per pixel | Visium spots, continuous mixtures |

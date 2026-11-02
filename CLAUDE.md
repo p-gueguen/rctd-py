@@ -38,6 +38,8 @@ GPU-accelerated Python reimplementation of spacexr RCTD for spatial transcriptom
 | `src/rctd/_sigma.py` | Sigma estimation (noise parameter) |
 | `src/rctd/_rctd.py` | Top-level `run_rctd()` entry point |
 | `src/rctd/cli.py` | Click CLI: `rctd info`, `rctd validate`, `rctd run` |
+| `src/rctd/_anndata.py` | `deconvolve()` (= `rctd.tl.deconvolve`) and `_write_results_to_adata()`, the AnnData writer shared with the CLI (`key_added` prefix, `layer`) |
+| `src/rctd/pp.py`, `src/rctd/tl.py` | scverse-style namespaces: `pp.reference()` wraps `Reference`, `tl` re-exports `deconvolve` |
 | `src/rctd/_types.py` | Config, result types, `auto_batch_size`, `resolve_device` |
 
 ### Solver pipeline

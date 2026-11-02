@@ -17,6 +17,18 @@
    RCTDConfig
 ```
 
+## scverse-style interface
+
+`rctd.tl.deconvolve` is {func}`deconvolve`.
+
+```{eval-rst}
+.. autosummary::
+   :toctree: generated
+
+   pp.reference
+   tl.deconvolve
+```
+
 ## Results
 
 ```{eval-rst}
