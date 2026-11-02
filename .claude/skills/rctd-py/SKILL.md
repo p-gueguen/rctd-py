@@ -62,6 +62,11 @@ ref = Reference(anndata.read_h5ad("reference.h5ad"), cell_type_col="cell_type")
 
 config = RCTDConfig(device="cuda", UMI_min=20, dtype="float32")
 result = run_rctd(spatial, ref, mode="doublet", config=config, batch_size=10000)
+
+# scverse style (>= 0.4.3): AnnData in, results written into it (obs/obsm/uns "rctd_*")
+import rctd
+rctd.tl.deconvolve(spatial, ref, mode="doublet", config=config, batch_size=10000,
+                   layer=None, key_added="rctd")  # layer="counts" if X is normalised
 # DoubletResult: .weights, .weights_doublet, .spot_class, .first_type, .second_type,
 #                .first_class, .second_class, .singlet_score, .min_score, .cell_type_names
 ```
@@ -147,8 +152,8 @@ write_h5ad(AnnData(X = counts, obs = obs), "reference.h5ad")
 import anndata
 adata = anndata.read_h5ad("reference.h5ad")
 assert "cell_type" in adata.obs.columns
-# If raw counts live in a layer rather than .X:
-# adata.X = adata.layers["counts"]
+# If raw counts live in a layer rather than .X, pass layer="counts" (rctd >= 0.4.3):
+# ref = rctd.pp.reference(adata, cell_type_key="cell_type", layer="counts")
 ```
 
 ## CLI flag reference (`rctd run`)

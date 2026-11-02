@@ -19,6 +19,8 @@ try:
 except ImportError:
     __version__ = "0.0.0.dev0"
 
+from rctd import pp, tl  # noqa: E402  (scverse-style namespaces: rctd.pp.reference, rctd.tl.deconvolve)
+
 __all__ = [
     "RCTD",
     "Reference",
@@ -34,4 +36,6 @@ __all__ = [
     "run_doublet_mode",
     "run_multi_mode",
     "SPOT_CLASS_NAMES",
+    "pp",
+    "tl",
 ]

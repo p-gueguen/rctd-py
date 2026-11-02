@@ -3,6 +3,16 @@
 All notable changes to rctd-py are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.3] — unreleased
+
+rctd-py 0.4.3 adds a scverse-style interface: `rctd.pp.reference` and `rctd.tl.deconvolve`, with `layer` and `key_added`. Results are unchanged: `rctd run` writes the same output as 0.4.2, and `rctd.deconvolve` with its 0.4.2 arguments writes the same keys and values.
+
+### Added
+- **`rctd.pp.reference(ref_adata, cell_type_key=...)`** builds the reference from a single-cell AnnData; it is the same as `Reference(ref_adata, cell_type_col=...)`.
+- **`rctd.tl.deconvolve`**, the same function as `rctd.deconvolve`. Both now also accept the reference AnnData directly (with `cell_type_key`, raw counts in `X`) in place of a `Reference`; for counts in a layer use `pp.reference(..., layer=...)`.
+- **`layer=`** reads the raw counts from `adata.layers[layer]` instead of `adata.X`, in `deconvolve` (spatial data) and in `pp.reference` (reference), for data whose `X` is already normalised. The results are still written into `adata`.
+- **`key_added=`** sets the prefix of every key `deconvolve` writes (default `"rctd"`, as before), so a doublet and a full run can sit side by side in one AnnData (`key_added="dbl"` gives `obsm["dbl_weights"]`, `obs["dbl_first_type"]`, ...). A re-run replaces only the keys with its own prefix.
+
 ## [0.4.2] — 2026-10-31
 
 rctd-py 0.4.2 adds `rctd.deconvolve`, which writes the results straight into the AnnData. Results are unchanged: `rctd run` writes the same output as 0.4.1, apart from the fix below.

@@ -104,3 +104,133 @@ def test_deconvolve_copy_leaves_input_unchanged(synthetic_data):
     assert (list(spatial.obs.columns), list(spatial.obsm.keys()), list(spatial.uns.keys())) == keys
     out.uns["meta"]["a"] = 2
     assert spatial.uns["meta"]["a"] == 1
+
+
+# --- scverse-style namespaces: rctd.pp.reference, rctd.tl.deconvolve, layer, key_added ---
+
+_KW = dict(batch_size=10, sigma_override=50)
+# The keys 0.4.2 wrote, per mode; the default key_added must keep them exactly
+_KEYS_042 = {
+    "full": ({"rctd_dominant_type", "rctd_converged"}, {"rctd_weights"}),
+    "doublet": (
+        {
+            "rctd_dominant_type",
+            "rctd_spot_class",
+            "rctd_first_type",
+            "rctd_second_type",
+            "rctd_first_class",
+            "rctd_second_class",
+        },
+        {"rctd_weights", "rctd_weights_doublet"},
+    ),
+    "multi": (
+        {"rctd_dominant_type", "rctd_n_types"},
+        {"rctd_weights", "rctd_sub_weights", "rctd_cell_type_indices"},
+    ),
+}
+_UNS_042 = {"rctd_mode", "rctd_config", "rctd_version", "rctd_cell_type_names"}
+
+
+def _assert_same_results(a, b):
+    assert list(a.obs.columns) == list(b.obs.columns)
+    for k in a.obs.columns:
+        np.testing.assert_array_equal(np.asarray(a.obs[k]), np.asarray(b.obs[k]))
+    assert set(a.obsm.keys()) == set(b.obsm.keys())
+    for k in a.obsm.keys():
+        np.testing.assert_array_equal(a.obsm[k], b.obsm[k])
+    for k in ("rctd_mode", "rctd_cell_type_names"):
+        assert list(np.atleast_1d(a.uns[k])) == list(np.atleast_1d(b.uns[k]))
+
+
+def test_namespaces():
+    import rctd
+
+    assert rctd.tl.deconvolve is rctd.deconvolve
+    assert callable(rctd.pp.reference)
+
+
+@pytest.mark.parametrize("mode", ["full", "doublet", "multi"])
+def test_tl_deconvolve_with_reference_anndata(synthetic_data, mode):
+    import rctd
+
+    spatial, _ = _inputs(synthetic_data)
+    ref_adata = synthetic_data["reference"].copy()
+    ref_adata.obs["ct"] = ref_adata.obs.pop("cell_type")
+    a = rctd.tl.deconvolve(spatial, ref_adata, mode=mode, cell_type_key="ct", copy=True, **_KW)
+    b = deconvolve(spatial, Reference(ref_adata, cell_type_col="ct"), mode=mode, copy=True, **_KW)
+    _assert_same_results(a, b)
+    obs_keys, obsm_keys = _KEYS_042[mode]
+    assert set(a.obs.columns) - set(spatial.obs.columns) == obs_keys
+    assert set(a.obsm.keys()) - set(spatial.obsm.keys()) == obsm_keys
+    assert set(a.uns.keys()) - set(spatial.uns.keys()) == _UNS_042
+
+
+def test_pp_reference_matches_reference_class(synthetic_data):
+    import rctd
+
+    ref_adata = synthetic_data["reference"]
+    a = rctd.pp.reference(ref_adata, cell_min=10, min_UMI=10)
+    b = Reference(ref_adata, cell_min=10, min_UMI=10)
+    assert list(a.cell_type_names) == list(b.cell_type_names)
+    np.testing.assert_array_equal(a.profiles, b.profiles)
+
+
+def _move_counts_to_layer(adata):
+    """Counts into layers["counts"], log-normalised values into X, as after sc.pp.log1p."""
+    adata = adata.copy()
+    X = adata.X.toarray() if hasattr(adata.X, "toarray") else np.asarray(adata.X)
+    adata.layers["counts"] = X.copy()
+    adata.X = np.log1p(X / np.maximum(X.sum(1, keepdims=True), 1) * 1e4)
+    return adata
+
+
+def test_layer_reads_counts_from_layer(synthetic_data):
+    import rctd
+
+    spatial, ref = _inputs(synthetic_data)
+    want = deconvolve(spatial, ref, mode="doublet", copy=True, **_KW)
+    norm = _move_counts_to_layer(spatial)
+    got = rctd.tl.deconvolve(norm, ref, mode="doublet", layer="counts", copy=True, **_KW)
+    _assert_same_results(got.copy(), want)
+    assert "counts" in got.layers  # the input's own slots are kept
+    # Positive control: on the log-normalised X the same call gives another answer
+    wrong = rctd.tl.deconvolve(norm, ref, mode="doublet", copy=True, **_KW)
+    assert not np.array_equal(
+        np.nan_to_num(wrong.obsm["rctd_weights"]), np.nan_to_num(want.obsm["rctd_weights"])
+    )
+
+    ref_norm = _move_counts_to_layer(synthetic_data["reference"])
+    a = rctd.pp.reference(ref_norm, layer="counts", cell_min=10, min_UMI=10)
+    np.testing.assert_array_equal(a.profiles, ref.profiles)
+
+
+def test_unknown_layer_and_bad_key_added_raise(synthetic_data):
+    spatial, ref = _inputs(synthetic_data)
+    with pytest.raises(KeyError, match="nope"):
+        deconvolve(spatial, ref, layer="nope", **_KW)
+    with pytest.raises(ValueError, match="key_added"):
+        deconvolve(spatial, ref, key_added="", **_KW)
+    assert "rctd_weights" not in spatial.obsm
+
+
+def test_key_added_runs_sit_side_by_side(synthetic_data):
+    spatial, ref = _inputs(synthetic_data)
+    want_dbl = deconvolve(spatial, ref, mode="doublet", copy=True, **_KW)
+    deconvolve(spatial, ref, mode="doublet", key_added="dbl", **_KW)
+    deconvolve(spatial, ref, mode="full", key_added="full", **_KW)
+    spatial.obs["dbl_mine"] = "x"
+    deconvolve(spatial, ref, mode="doublet", key_added="dbl", **_KW)  # re-run keeps the others
+    for slot in (spatial.obs.columns, spatial.obsm.keys(), spatial.uns.keys()):
+        assert not any(k.startswith("rctd_") for k in slot)
+    assert spatial.uns["dbl_mode"] == "doublet" and spatial.uns["full_mode"] == "full"
+    assert "full_converged" in spatial.obs and "dbl_mine" in spatial.obs
+    np.testing.assert_array_equal(spatial.obsm["dbl_weights"], want_dbl.obsm["rctd_weights"])
+    np.testing.assert_array_equal(
+        np.asarray(spatial.obs["dbl_first_type"]), np.asarray(want_dbl.obs["rctd_first_type"])
+    )
+
+    # A re-run in another mode with the same prefix drops that prefix's doublet-only keys
+    deconvolve(spatial, ref, mode="multi", key_added="dbl", **_KW)
+    assert not {"dbl_first_type", "dbl_spot_class"} & set(spatial.obs.columns)
+    assert "dbl_weights_doublet" not in spatial.obsm and "dbl_n_types" in spatial.obs
+    assert "full_converged" in spatial.obs and "dbl_mine" in spatial.obs
