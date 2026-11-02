@@ -3,7 +3,7 @@
 All notable changes to rctd-py are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.4.3] — unreleased
+## [0.4.3] — 2026-11-02
 
 rctd-py 0.4.3 adds a scverse-style interface: `rctd.pp.reference` and `rctd.tl.deconvolve`, with `layer` and `key_added`. Results are unchanged: `rctd run` writes the same output as 0.4.2, and `rctd.deconvolve` with its 0.4.2 arguments writes the same keys and values.
 
