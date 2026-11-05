@@ -3,6 +3,12 @@
 All notable changes to rctd-py are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **Doublet and multi mode could run out of GPU memory with the default `batch_size="auto"`** (Python API; `rctd run` defaults to `--batch-size 10000` and was not affected). The automatic batch size was computed from full mode's memory per pixel, but in doublet mode a batch row is a (pixel, type, type) triple and in multi mode a candidate type set, each with its own design matrix, and it ignored the count matrix these modes keep on the GPU. On a 44 GB L40S, doublet and multi mode on 39k Visium HD segmented cells (4,747 genes, 40 types, float64) got batches of 200,000 rows and failed. The batch size is now computed per mode from measured peak memory, after subtracting the resident count matrix (not in full mode with `stream_gpu=True`). It now reads the free memory of the GPU the run uses (`config.device`) and returns the default on CPU. An unknown `mode` now raises, and a warning says when the count matrix or the minimum batch of 1,024 rows does not fit.
+- Because `"auto"` now picks different batch sizes in every mode, weights from `batch_size="auto"` can differ from 0.4.3 in the last digits, as with any change of batch size. On the Visium HD run above, the spot classes and cell types were identical.
+
 ## [0.4.3] — 2026-11-02
 
 rctd-py 0.4.3 adds a scverse-style interface: `rctd.pp.reference` and `rctd.tl.deconvolve`, with `layer` and `key_added`. Results are unchanged: `rctd run` writes the same output as 0.4.2, and `rctd.deconvolve` with its 0.4.2 arguments writes the same keys and values.

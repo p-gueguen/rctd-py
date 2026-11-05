@@ -62,7 +62,7 @@ Two optimization layers accelerate the hot path beyond basic `torch.compile`:
    - `_solve_box_qp_2`: Cramer's rule + clamping (avoids 50-sweep Gauss-Seidel)
    - Dispatched automatically by `_psd_batch` and `_solve_box_qp_batch` when K==2
 
-2. **Auto batch sizing** (`_types.py:auto_batch_size`): Calculates optimal GPU batch size from available VRAM using per-pixel memory footprint estimation. Used by `run_rctd(batch_size="auto")` (default).
+2. **Auto batch sizing** (`_types.py:auto_batch_size`): Calculates the GPU batch size from free VRAM, minus the dense (N, G) counts each mode keeps on the GPU, divided by a per-mode peak per batch row (`_row_values`; a row is a pixel in full mode, a (pixel, type, type) triple in doublet mode, a candidate set in multi mode). The constants are measured; `tests/test_auto_batch_size.py::test_measured_peak_per_row_within_estimate` (GPU, `slow`) fails if solver changes push the real peak above them. Used by `run_rctd(batch_size="auto")` (default).
 
 ### GPU memory (0.4.1)
 

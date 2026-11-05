@@ -131,12 +131,14 @@ def test_stream_gpu_matches_resident_with_irwls(monkeypatch, device, dtype):
 
 
 @pytest.mark.parametrize("stream_gpu", [False, True])
-def test_run_rctd_forwards_streaming_without_changing_auto_batch(monkeypatch, stream_gpu):
+def test_run_rctd_forwards_streaming_and_resident_rows_to_auto_batch(monkeypatch, stream_gpu):
     captured = {}
 
     class FakeRCTD:
         def __init__(self, *_):
-            self.config = type("Config", (), {"dtype": "float64", "device": "cpu"})()
+            self.config = type(
+                "Config", (), {"dtype": "float64", "device": "cpu", "MAX_MULTI_TYPES": 4}
+            )()
             self.reference = type("Reference", (), {"cell_type_names": ["A", "B"]})()
             self.counts = np.ones((5, 3))
             self.nUMI = np.ones(5)
@@ -149,8 +151,8 @@ def test_run_rctd_forwards_streaming_without_changing_auto_batch(monkeypatch, st
         def fit_platform_effects(self, sigma_override=None):
             return None
 
-    def fake_auto_batch_size(G, K, dtype_bytes):
-        captured["auto_args"] = (G, K, dtype_bytes)
+    def fake_auto_batch_size(G, K, dtype_bytes, mode, n_resident, max_multi_types, device):
+        captured["auto_args"] = (G, K, dtype_bytes, mode, n_resident, max_multi_types, device)
         return 77
 
     def fake_full(**kwargs):
@@ -162,7 +164,8 @@ def test_run_rctd_forwards_streaming_without_changing_auto_batch(monkeypatch, st
     monkeypatch.setattr(_rctd, "run_full_mode", fake_full)
     result = _rctd.run_rctd(None, None, mode="full", batch_size="auto", stream_gpu=stream_gpu)
     assert result == "result"
-    assert captured["auto_args"] == (3, 2, 8)
+    # streamed counts stay on the host, so none of the 5 rows count against the GPU budget
+    assert captured["auto_args"] == (3, 2, 8, "full", 0 if stream_gpu else 5, 4, "cpu")
     assert captured["batch_size"] == 77
     assert captured["stream_gpu"] is stream_gpu
 
