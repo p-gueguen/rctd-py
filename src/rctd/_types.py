@@ -83,9 +83,11 @@ def resolve_device(device: str = "auto") -> torch.device:
 # Peak GPU memory of one batch row, in values. A batch row is a pixel in full mode, but a
 # (pixel, type, type) triple in doublet mode and a candidate type set in multi mode, each carrying
 # its own (G, k) design matrix, so those modes need far more per row. Measured with
-# torch.cuda.max_memory_allocated on an L40S (G 1,500-12,000, K 10-40, float32 and float64):
-# full 7.5-14 x G, doublet 20-21.5 x G, multi (MAX_MULTI_TYPES=4) about 11 x G + 50k. The
-# constants below sit above every measurement; budget_fraction adds the remaining margin.
+# torch.cuda.max_memory_allocated on an L40S (G 1,500-25,000, K 10-150, float32 and float64):
+# full 7.5-14 x G, doublet 20-21.5 x G, multi (MAX_MULTI_TYPES=4) up to 18.4 x G at G >= 18,000.
+# The constants below sit above every measurement (measured / estimate 0.44-0.76);
+# budget_fraction adds the remaining margin. Batch-independent memory (the resident counts and
+# the G x K^2 P_outer of the full-mode fit) is subtracted from free memory instead.
 _MIN_BATCH = 1024
 _MAX_BATCH = 200_000
 
@@ -99,7 +101,7 @@ def _row_values(mode: str, G: int, K: int, max_multi_types: int) -> int:
     if mode == "doublet":
         return max(full, 24 * G)
     if mode == "multi":
-        return max(full, 3 * max_multi_types * G + 80_000)
+        return max(full, 6 * max_multi_types * G + 80_000)
     raise ValueError(f"Unknown mode: {mode!r} (expected 'full', 'doublet' or 'multi')")
 
 
@@ -118,9 +120,12 @@ def auto_batch_size(
 
     Estimates the peak memory of one batch row in ``mode`` and scales the batch to use
     ``budget_fraction`` of the VRAM left free once the ``n_resident`` x ``G`` count matrix the
-    mode keeps on the GPU is in place. Returns ``default`` when ``device`` is not a CUDA device
-    or CUDA info is unavailable.
+    mode keeps on the GPU, and the G x K^2 ``P_outer`` table of the full-mode fit every mode runs,
+    are in place. Returns ``default`` when ``device`` is not a CUDA device, CUDA info is
+    unavailable, or ``G`` or ``K`` is not positive.
     """
+    if G <= 0 or K <= 0:
+        return default
     bytes_per_row = _row_values(mode, G, K, max_multi_types) * dtype_bytes
     dev = resolve_device(device) if isinstance(device, str) else device
     if dev.type != "cuda" or not torch.cuda.is_available():
@@ -130,10 +135,11 @@ def auto_batch_size(
     except Exception:
         return default
 
-    resident = n_resident * G * dtype_bytes
+    resident = (n_resident * G + G * K * K) * dtype_bytes  # counts + P_outer
     if resident >= free_mem:
         warnings.warn(
-            f"The count matrix ({resident / 2**30:.1f} GiB) does not fit in the free GPU memory "
+            f"The count matrix and reference tables ({resident / 2**30:.1f} GiB) do not fit in "
+            f"the free GPU memory "
             f"({free_mem / 2**30:.1f} GiB) in {mode} mode, whatever the batch size. Use "
             "dtype='float32', fewer pixels per run, or stream_gpu=True in full mode.",
             stacklevel=2,
