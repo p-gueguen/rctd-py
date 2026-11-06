@@ -353,7 +353,17 @@ def run_rctd(
     dtype_bytes = 8 if rctd.config.dtype == "float64" else 4
 
     if batch_size == "auto":
-        batch_size = auto_batch_size(G, K, dtype_bytes=dtype_bytes)
+        # Every mode keeps the dense (N, G) counts on the GPU, except full mode with stream_gpu.
+        n_resident = 0 if (mode == "full" and stream_gpu) else rctd.counts.shape[0]
+        batch_size = auto_batch_size(
+            G,
+            K,
+            dtype_bytes=dtype_bytes,
+            mode=mode,
+            n_resident=n_resident,
+            max_multi_types=rctd.config.MAX_MULTI_TYPES,
+            device=rctd.config.device,
+        )
         print(f"Auto batch size: {batch_size}")
 
     print(f"Running in {mode} mode...")

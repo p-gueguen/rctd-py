@@ -10,6 +10,7 @@ Usage:
         --ref-dir data/mouse_brain \
         --out-dir data/visiumhd_mouse_brain
 """
+
 import argparse
 import json
 import resource
@@ -100,9 +101,17 @@ def main():
     else:
         try:
             from rctd._types import auto_batch_size
+
             G = rctd_obj.counts.shape[1]
             K = reference.n_types
-            batch_size = auto_batch_size(G, K)
+            # resident full mode: the whole N x G count matrix sits on the GPU
+            batch_size = auto_batch_size(
+                G,
+                K,
+                dtype_bytes=rctd_obj.counts.dtype.itemsize,
+                mode="full",
+                n_resident=rctd_obj.counts.shape[0],
+            )
         except ImportError:
             batch_size = 10000
     print(f"  Batch size: {batch_size}")

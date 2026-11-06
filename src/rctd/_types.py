@@ -1,5 +1,6 @@
 """Result types for RCTD."""
 
+import warnings
 from typing import NamedTuple
 
 import numpy as np
@@ -79,38 +80,80 @@ def resolve_device(device: str = "auto") -> torch.device:
     return torch.device(device)
 
 
+# Peak GPU memory of one batch row, in values. A batch row is a pixel in full mode, but a
+# (pixel, type, type) triple in doublet mode and a candidate type set in multi mode, each carrying
+# its own (G, k) design matrix, so those modes need far more per row. Measured with
+# torch.cuda.max_memory_allocated on an L40S (G 1,500-25,000, K 10-150, float32 and float64):
+# full 7.5-14 x G, doublet 20-21.5 x G, multi (MAX_MULTI_TYPES=4) up to 18.4 x G at G >= 18,000.
+# The constants below sit above every measurement (measured / estimate 0.44-0.76);
+# budget_fraction adds the remaining margin. Batch-independent memory (the resident counts and
+# the G x K^2 P_outer of the full-mode fit) is subtracted from free memory instead.
+_MIN_BATCH = 1024
+_MAX_BATCH = 200_000
+
+
+def _row_values(mode: str, G: int, K: int, max_multi_types: int) -> int:
+    """Peak values per batch row. Doublet and multi mode start with a full-mode fit at the same
+    batch size, so their cost is the larger of the two stages."""
+    full = 16 * G + 5 * K + 2 * K * K  # + per-pixel K x K Hessian and QP terms
+    if mode == "full":
+        return full
+    if mode == "doublet":
+        return max(full, 24 * G)
+    if mode == "multi":
+        return max(full, 6 * max_multi_types * G + 80_000)
+    raise ValueError(f"Unknown mode: {mode!r} (expected 'full', 'doublet' or 'multi')")
+
+
 def auto_batch_size(
     G: int,
     K: int,
     dtype_bytes: int = 4,
     budget_fraction: float = 0.7,
     default: int = 10000,
+    mode: str = "full",
+    n_resident: int = 0,
+    max_multi_types: int = 4,
+    device: str | torch.device = "auto",
 ) -> int:
-    """Calculate optimal batch size based on available GPU VRAM.
+    """Calculate a batch size that fits in the free memory of the GPU the run uses.
 
-    Estimates per-pixel memory footprint from all IRWLS intermediates
-    and scales batch size to use ``budget_fraction`` of free VRAM.
-    Falls back to ``default`` on CPU or if CUDA info is unavailable.
+    Estimates the peak memory of one batch row in ``mode`` and scales the batch to use
+    ``budget_fraction`` of the VRAM left free once the ``n_resident`` x ``G`` count matrix the
+    mode keeps on the GPU, and the G x K^2 ``P_outer`` table of the full-mode fit every mode runs,
+    are in place. Returns ``default`` when ``device`` is not a CUDA device, CUDA info is
+    unavailable, or ``G`` or ``K`` is not positive.
     """
-    if not torch.cuda.is_available():
+    if G <= 0 or K <= 0:
+        return default
+    bytes_per_row = _row_values(mode, G, K, max_multi_types) * dtype_bytes
+    dev = resolve_device(device) if isinstance(device, str) else device
+    if dev.type != "cuda" or not torch.cuda.is_available():
         return default
     try:
-        free_mem, _ = torch.cuda.mem_get_info()
+        free_mem, _ = torch.cuda.mem_get_info(dev)
     except Exception:
         return default
 
-    budget = int(free_mem * budget_fraction)
-
-    # Per-pixel intermediates in solve_irwls_batch_shared:
-    #   Y_batch(G) + prediction(G) + d1/d2(G) + solution(K) + grad(K)
-    #   + hess(K*K) + D(K*K) + d_vec(K) + delta_w(K) + w_new(K)
-    bytes_per_pixel = (3 * G + 5 * K + 2 * K * K) * dtype_bytes
-
-    if bytes_per_pixel <= 0:
-        return default
-
-    computed = budget // bytes_per_pixel
-    return max(1024, min(computed, 200000))
+    resident = (n_resident * G + G * K * K) * dtype_bytes  # counts + P_outer
+    if resident >= free_mem:
+        warnings.warn(
+            f"The count matrix and reference tables ({resident / 2**30:.1f} GiB) do not fit in "
+            f"the free GPU memory "
+            f"({free_mem / 2**30:.1f} GiB) in {mode} mode, whatever the batch size. Use "
+            "dtype='float32', fewer pixels per run, or stream_gpu=True in full mode.",
+            stacklevel=2,
+        )
+        return _MIN_BATCH
+    computed = int((free_mem - resident) * budget_fraction) // bytes_per_row
+    if computed < _MIN_BATCH:
+        warnings.warn(
+            f"Only about {computed} rows fit in the free GPU memory ({free_mem / 2**30:.1f} GiB) "
+            f"in {mode} mode; using batch_size={_MIN_BATCH}, which may run out of memory. Pass a "
+            "smaller batch_size, use dtype='float32', or free the GPU.",
+            stacklevel=2,
+        )
+    return max(_MIN_BATCH, min(computed, _MAX_BATCH))
 
 
 class FullResult(NamedTuple):
