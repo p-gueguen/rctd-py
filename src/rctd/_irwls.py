@@ -280,12 +280,14 @@ _MAX_EIGH_BATCH: int = 25000
 # bit-identical float64 results. Not in float32: there the chunking moved full-mode weights
 # by up to 4e-4 on real data, so float32 keeps one call. Larger K has no such workspace.
 _MAX_EIGH_BATCH_SMALL_K: int = 1024
+# float64 eigh with K up to this is chunked at _MAX_EIGH_BATCH_SMALL_K (read by auto_batch_size).
+_EIGH_SMALL_K_MAX: int = 32
 
 
 def _eigh_safe(H: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
     """torch.linalg.eigh with sub-batching to bound cuSOLVER batch size and workspace."""
     N = H.shape[0]
-    small = H.shape[-1] <= 32 and H.dtype == torch.float64
+    small = H.shape[-1] <= _EIGH_SMALL_K_MAX and H.dtype == torch.float64
     chunk = _MAX_EIGH_BATCH_SMALL_K if small else _MAX_EIGH_BATCH
     if N <= chunk or H.device.type != "cuda":
         return torch.linalg.eigh(H)

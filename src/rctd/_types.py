@@ -83,11 +83,13 @@ def resolve_device(device: str = "auto") -> torch.device:
 # Peak GPU memory of one batch row, in values. A batch row is a pixel in full mode, but a
 # (pixel, type, type) triple in doublet mode and a candidate type set in multi mode, each carrying
 # its own (G, k) design matrix, so those modes need far more per row. Measured with
-# torch.cuda.max_memory_allocated on an L40S (G 1,500-25,000, K 10-150, float32 and float64):
-# full 7.5-14 x G, doublet 20-21.5 x G, multi (MAX_MULTI_TYPES=4) up to 18.4 x G at G >= 18,000.
+# torch.cuda.max_memory_allocated on an L40S (G 1,500-25,000, K 10-150, float32 and float64; CPU
+# eigh except for K <= 16, so the upper end of full includes some eigh workspace): full
+# 7.5-14 x G, doublet 20-21.5 x G, multi (MAX_MULTI_TYPES=4) up to 18.4 x G at G >= 18,000.
 # The constants below sit above every measurement (measured / estimate 0.44-0.76);
-# budget_fraction adds the remaining margin. Batch-independent memory (the resident counts and
-# the G x K^2 P_outer of the full-mode fit) is subtracted from free memory instead.
+# budget_fraction adds the remaining margin. The GPU eigh workspace of the full-mode fit is added
+# on top (`_eigh_terms`). Batch-independent memory (the resident counts, the G x K^2 P_outer of
+# the full-mode fit, chunked float64 eigh) is subtracted from free memory instead.
 _MIN_BATCH = 1024
 _MAX_BATCH = 200_000
 
@@ -103,6 +105,63 @@ def _row_values(mode: str, G: int, K: int, max_multi_types: int) -> int:
     if mode == "multi":
         return max(full, 6 * max_multi_types * G + 80_000)
     raise ValueError(f"Unknown mode: {mode!r} (expected 'full', 'doublet' or 'multi')")
+
+
+def _eigh_workspace_bytes(K: int, dtype_bytes: int) -> int:
+    """cuSOLVER batched-eigh workspace per K x K matrix, in bytes.
+
+    Measured as the full-mode peak per batch row with GPU eigh minus CPU eigh (L40S, G=3,000,
+    torch 2.10+cu128 and 2.14.1+cu130; PR #50 follow-up). float32, torch 2.14.1+cu130:
+    199 KB at K=3, 242 KB at K=16, 298 KB at K=32, 453 KB at K=64, 787 KB at K=128; torch
+    2.10+cu128 matches up to K=32 and has none above (66 KB at K=128). The fit sits above every
+    point (K=3: 209 KB vs 199 KB measured); the model
+    assumes the larger (cu130) workspace whatever the stack.
+    """
+    f32 = 200_000 + 3_000 * K + 20 * K * K
+    return f32 if dtype_bytes <= 4 else int(_EIGH_F64_FACTOR * f32)
+
+
+# float64 workspace relative to float32: 2.0x on the L40S (K=38: 655 KB vs 329 KB), and an RTX
+# 5070 (Blackwell, torch 2.14.1+cu130) measured ~778 KB at K=40, above 2 x the float32 fit
+# (684 KB); 2.4 covers both.
+_EIGH_F64_FACTOR = 2.4
+
+
+def _eigh_terms(K: int, dtype_bytes: int, dev: torch.device) -> tuple[int, int]:
+    """(bytes per batch row, batch-independent bytes) added by GPU eigh in the full-mode fit.
+
+    Eigh runs on the GPU when 3 <= K <= the per-arch threshold (`_cuda_eigh_threshold`: 16 on
+    compute capability < 9, 128 on >= 9, or RCTDConfig.eigh_threshold); K <= 2 is analytic and
+    larger K goes to CPU. float64 with K <= 32 is chunked at 1,024 matrices, so its workspace
+    does not grow with the batch.
+    """
+    from rctd._irwls import _EIGH_SMALL_K_MAX, _MAX_EIGH_BATCH_SMALL_K, _cuda_eigh_threshold
+
+    if K < 3 or K > _cuda_eigh_threshold(dev):
+        return 0, 0
+    ws = _eigh_workspace_bytes(K, dtype_bytes)
+    if dtype_bytes == 8 and K <= _EIGH_SMALL_K_MAX:
+        return 0, _MAX_EIGH_BATCH_SMALL_K * ws
+    return ws, 0
+
+
+def _batch_bytes(
+    mode: str, G: int, K: int, max_multi_types: int, dtype_bytes: int, dev: torch.device
+) -> tuple[int, int]:
+    """(peak bytes per batch row, batch-independent bytes besides the resident counts).
+
+    Every mode starts with a full-mode fit, which runs GPU eigh for 3 <= K <= threshold, so the
+    eigh workspace enters every mode through the full-mode row.
+    """
+    eigh_row, eigh_fixed = _eigh_terms(K, dtype_bytes, dev)
+    if mode == "multi":
+        # Multi's own fits (k = 3..max_multi_types types) also run eigh, on the GPU at the default
+        # thresholds even when the full fit does not. Their float32 workspace is inside the
+        # measured multi row; float64 is chunked (fixed). Not live together with the full fit's.
+        eigh_fixed = max(eigh_fixed, _eigh_terms(max_multi_types, dtype_bytes, dev)[1])
+    full_row = _row_values("full", G, K, max_multi_types) * dtype_bytes + eigh_row
+    row = max(full_row, _row_values(mode, G, K, max_multi_types) * dtype_bytes)
+    return row, G * K * K * dtype_bytes + eigh_fixed  # P_outer + chunked eigh workspace
 
 
 def auto_batch_size(
@@ -121,12 +180,14 @@ def auto_batch_size(
     Estimates the peak memory of one batch row in ``mode`` and scales the batch to use
     ``budget_fraction`` of the VRAM left free once the ``n_resident`` x ``G`` count matrix the
     mode keeps on the GPU, and the G x K^2 ``P_outer`` table of the full-mode fit every mode runs,
-    are in place. Returns ``default`` when ``device`` is not a CUDA device, CUDA info is
+    are in place, plus the cuSOLVER eigh workspace when the full-mode fit runs eigh on this GPU
+    (see `_eigh_terms`). Returns ``default`` when ``device`` is not a CUDA device, CUDA info is
     unavailable, or ``G`` or ``K`` is not positive.
     """
+    if mode not in ("full", "doublet", "multi"):
+        raise ValueError(f"Unknown mode: {mode!r} (expected 'full', 'doublet' or 'multi')")
     if G <= 0 or K <= 0:
         return default
-    bytes_per_row = _row_values(mode, G, K, max_multi_types) * dtype_bytes
     dev = resolve_device(device) if isinstance(device, str) else device
     if dev.type != "cuda" or not torch.cuda.is_available():
         return default
@@ -135,13 +196,14 @@ def auto_batch_size(
     except Exception:
         return default
 
-    resident = (n_resident * G + G * K * K) * dtype_bytes  # counts + P_outer
+    bytes_per_row, fixed = _batch_bytes(mode, G, K, max_multi_types, dtype_bytes, dev)
+    resident = n_resident * G * dtype_bytes + fixed  # counts + P_outer + chunked eigh
     if resident >= free_mem:
         warnings.warn(
-            f"The count matrix and reference tables ({resident / 2**30:.1f} GiB) do not fit in "
-            f"the free GPU memory "
-            f"({free_mem / 2**30:.1f} GiB) in {mode} mode, whatever the batch size. Use "
-            "dtype='float32', fewer pixels per run, or stream_gpu=True in full mode.",
+            f"The count matrix, reference tables and eigh workspace ({resident / 2**30:.1f} GiB) "
+            f"do not fit in the free GPU memory ({free_mem / 2**30:.1f} GiB) in {mode} mode, "
+            "whatever the batch size. Use dtype='float32', fewer pixels per run, or "
+            "stream_gpu=True in full mode.",
             stacklevel=2,
         )
         return _MIN_BATCH

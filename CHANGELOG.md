@@ -3,6 +3,13 @@
 All notable changes to rctd-py are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+rctd-py 0.4.5 makes `batch_size="auto"` account for the GPU eigh workspace, so the automatic batch size also fits on Hopper and Blackwell GPUs and for references with up to 16 cell types on older GPUs. Reported with measurements on an RTX 5070 by @Bowen-Man in [#50](https://github.com/p-gueguen/rctd-py/pull/50#issuecomment-6894781631). `rctd run` is unchanged.
+
+### Fixed
+- **`batch_size="auto"` could still run out of GPU memory when the full-mode fit runs eigh on the GPU** (Python API; `rctd run` defaults to `--batch-size 10000`). The full-mode fit, which every mode starts with, projects each pixel's K x K Hessian with a batched eigendecomposition. It runs on the GPU for 3 to 16 cell types on GPUs before Hopper, and for 3 to 128 on Hopper and Blackwell (or up to `eigh_threshold`). cuSOLVER's workspace for it grows with the batch, about 200 KB per pixel at 3 types and 790 KB at 128 in float32, about twice that in float64 (the estimate allows 2.4 times, as measured on an RTX 5070). 0.4.4 did not count it, so on those GPUs the real peak per pixel reached 1.5 to 3.3 times the estimate. It is now added per pixel, or as fixed memory for float64 with up to 32 types, where the eigendecomposition already runs in chunks of 1,024. Results do not change; only the automatic batch size gets smaller where the workspace applies.
+
 ## [0.4.4] — 2026-11-06
 
 rctd-py 0.4.4 fixes GPU out-of-memory errors in doublet and multi mode with the Python API's default `batch_size="auto"`, found while answering [#49](https://github.com/p-gueguen/rctd-py/issues/49) ([#50](https://github.com/p-gueguen/rctd-py/pull/50)). `rctd run` is unchanged.

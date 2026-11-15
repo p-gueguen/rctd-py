@@ -30,7 +30,7 @@ def run_full_mode(
         q_mat: Likelihood table for selected sigma
         sq_mat: Likelihood spline table for selected sigma
         x_vals: Lambda grid points
-        batch_size: Number of pixels to process simultaneously on GPU
+        batch_size: Number of pixels per GPU batch
         device: "auto", "cpu" or "cuda"
         pixel_mask: Boolean mask of the fitted pixels, stored on the result
         stream_gpu: If True, keep the counts in host memory and copy only the

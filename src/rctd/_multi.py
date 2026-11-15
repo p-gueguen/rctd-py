@@ -163,7 +163,8 @@ def run_multi_mode(
         sq_mat: Likelihood spline table
         x_vals: Lambda grid points
         config: RCTD configuration parameters
-        batch_size: Number of pixels to process simultaneously on GPU
+        batch_size: Rows per GPU batch: pixels in the full-mode fit, (pixel, candidate set)
+            pairs in the selection steps
     """
     N, G = spatial_counts.shape
     device = resolve_device(device)

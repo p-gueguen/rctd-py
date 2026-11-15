@@ -8,14 +8,17 @@ import numpy as np
 import pytest
 import torch
 
-from rctd._types import _row_values, auto_batch_size
+import rctd._irwls as irwls
+from rctd._types import _batch_bytes, _eigh_terms, _row_values, auto_batch_size
 
 GIB = 2**30
 
 
-def _fake_gpu(monkeypatch, free_bytes):
+def _fake_gpu(monkeypatch, free_bytes, eigh_threshold=16):
+    # the eigh threshold is pinned so results do not depend on the host GPU or on test order
     monkeypatch.setattr(torch.cuda, "is_available", lambda: True)
     monkeypatch.setattr(torch.cuda, "mem_get_info", lambda *_: (free_bytes, free_bytes))
+    monkeypatch.setattr(irwls, "_cuda_eigh_threshold", lambda dev: eigh_threshold)
 
 
 def test_issue49_doublet_no_longer_hits_cap(monkeypatch):
@@ -81,7 +84,7 @@ def test_cpu_device_ignores_gpu_memory(monkeypatch):
 
 def test_warns_when_counts_alone_do_not_fit(monkeypatch):
     _fake_gpu(monkeypatch, 10 * GIB)
-    with pytest.warns(UserWarning, match="count matrix .* do not fit"):
+    with pytest.warns(UserWarning, match="count matrix.* do not fit"):
         auto_batch_size(12000, 40, dtype_bytes=8, mode="doublet", n_resident=557_300)
 
 
@@ -92,16 +95,76 @@ def test_first_full_fit_is_covered(mode, G, K):
     assert _row_values(mode, G, K, 4) >= _row_values("full", G, K, 4)
 
 
+def _thr(monkeypatch, value):
+    monkeypatch.setattr(irwls, "_cuda_eigh_threshold", lambda dev: value)
+
+
+@pytest.mark.parametrize("dtype_bytes", [4, 8])
+def test_gpu_eigh_term_switches_with_threshold(monkeypatch, dtype_bytes):
+    # K=38: CPU eigh below the threshold of 16 (cc < 9), GPU eigh at 128 (cc >= 9)
+    _fake_gpu(monkeypatch, 44 * GIB)
+    _thr(monkeypatch, 16)
+    cpu = auto_batch_size(5007, 38, dtype_bytes=dtype_bytes, mode="full", n_resident=11326)
+    _thr(monkeypatch, 128)
+    gpu = auto_batch_size(5007, 38, dtype_bytes=dtype_bytes, mode="full", n_resident=11326)
+    assert gpu < cpu
+
+
+def test_eigh_terms_cases(monkeypatch):
+    _thr(monkeypatch, 128)
+    dev = torch.device("cuda")
+    assert _eigh_terms(2, 4, dev) == (0, 0)  # K=2: analytic, no cuSOLVER
+    row, fixed = _eigh_terms(16, 8, dev)  # float64 K <= 32: chunked at 1,024 matrices
+    assert row == 0 and fixed > 0
+    row, fixed = _eigh_terms(16, 4, dev)  # float32: never chunked below 25,000 rows
+    assert row > 0 and fixed == 0
+    _thr(monkeypatch, 16)
+    assert _eigh_terms(38, 4, dev) == (0, 0)  # above the threshold: CPU eigh
+
+
+def test_multi_float64_counts_its_own_chunked_eigh(monkeypatch):
+    # K=40 on cc < 9: full fit on CPU eigh; multi's 3- and 4-type fits run chunked GPU eigh
+    _thr(monkeypatch, 16)
+    dev = torch.device("cuda")
+    _, fixed_multi = _batch_bytes("multi", 4747, 40, 4, 8, dev)
+    _, fixed_doublet = _batch_bytes("doublet", 4747, 40, 4, 8, dev)
+    assert fixed_multi > fixed_doublet == 4747 * 40 * 40 * 8
+
+
+@pytest.mark.parametrize(
+    "G,K,dtype_bytes,measured",
+    [(5007, 38, 4, 452_742), (3000, 40, 8, 996_785)],  # PR #50 comment, RTX 5070, cu130
+)
+def test_blackwell_report_is_covered(monkeypatch, G, K, dtype_bytes, measured):
+    _thr(monkeypatch, 128)  # compute capability 12.0
+    row, _ = _batch_bytes("full", G, K, 4, dtype_bytes, torch.device("cuda"))
+    assert row >= measured
+
+
 @pytest.mark.slow
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA required")
 @pytest.mark.parametrize("mode", ["full", "doublet", "multi"])
-# K > 32: unchunked eigh; G=18,000: multi's 4-type stage, where the old multi constant fell short
+# K=20/40 run CPU eigh on cc < 9 (L40S); K=8 runs GPU eigh there; threshold 128 forces GPU eigh
+# as on cc >= 9 (K=38 float32 per row; K=40 float64 per row; K=16 float64 chunked = fixed).
+# G=18,000: multi's 4-type stage, where an older multi constant fell short.
 @pytest.mark.parametrize(
-    "G,K,dtype", [(3000, 20, "float32"), (3000, 40, "float64"), (18000, 20, "float32")]
+    "G,K,dtype,eigh_thr",
+    [
+        (3000, 20, "float32", None),
+        (3000, 40, "float64", None),
+        (18000, 20, "float32", None),
+        (3000, 8, "float32", None),
+        (3000, 38, "float32", 128),
+        (3000, 40, "float64", 128),
+        (3000, 16, "float64", 128),
+    ],
 )
-def test_measured_peak_per_row_within_estimate(mode, G, K, dtype):
+def test_measured_peak_per_row_within_estimate(monkeypatch, mode, G, K, dtype, eigh_thr):
     """Run each mode at two batch sizes on synthetic data and check the measured peak GPU memory
-    per batch row (the slope) stays below the estimate auto_batch_size uses."""
+    per batch row (the slope), and the absolute peak, stay below the estimate auto_batch_size
+    uses."""
+    if eigh_thr is not None:
+        monkeypatch.setattr(irwls, "_EIGH_THRESHOLD_OVERRIDE", eigh_thr)
     from rctd._doublet import run_doublet_mode
     from rctd._full import run_full_mode
     from rctd._likelihood import compute_spline_coefficients, load_cached_q_matrices
@@ -147,7 +210,12 @@ def test_measured_peak_per_row_within_estimate(mode, G, K, dtype):
         torch.cuda.synchronize()
         return torch.cuda.max_memory_allocated() - base
 
-    per_row = (peak(3000) - peak(1000)) / 2000
-    estimate = _row_values(mode, G, K, cfg.MAX_MULTI_TYPES) * np.dtype(npdt).itemsize
+    db = np.dtype(npdt).itemsize
+    p1, p3 = peak(1000), peak(3000)
+    per_row = (p3 - p1) / 2000
+    est_row, est_fixed = _batch_bytes(mode, G, K, cfg.MAX_MULTI_TYPES, db, torch.device("cuda"))
     assert per_row > 0
-    assert per_row <= estimate, f"{mode}: measured {per_row:.0f} B/row > estimate {estimate} B/row"
+    assert per_row <= est_row, f"{mode}: measured {per_row:.0f} B/row > estimate {est_row} B/row"
+    # absolute peak: rows + fixed + resident counts, plus 64 MiB for Q/SQ tables and lists
+    bound = 3000 * est_row + est_fixed + N * G * db + 64 * 2**20
+    assert p3 <= bound, f"{mode}: peak {p3 / 2**30:.2f} GiB > bound {bound / 2**30:.2f} GiB"
