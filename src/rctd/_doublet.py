@@ -42,7 +42,8 @@ def run_doublet_mode(
         sq_mat: Likelihood spline table
         x_vals: Lambda grid points
         config: RCTD configuration parameters
-        batch_size: Number of pixels to process simultaneously on GPU
+        batch_size: Rows per GPU batch: pixels in the full-mode fit, (pixel, type, type)
+            triples in pair scoring
     """
     N, G = spatial_counts.shape
     K = norm_profiles.shape[1]
