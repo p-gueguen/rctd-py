@@ -8,6 +8,7 @@ import warnings
 
 import torch
 
+from rctd import _numba_kernels
 from rctd._likelihood import _pop_inductor_codegen_failed, calc_q_all
 from rctd._simplex import project_simplex, project_simplex_batch
 
@@ -722,6 +723,11 @@ def solve_irwls_batch(
     # Threshold per pixel: max(1e-4, nUMI * 1e-7)
     threshold = torch.clamp(nUMI_batch * 1e-7, min=1e-4)  # (N,)
 
+    # On CPU, one numba pass over the genes per pixel computes the prediction and derivatives
+    use_numba = _numba_kernels.use_numba(S_batch) and not bulk_mode
+    if use_numba:
+        S_batch, Y_batch = S_batch.contiguous(), Y_batch.contiguous()
+
     for it in range(max_iter):
         # Only process non-converged pixels
         active = ~converged
@@ -730,13 +736,19 @@ def solve_irwls_batch(
 
         solution = torch.clamp(w, min=0.0)  # (N, K)
 
-        # prediction = |S @ w|: (N, G, K) @ (N, K, 1) → (N, G)
-        prediction = torch.abs(torch.bmm(S_batch, solution.unsqueeze(2)).squeeze(2))
-        prediction = torch.clamp(prediction, min=threshold.unsqueeze(1))
+        if use_numba:
+            # (converged pixels get zero derivatives: their step is discarded below)
+            grad, hess = _numba_kernels.irwls_derivatives(
+                S_batch, Y_batch, solution, threshold, active, Q_mat, SQ_mat, x_vals
+            )
+        else:
+            # prediction = |S @ w|: (N, G, K) @ (N, K, 1) → (N, G)
+            prediction = torch.abs(torch.bmm(S_batch, solution.unsqueeze(2)).squeeze(2))
+            prediction = torch.clamp(prediction, min=threshold.unsqueeze(1))
 
-        grad, hess = _get_derivatives_batch(
-            S_batch, Y_batch, prediction, Q_mat, SQ_mat, x_vals, bulk_mode
-        )
+            grad, hess = _get_derivatives_batch(
+                S_batch, Y_batch, prediction, Q_mat, SQ_mat, x_vals, bulk_mode
+            )
 
         hess, norm_factor = _psd_batch(hess)
         norm_factor = torch.clamp(norm_factor, min=1e-10)

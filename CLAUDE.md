@@ -30,6 +30,7 @@ GPU-accelerated Python reimplementation of spacexr RCTD for spatial transcriptom
 | File | Purpose |
 |------|---------|
 | `src/rctd/_irwls.py` | Core IRWLS solver — hot path, ~60% of runtime |
+| `src/rctd/_numba_kernels.py` | CPU: numba kernels for `calc_q_all` and `solve_irwls_batch`'s derivatives |
 | `src/rctd/_likelihood.py` | Poisson-Lognormal likelihood with cubic spline interpolation (`calc_q_all`) |
 | `src/rctd/_simplex.py` | Simplex projection for weight constraints |
 | `src/rctd/_full.py` | Full-mode pipeline (all cell types per pixel) |
@@ -80,6 +81,20 @@ Two optimization layers accelerate the hot path beyond basic `torch.compile`:
   `batch_size="auto"` is not a valid comparison setting.
 
 **Why no custom Triton kernel**: A hand-written Triton kernel for `calc_q_all` was attempted but causes float64 precision divergence in the grid index computation (`sqrt → floor → m`). Even with dtype-preserving casts, Triton's `tl.math.sqrt` produces different rounding than PyTorch's `torch.sqrt` at float64 boundaries, shifting spline table lookups and changing results. `torch.compile` already generates fused Inductor/Triton kernels from `_calc_q_all_impl` that are both fast and hash-identical to the eager implementation.
+
+### CPU kernels
+
+On CPU, `calc_q_all` and the derivative step of `solve_irwls_batch` run in `_numba_kernels.py`;
+everything else (PSD projection, box QP, full mode's matmuls) is the torch code the GPU runs.
+
+- **Keep `_spline` op for op with `_calc_q_all_impl`**: in float64 the two are bitwise equal
+  (`tests/test_numba_kernels.py`). Change both together; the kernel reads the interval of each
+  lambda from `_spline_interval`, the impl's own code. No `fastmath` (it reorders and fuses).
+- **float32 fits compute in float64** and round once at the end, closer to float64 than torch.
+- **Threads**: the kernels release the GIL and run in chunks on their own thread pool
+  (`NUMBA_NUM_THREADS`), not `parallel=True`: numba's OpenMP layer fights torch's OpenMP threads
+  (2-10x slower, far worse on a loaded host), and the other layers need process-wide config.
+- `RCTD_NUMBA=0` (or `_numba_kernels.ENABLED = False` in tests) runs the CPU on the torch code.
 
 ## CLI
 
