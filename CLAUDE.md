@@ -100,6 +100,12 @@ everything else (PSD projection, box QP, full mode's matmuls) is the torch code 
   `_numba_kernels.ENABLED = False` in tests, the CPU runs the torch code.
 - Counts index the likelihood tables: the kernels raise on a negative count rather than read
   outside them.
+- **Box QP (K != 2) on CPU**: `box_qp_sweeps` runs all 50 Gauss-Seidel sweeps per pixel, like the
+  compiled solver, then torch's `_finish_box_qp`. Not the TorchScript per-batch early stop (results
+  would depend on the batch), nor a per-pixel one: float32's loose finish tolerance let that move
+  weights ~1e-1 and flip calls.
+- **eigh on CPU** runs in chunks on the same pool (`parallel_rows`), threads set to 1 around it as
+  issue #22 requires; per-matrix LAPACK, so bitwise identical to one call.
 
 ## CLI
 

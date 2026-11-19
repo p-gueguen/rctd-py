@@ -105,7 +105,8 @@ def test_solve_irwls_batch_matches_torch(tables, torch_path, K):
     w, conv = _fit(tables, torch.float64, K)
     torch_path()
     w_ref, conv_ref = _fit(tables, torch.float64, K)
-    torch.testing.assert_close(w, w_ref, rtol=0, atol=1e-12)
+    # numba runs all 50 QP sweeps, the TorchScript QP stops per batch; both finish to KKT 1e-10
+    torch.testing.assert_close(w, w_ref, rtol=0, atol=1e-12 if K <= 2 else 1e-7)
     assert (conv == conv_ref).float().mean() > 0.99
 
 
@@ -192,3 +193,53 @@ def test_threads_follow_torch(monkeypatch):
     assert _numba_kernels.num_threads() == 8
     monkeypatch.setattr(_numba_kernels.numba.config, "NUMBA_NUM_THREADS", 4)
     assert _numba_kernels.num_threads() == 4
+
+
+def _qp_problems(K, n=500, seed=2):
+    g = torch.Generator().manual_seed(seed)
+    A = torch.randn(n, K, K, generator=g, dtype=torch.float64)
+    D = A @ A.mT + 1e-3 * torch.eye(K, dtype=torch.float64)
+    D = D / torch.linalg.matrix_norm(D, ord=2)[:, None, None]  # as solve_irwls normalises it
+    return D, torch.randn(n, K, generator=g, dtype=torch.float64), -torch.rand(n, K, generator=g)
+
+
+@pytest.mark.parametrize("K", [1, 3, 4, 16, 31])
+def test_box_qp_matches_torch(torch_path, K):
+    """Per-pixel Gauss-Seidel stops, then the exact finish: the same optimum as the torch QP."""
+    D, d, lb = _qp_problems(K)
+    lb = lb.double()
+    x = _irwls._solve_box_qp_batch(D, d, lb)
+    torch_path()
+    x_ref = _irwls._solve_box_qp_batch(D, d, lb)
+    torch.testing.assert_close(x, x_ref, rtol=0, atol=1e-6)
+    # KKT: free coordinates have zero gradient, bound ones a non-negative one
+    g = torch.bmm(D, x.unsqueeze(2)).squeeze(2) - d
+    viol = torch.where(x > lb, g.abs(), torch.clamp(-g, min=0.0)).amax(1)
+    assert viol.max() < 1e-8
+
+
+def test_box_qp_does_not_depend_on_the_batch():
+    D, d, lb = _qp_problems(5, n=300)
+    lb = lb.double()
+    whole = _numba_kernels.box_qp_sweeps(D, d, lb)
+    parts = torch.cat(
+        [
+            _numba_kernels.box_qp_sweeps(D[i : i + 7], d[i : i + 7], lb[i : i + 7])
+            for i in range(0, 300, 7)
+        ]
+    )
+    assert torch.equal(whole, parts)
+
+
+@pytest.mark.parametrize("K", [3, 31])
+def test_psd_batch_threads_give_identical_results(monkeypatch, K):
+    """The CPU eigendecompositions run in chunks across threads; each matrix is one LAPACK call."""
+    D, _, _ = _qp_problems(K, n=3000)
+    H = D - 0.3 * torch.eye(K, dtype=torch.float64)  # some negative eigenvalues to clamp
+    H[5] = float("nan")  # the non-finite guard still applies
+    H_psd, max_eig = _irwls._psd_batch(H)
+    threads = torch.get_num_threads()
+    monkeypatch.setattr(_numba_kernels.numba.config, "NUMBA_NUM_THREADS", 1)
+    H_ref, max_ref = _irwls._psd_batch(H)
+    assert torch.equal(H_psd, H_ref) and torch.equal(max_eig, max_ref)
+    assert torch.get_num_threads() == threads
