@@ -91,10 +91,15 @@ everything else (PSD projection, box QP, full mode's matmuls) is the torch code 
   (`tests/test_numba_kernels.py`). Change both together; the kernel reads the interval of each
   lambda from `_spline_interval`, the impl's own code. No `fastmath` (it reorders and fuses).
 - **float32 fits compute in float64** and round once at the end, closer to float64 than torch.
-- **Threads**: the kernels release the GIL and run in chunks on their own thread pool
-  (`NUMBA_NUM_THREADS`), not `parallel=True`: numba's OpenMP layer fights torch's OpenMP threads
-  (2-10x slower, far worse on a loaded host), and the other layers need process-wide config.
-- `RCTD_NUMBA=0` (or `_numba_kernels.ENABLED = False` in tests) runs the CPU on the torch code.
+- **Threads**: the kernels release the GIL and run in chunks on their own thread pool, not
+  `parallel=True`: numba's OpenMP layer fights torch's OpenMP threads (2-10x slower, far worse on
+  a loaded host), and the other layers need process-wide config. The pool has
+  `torch.get_num_threads()` threads, at most `NUMBA_NUM_THREADS`: the latter follows the CPU
+  affinity, which SLURM nodes that do not pin CPUs leave at the whole node.
+- **numba is optional** (`rctd-py[cpu]` extra; CI installs it). Without it, `RCTD_NUMBA=0`, or
+  `_numba_kernels.ENABLED = False` in tests, the CPU runs the torch code.
+- Counts index the likelihood tables: the kernels raise on a negative count rather than read
+  outside them.
 
 ## CLI
 

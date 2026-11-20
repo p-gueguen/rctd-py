@@ -6,6 +6,17 @@ uv pip install rctd-py   # or: pip install rctd-py
 
 rctd-py runs on CPU out of the box and uses a GPU automatically when PyTorch can see one.
 
+On CPU, install the `cpu` extra as well:
+
+```bash
+uv pip install "rctd-py[cpu]"
+```
+
+It adds [numba](https://numba.pydata.org), which runs the likelihood and the IRWLS derivatives as
+compiled kernels: doublet and multi mode are 1.2-6x faster on CPU, with the same calls. The
+kernels use as many threads as PyTorch (`torch.set_num_threads`, or `OMP_NUM_THREADS`), at most
+`NUMBA_NUM_THREADS`. `RCTD_NUMBA=0` turns them off. GPU runs do not use them.
+
 ## Q-matrices (offline and HPC setups)
 
 The first run needs `q_matrices.npz`, the precomputed Poisson-Lognormal likelihood tables for

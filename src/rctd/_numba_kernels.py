@@ -12,12 +12,14 @@ arithmetic in a single pass over the genes, in parallel over pixels:
 They compute in float64 whatever the fit's dtype, and round their outputs to it. The PSD
 projection and the box QP stay in torch, shared with the GPU path.
 
-The kernels release the GIL and run on chunks of rows in a thread pool of their own
-(``NUMBA_NUM_THREADS`` threads, by default one per CPU), not on numba's parallel threading
-layer: its OpenMP layer competes with torch's OpenMP threads (a 2-10x slowdown, worse on a loaded
-machine), and its other layers would mean changing numba's process-wide configuration.
+The kernels release the GIL and run on chunks of rows in a thread pool of their own, not on
+numba's parallel threading layer: its OpenMP layer competes with torch's OpenMP threads (a 2-10x
+slowdown, worse on a loaded machine), and its other layers would mean changing numba's
+process-wide configuration. The pool has as many threads as torch (``torch.get_num_threads()``,
+which ``torch.set_num_threads`` and ``OMP_NUM_THREADS`` set), at most ``NUMBA_NUM_THREADS``.
 
-Set ``RCTD_NUMBA=0`` to run the CPU on the torch code instead.
+numba is optional (``pip install rctd-py[cpu]``). Without it, or with ``RCTD_NUMBA=0``, the CPU
+runs the torch code instead.
 """
 
 import functools
@@ -29,7 +31,7 @@ import torch
 
 try:
     import numba
-except ImportError:  # pragma: no cover - numba is a dependency
+except ImportError:  # numba is optional: the CPU then runs the torch code
     numba = None
 
 ENABLED = numba is not None and os.environ.get("RCTD_NUMBA", "1") != "0"
@@ -74,11 +76,20 @@ if numba is not None:
         d2 = zdi * diff1 + zdi1 * diff2
         return d0, d1, d2
 
+    @numba.njit(inline="always")
+    def _count(y, k_val):
+        """Row of the likelihood tables for count ``y``: min(y, k_val), like torch's clamp."""
+        c = int(min(y, k_val))
+        if c < 0:  # not a count: torch wraps it or fails, numba would read outside the tables
+            raise ValueError("counts must be non-negative")
+        return c
+
     @numba.njit(nogil=True, cache=True)
     def _calc_q_kernel(start, end, Y, lam, Q, SQ, x, m_of_l, k_val, lam_max, d0, d1, d2):
         for j in range(start, end):
-            y = int(min(Y[j], k_val))
-            d0[j], d1[j], d2[j] = _spline(y, np.float64(lam[j]), Q, SQ, x, m_of_l, lam_max)
+            d0[j], d1[j], d2[j] = _spline(
+                _count(Y[j], k_val), np.float64(lam[j]), Q, SQ, x, m_of_l, lam_max
+            )
 
     @numba.njit(nogil=True, cache=True)
     def _derivatives_kernel(
@@ -97,7 +108,7 @@ if numba is not None:
                 pred = abs(pred)
                 if pred < thresh[n]:
                     pred = np.float64(thresh[n])
-                _, d1, d2 = _spline(int(min(Y[n, g], k_val)), pred, Q, SQ, x, m_of_l, lam_max)
+                _, d1, d2 = _spline(_count(Y[n, g], k_val), pred, Q, SQ, x, m_of_l, lam_max)
                 for i in range(K):
                     g_acc[i] += d1 * S[n, g, i]
                     s = -d2 * S[n, g, i]
@@ -111,18 +122,32 @@ if numba is not None:
 
 
 _pool: ThreadPoolExecutor | None = None
+_pool_threads = 0
+
+
+def num_threads() -> int:
+    """Threads the kernels run on: torch's, at most ``NUMBA_NUM_THREADS``.
+
+    ``NUMBA_NUM_THREADS`` defaults to every CPU the process may run on, which on a node that does
+    not pin a job's CPUs is the whole node; torch follows ``OMP_NUM_THREADS`` and
+    ``torch.set_num_threads``, which job schedulers and users set.
+    """
+    return max(1, min(torch.get_num_threads(), numba.config.NUMBA_NUM_THREADS))
 
 
 def _run(kernel, n: int, min_chunk: int, *args) -> None:
     """``kernel(start, end, *args)`` over rows [0, n), in one chunk per thread."""
-    global _pool
-    threads = numba.config.NUMBA_NUM_THREADS
+    global _pool, _pool_threads
+    threads = num_threads()
     chunk = max(min_chunk, -(-n // threads))
     if n <= chunk:
         kernel(0, n, *args)
         return
-    if _pool is None:
+    if _pool_threads != threads:  # a new pool when torch's thread count changes
+        if _pool is not None:
+            _pool.shutdown(wait=False)
         _pool = ThreadPoolExecutor(threads, thread_name_prefix="rctd-numba")
+        _pool_threads = threads
     for f in [_pool.submit(kernel, s, min(s + chunk, n), *args) for s in range(0, n, chunk)]:
         f.result()
 

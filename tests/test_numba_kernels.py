@@ -163,3 +163,32 @@ def test_modes_match_torch(synthetic_data, tables, torch_path, run):
 def test_gpu_tensors_take_the_torch_path():
     assert _numba_kernels.use_numba(torch.zeros(1))
     assert not _numba_kernels.use_numba(torch.zeros(1, device="meta"))
+
+
+def test_negative_counts_raise(tables):
+    """A negative count would index outside the likelihood tables."""
+    q_mat, sq_mat, x_vals = _t(tables, torch.float64)
+    Y = torch.tensor([3.0, -1.0, 0.0])
+    with pytest.raises(ValueError, match="non-negative"):
+        _numba_kernels.calc_q_all(Y, torch.ones(3), q_mat, sq_mat, x_vals)
+    S = torch.ones(1, 3, 2, dtype=torch.float64)
+    with pytest.raises(ValueError, match="non-negative"):
+        _numba_kernels.irwls_derivatives(
+            S,
+            Y[None],
+            torch.ones(1, 2),
+            torch.full((1,), 1e-4),
+            torch.ones(1, dtype=bool),
+            q_mat,
+            sq_mat,
+            x_vals,
+        )
+
+
+def test_threads_follow_torch(monkeypatch):
+    """The pool takes torch's thread count, capped by NUMBA_NUM_THREADS (all CPUs by default)."""
+    monkeypatch.setattr(_numba_kernels.numba.config, "NUMBA_NUM_THREADS", 64)
+    monkeypatch.setattr(torch, "get_num_threads", lambda: 8)
+    assert _numba_kernels.num_threads() == 8
+    monkeypatch.setattr(_numba_kernels.numba.config, "NUMBA_NUM_THREADS", 4)
+    assert _numba_kernels.num_threads() == 4
