@@ -4,7 +4,7 @@ import numpy as np
 import torch
 
 from rctd._irwls import solve_irwls_batch_shared
-from rctd._likelihood import _calc_q_all_impl as _calc_q_all_eager
+from rctd._likelihood import calc_q_all_eager as _calc_q_all_eager
 
 # The sequence of sigmas evaluated in spacexr choose_sigma
 SIGMA_ALL = np.concatenate([np.arange(10, 71), np.arange(72, 201, 2)])

@@ -6,7 +6,13 @@ import numpy as np
 import pytest
 import torch
 
-from rctd import _irwls, _likelihood
+from rctd import _irwls, _likelihood, _numba_kernels
+
+
+@pytest.fixture(autouse=True)
+def _torch_likelihood(monkeypatch):
+    """These tests exercise the torch.compile dispatch, which CPU tensors bypass for numba."""
+    monkeypatch.setattr(_numba_kernels, "ENABLED", False)
 
 
 def _make_small_qp_problem(N=10, K=3, device="cpu"):

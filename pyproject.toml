@@ -31,6 +31,8 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# CPU kernels for the likelihood and IRWLS derivatives (_numba_kernels.py), used when installed
+cpu = ["numba>=0.60"]
 dev = ["pytest>=7.0", "pytest-cov", "ruff", "pandas>=1.5", "spatialdata>=0.2", "pre-commit"]
 doc = [
     # sphinx-click 6.2 imports `mock` from sphinx.ext.autodoc, which Sphinx 9 turned into a module

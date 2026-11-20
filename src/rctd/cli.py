@@ -51,6 +51,12 @@ def info(use_json):
         data["scipy_version"] = scipy.__version__
     except ImportError:
         data["scipy_version"] = "not installed"
+    try:
+        import numba
+
+        data["numba_version"] = numba.__version__
+    except ImportError:
+        data["numba_version"] = "not installed (pip install rctd-py[cpu] for faster CPU fits)"
 
     if torch.cuda.is_available():
         for i in range(torch.cuda.device_count()):
@@ -78,6 +84,7 @@ def info(use_json):
         click.echo(f"anndata {data['anndata_version']}")
         click.echo(f"numpy   {data['numpy_version']}")
         click.echo(f"scipy   {data['scipy_version']}")
+        click.echo(f"numba   {data['numba_version']}")
 
 
 def _read_adata(path, table=None):
