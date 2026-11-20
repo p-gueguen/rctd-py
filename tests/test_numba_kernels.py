@@ -231,15 +231,43 @@ def test_box_qp_does_not_depend_on_the_batch():
     assert torch.equal(whole, parts)
 
 
-@pytest.mark.parametrize("K", [3, 31])
-def test_psd_batch_threads_give_identical_results(monkeypatch, K):
-    """The CPU eigendecompositions run in chunks across threads; each matrix is one LAPACK call."""
+@pytest.mark.parametrize("dtype", [torch.float64, torch.float32])
+@pytest.mark.parametrize("threads", [3, 8, 28])
+@pytest.mark.parametrize("K", [3, 5, 31])
+def test_psd_batch_threads_give_identical_results(monkeypatch, K, threads, dtype):
+    """The CPU eigendecompositions run in chunks across threads; the result is bitwise that of one
+    call over the batch, which RCTD_NUMBA=0 makes (n=3000 on 8 threads gave 375-row chunks, whose
+    odd starts changed MKL's results for odd K)."""
     D, _, _ = _qp_problems(K, n=3000)
-    H = D - 0.3 * torch.eye(K, dtype=torch.float64)  # some negative eigenvalues to clamp
+    H = (D - 0.3 * torch.eye(K, dtype=torch.float64)).to(dtype)  # negative eigenvalues to clamp
     H[5] = float("nan")  # the non-finite guard still applies
+    monkeypatch.setattr(_numba_kernels, "num_threads", lambda: threads)
+    prev = torch.get_num_threads()
     H_psd, max_eig = _irwls._psd_batch(H)
-    threads = torch.get_num_threads()
-    monkeypatch.setattr(_numba_kernels.numba.config, "NUMBA_NUM_THREADS", 1)
+    assert torch.get_num_threads() == prev
+    monkeypatch.setattr(_numba_kernels, "ENABLED", False)
     H_ref, max_ref = _irwls._psd_batch(H)
     assert torch.equal(H_psd, H_ref) and torch.equal(max_eig, max_ref)
-    assert torch.get_num_threads() == threads
+
+
+def test_psd_batch_without_numba_skips_the_pool(monkeypatch):
+    """RCTD_NUMBA=0, a missing numba and the GPU's CPU eigh all make one eigh call, as main."""
+    monkeypatch.setattr(_numba_kernels, "ENABLED", False)
+
+    def fail(*args, **kwargs):
+        raise AssertionError("thread pool used")
+
+    monkeypatch.setattr(_numba_kernels, "parallel_rows", fail)
+    D, _, _ = _qp_problems(5, n=300)
+    _irwls._psd_batch(D)
+
+
+def test_box_qp_zero_diagonal_matches_torch(torch_path):
+    """A zero diagonal divides by zero: inf/NaN as in torch, not ZeroDivisionError."""
+    D, d, lb = _qp_problems(4, n=20)
+    lb = lb.double()
+    D[3, 1, 1] = 0.0
+    x = _numba_kernels.box_qp_sweeps(D, d, lb)
+    ref = _irwls._solve_box_qp_batch_impl(D, d, lb)
+    torch.testing.assert_close(x, ref, equal_nan=True, rtol=0, atol=1e-12)
+    assert not torch.isfinite(x[3]).all()

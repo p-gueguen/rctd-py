@@ -351,6 +351,26 @@ def _eigh_or_jitter(H: torch.Tensor, epsilon: float) -> tuple[torch.Tensor, torc
         return torch.linalg.eigh((epsilon * I_K).expand_as(H).contiguous())
 
 
+def _eigh_chunked(
+    H: torch.Tensor, epsilon: float, threads: int
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """``_eigh_or_jitter`` over row chunks of H on the numba kernels' thread pool.
+
+    Bitwise equal to one call over the batch: LAPACK's result for a matrix depends on the memory
+    alignment of its copy, which torch makes per call, so every chunk starts at a multiple of 64
+    rows (a matrix keeps its offset modulo 64 bytes, for K odd too). The eigenvectors keep the
+    column-major layout eigh returns, which the matmuls that follow see.
+    """
+    eigenvalues = torch.empty(H.shape[:-1], dtype=H.dtype)
+    eigenvectors = torch.empty_like(H).mT
+
+    def rows(start, end):
+        eigenvalues[start:end], eigenvectors[start:end] = _eigh_or_jitter(H[start:end], epsilon)
+
+    _numba_kernels.parallel_rows(rows, H.shape[0], 64, threads=threads, align=64)
+    return eigenvalues, eigenvectors
+
+
 def _psd_batch(H: torch.Tensor, epsilon: float = 1e-3) -> tuple[torch.Tensor, torch.Tensor]:
     """Batched PSD projection. H: (N, K, K) → (H_psd (N, K, K), max_eig (N,)).
 
@@ -408,20 +428,18 @@ def _psd_batch(H: torch.Tensor, epsilon: float = 1e-3) -> tuple[torch.Tensor, to
         # routes through the same OMP layer OpenBLAS uses, so the effect is
         # equivalent — confirmed locally: 1-thread eigh on (5000, 38, 38) is
         # 64% faster than 32-thread on a 64-core host.
-        # The matrices are independent, so they are split across threads in chunks (each one is
-        # still a single-threaded LAPACK call, with the same result).
+        # A CPU fit with the numba kernels splits the independent matrices across the kernels'
+        # threads, in chunks: each matrix is still a single-threaded LAPACK call, with the same
+        # result as one call over the batch (see _eigh_chunked). Otherwise, one call.
+        threaded = _numba_kernels.use_numba(H)
+        threads = _numba_kernels.num_threads() if threaded else 1
         prev_threads = torch.get_num_threads()
         torch.set_num_threads(1)
-        eigenvalues = torch.empty(H_cpu.shape[:-1], dtype=H_cpu.dtype)
-        eigenvectors = torch.empty_like(H_cpu)
-
-        def eigh_rows(start, end):
-            eigenvalues[start:end], eigenvectors[start:end] = _eigh_or_jitter(
-                H_cpu[start:end], epsilon
-            )
-
         try:
-            _numba_kernels.parallel_rows(eigh_rows, H_cpu.shape[0], 64)
+            if threaded:
+                eigenvalues, eigenvectors = _eigh_chunked(H_cpu, epsilon, threads)
+            else:
+                eigenvalues, eigenvectors = _eigh_or_jitter(H_cpu, epsilon)
         finally:
             torch.set_num_threads(prev_threads)
 

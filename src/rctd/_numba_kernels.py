@@ -130,7 +130,8 @@ if numba is not None:
             return a + b
         return a if a > b else b
 
-    @numba.njit(nogil=True, cache=True)
+    # error_model="numpy": a zero diagonal gives inf/NaN as in torch, not ZeroDivisionError
+    @numba.njit(nogil=True, cache=True, error_model="numpy")
     def _box_qp_kernel(start, end, D, d, lb, x, n_sweeps):
         K = d.shape[1]
         for r in range(start, end):
@@ -159,12 +160,16 @@ def num_threads() -> int:
     return max(1, min(torch.get_num_threads(), numba.config.NUMBA_NUM_THREADS))
 
 
-def parallel_rows(fn, n: int, min_chunk: int, *args) -> None:
+def parallel_rows(fn, n: int, min_chunk: int, *args, threads: int | None = None, align: int = 1):
     """``fn(start, end, *args)`` over rows [0, n) on the thread pool, in one chunk per thread
-    (``fn`` must release the GIL to run in parallel: a numba kernel, a LAPACK call)."""
+    (``fn`` must release the GIL to run in parallel: a numba kernel, a LAPACK call).
+
+    ``threads`` defaults to ``num_threads()``; every chunk starts at a multiple of ``align``.
+    """
     global _pool, _pool_threads
-    threads = num_threads()
+    threads = threads or num_threads()
     chunk = max(min_chunk, -(-n // threads))
+    chunk = -(-chunk // align) * align
     if n <= chunk:
         fn(0, n, *args)
         return
