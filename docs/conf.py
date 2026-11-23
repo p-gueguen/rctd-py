@@ -143,4 +143,5 @@ pygments_style = "default"
 
 nitpick_ignore = [
     ("py:class", "torch.device"),
+    ("py:class", "scipy.sparse._matrix.spmatrix"),
 ]
