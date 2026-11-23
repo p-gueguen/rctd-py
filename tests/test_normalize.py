@@ -1,7 +1,12 @@
 import numpy as np
+import pytest
+import scipy.sparse as sp
 import torch
 
-from rctd._normalize import fit_bulk
+from rctd._normalize import _longdouble_sum, fit_bulk
+from rctd._rctd import RCTD
+from rctd._reference import Reference
+from rctd._types import RCTDConfig
 
 
 def test_fit_bulk_runs(synthetic_data):
@@ -63,3 +68,80 @@ def test_fit_bulk_drops_genes_below_min_obs(synthetic_data):
 
     np.testing.assert_allclose(w_all.numpy(), w_obs.numpy(), rtol=1e-10, atol=1e-12)
     assert norm_all.shape == (G + 10, K)  # renormalised profiles still cover every gene
+
+
+def test_fit_bulk_sparse_counts_match_dense(synthetic_data):
+    profiles = torch.tensor(synthetic_data["profiles"])
+    counts = np.asarray(synthetic_data["spatial"].X, dtype=np.float32)
+    numi = torch.tensor(counts.sum(axis=1))
+
+    w_dense, norm_dense = fit_bulk(profiles, torch.tensor(counts), numi)
+    w_sparse, norm_sparse = fit_bulk(profiles, sp.csr_matrix(counts), numi)
+
+    assert torch.equal(w_dense, w_sparse)
+    assert torch.equal(norm_dense, norm_sparse)
+
+
+def test_longdouble_sum_sparse_exact_above_float32_range():
+    """Gene totals above 2**24 are not exact in float32; the sparse sum must still match."""
+    counts = np.zeros((1_000_000, 2), dtype=np.float32)
+    counts[:, 0] = 25  # total 25,000,000 > 2**24
+    counts[::3, 1] = np.random.default_rng(0).poisson(40, len(counts[::3]))
+    dense = _longdouble_sum(torch.tensor(counts), dim=0)
+    for sparse in (sp.csr_matrix(counts), sp.csc_array(counts)):
+        assert torch.equal(_longdouble_sum(sparse, dim=0), dense)
+    assert dense[0].item() == 25_000_000
+
+
+@pytest.mark.parametrize("counts_min", [0, 1500])
+def test_platform_effects_sparse_spatial_match_dense(synthetic_data, counts_min):
+    """Sparse spatial counts stay sparse until the DE genes, with identical results."""
+    reference = Reference(synthetic_data["reference"])
+    config = RCTDConfig(UMI_min=100, counts_MIN=counts_min)
+    dense = synthetic_data["spatial"]
+    sparse = dense.copy()
+    sparse.X = sp.csr_matrix(dense.X)
+
+    fits = []
+    for spatial in (dense, sparse):
+        rctd = RCTD(spatial, reference, config)
+        assert sp.issparse(rctd.counts) == (spatial is sparse)
+        rctd.fit_platform_effects()
+        fits.append(rctd)
+
+    a, b = fits
+    assert isinstance(b.counts, np.ndarray) and b.counts.dtype == a.counts.dtype
+    if counts_min:
+        assert 0 < a.counts.shape[0] < dense.n_obs  # the counts_MIN filter removed pixels
+    np.testing.assert_array_equal(a.counts, b.counts)
+    np.testing.assert_array_equal(a.nUMI, b.nUMI)
+    np.testing.assert_array_equal(a._pixel_mask, b._pixel_mask)
+    assert a._gene_list_bulk == b._gene_list_bulk
+    assert a._gene_list_reg == b._gene_list_reg
+    np.testing.assert_array_equal(a.norm_profiles, b.norm_profiles)
+    assert a.sigma == b.sigma
+
+
+def test_sparse_duplicate_entries_add_up_before_float32(synthetic_data):
+    """Duplicate coordinates sum in the input dtype, as densifying the matrix does."""
+    reference = Reference(synthetic_data["reference"])
+    X = sp.csr_matrix(np.asarray(synthetic_data["spatial"].X, dtype=np.float64))
+    # Store every nonzero as two entries, 0.1 and 0.6: in float64 they add up to float32 0.7,
+    # cast first they give 0.70000005. Built from indptr, so scipy keeps the duplicates.
+    dup = sp.csr_matrix(
+        (
+            np.tile([0.1, 0.6], X.nnz),
+            np.repeat(X.indices, 2),
+            2 * X.indptr,
+        ),
+        shape=X.shape,
+    )
+    assert not dup.has_canonical_format
+    dense = synthetic_data["spatial"].copy()
+    dense.X = dup.toarray()
+    sparse = dense.copy()
+    sparse.X = dup
+
+    config = RCTDConfig(UMI_min=100)
+    expected = RCTD(dense, reference, config).counts
+    np.testing.assert_array_equal(RCTD(sparse, reference, config).counts.toarray(), expected)

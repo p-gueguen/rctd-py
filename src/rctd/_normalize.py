@@ -1,19 +1,36 @@
 from typing import Tuple
 
 import numpy as np
+import scipy.sparse as sp
 import torch
 
 from rctd._irwls import solve_irwls
 
+# Rows per longdouble chunk in _longdouble_sum: bounds the temporary copy of a sparse matrix
+_SPARSE_SUM_ROWS = 65536
 
-def _longdouble_sum(t: torch.Tensor, dim: int) -> torch.Tensor:
+
+def _longdouble_sum(t: torch.Tensor | sp.spmatrix, dim: int) -> torch.Tensor:
     """Sum a tensor along a dimension using longdouble accumulation.
 
     On x86-64, this uses 80-bit extended precision (18 significant digits),
     matching R's internal sum() which also uses long double on this platform.
     This eliminates BLAS-order-dependent floating-point divergence between
     R and Python for large reductions (e.g. summing 135k spatial pixels).
+
+    A scipy sparse (N, G) matrix is summed over its rows without densifying it, in row
+    chunks cast to longdouble (scipy's ``sum(dtype=...)`` sets only the output type and still
+    accumulates in the input dtype). On integer counts, both sums are exact, so they are equal.
     """
+    if sp.issparse(t):
+        if dim != 0:
+            raise ValueError("a sparse matrix is summed over its rows only (dim=0)")
+        t = sp.csr_matrix(t)
+        result = np.zeros(t.shape[1], dtype=np.longdouble)
+        for start in range(0, t.shape[0], _SPARSE_SUM_ROWS):
+            chunk = t[start : start + _SPARSE_SUM_ROWS].astype(np.longdouble)
+            result += np.asarray(chunk.sum(axis=0)).ravel()
+        return torch.as_tensor(result.astype(np.float64).astype(t.dtype))
     arr = t.detach().cpu().numpy()
     # Accumulate in longdouble without first materializing an entire
     # longdouble copy of the input array.
@@ -24,7 +41,7 @@ def _longdouble_sum(t: torch.Tensor, dim: int) -> torch.Tensor:
 
 def fit_bulk(
     cell_type_profiles: torch.Tensor,
-    spatial_counts: torch.Tensor,
+    spatial_counts: torch.Tensor | sp.spmatrix,
     spatial_nUMI: torch.Tensor,
     min_change: float = 0.001,
     max_iter: int = 100,
@@ -36,7 +53,7 @@ def fit_bulk(
 
     Args:
         cell_type_profiles: (G, K) array of mean gene expression per cell type
-        spatial_counts: (N, G) array of observed spatial counts
+        spatial_counts: (N, G) observed spatial counts, a tensor or a scipy sparse matrix
         spatial_nUMI: (N,) array of total UMI per pixel
         min_change: convergence tolerance
         max_iter: max iterations for IRWLS
