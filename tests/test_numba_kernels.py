@@ -250,6 +250,39 @@ def test_psd_batch_threads_give_identical_results(monkeypatch, K, threads, dtype
     assert torch.equal(H_psd, H_ref) and torch.equal(max_eig, max_ref)
 
 
+def test_psd_batch_workers_run_eigh_single_threaded(monkeypatch):
+    """A pool thread keeps the torch thread count it had when it first ran torch code, so one that
+    ran torch at 8 threads would otherwise run every later eigh chunk on 8 threads."""
+    prev = torch.get_num_threads()
+    torch.set_num_threads(8)
+    try:
+        monkeypatch.setattr(_numba_kernels, "num_threads", lambda: 8)
+
+        def touch(start, end):
+            torch.ones(1024, 1024, dtype=torch.float64).sum()  # large enough to run threaded
+
+        _numba_kernels._pool_threads = None  # fresh threads, which first run torch at 8 threads
+        _numba_kernels.parallel_rows(touch, 8 * 64, 64, threads=8)
+        seen = []
+        eigh = _irwls._eigh_or_jitter
+
+        def spy(H, epsilon):
+            seen.append(torch.get_num_threads())
+            return eigh(H, epsilon)
+
+        monkeypatch.setattr(_irwls, "_eigh_or_jitter", spy)
+        g = torch.Generator().manual_seed(3)
+        S = torch.rand(3000, 60, 31, generator=g, dtype=torch.float64)
+        H = S.mT @ S
+        H_psd, max_eig = _irwls._psd_batch(H)
+        assert set(seen) == {1}
+        monkeypatch.setattr(_numba_kernels, "ENABLED", False)
+        H_ref, max_ref = _irwls._psd_batch(H)
+        assert torch.equal(H_psd, H_ref) and torch.equal(max_eig, max_ref)
+    finally:
+        torch.set_num_threads(prev)
+
+
 def test_psd_batch_without_numba_skips_the_pool(monkeypatch):
     """RCTD_NUMBA=0, a missing numba and the GPU's CPU eigh all make one eigh call, as main."""
     monkeypatch.setattr(_numba_kernels, "ENABLED", False)

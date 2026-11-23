@@ -365,7 +365,15 @@ def _eigh_chunked(
     eigenvectors = torch.empty_like(H).mT
 
     def rows(start, end):
-        eigenvalues[start:end], eigenvectors[start:end] = _eigh_or_jitter(H[start:end], epsilon)
+        # torch's thread count is per thread, and a pool thread keeps the one it had when it first
+        # ran torch code: set 1 here, as the caller does, or each chunk's eigh may run multithreaded
+        # (oversubscribed, and not bitwise equal to the one-call result).
+        prev = torch.get_num_threads()
+        torch.set_num_threads(1)
+        try:
+            eigenvalues[start:end], eigenvectors[start:end] = _eigh_or_jitter(H[start:end], epsilon)
+        finally:
+            torch.set_num_threads(prev)
 
     _numba_kernels.parallel_rows(rows, H.shape[0], 64, threads=threads, align=64)
     return eigenvalues, eigenvectors
