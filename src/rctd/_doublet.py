@@ -71,7 +71,7 @@ def run_doublet_mode(
         if bad_vals:
             raise ValueError(f"class_df has None/NaN class values for keys: {bad_vals}")
         class_of_type = user_class_df
-    # Per-index class lookup (K,) str array for hot-loop speed
+    # (K,) class of each type
     class_of = np.array([class_of_type[ct] for ct in cell_type_names])
 
     import time as _time
@@ -239,7 +239,6 @@ def run_doublet_mode(
         pair_scores,
         singlet_scores,
         candidates,
-        n_candidates,
         np.unique(class_of, return_inverse=True)[1],
         config,
     )
@@ -364,16 +363,17 @@ def _candidate_pairs(
     candidates, as R's pair loop does.
     """
     N, C = candidates.shape
-    # Group pixels by their number of candidates, then restore the pixel order
-    parts = [(np.zeros(0, dtype=np.intp),) * 3]
+    # Each pixel's pairs go at its offset; pixels with the same number of candidates at once
+    n_pairs = n_candidates * (n_candidates - 1) // 2
+    offsets = np.cumsum(n_pairs) - n_pairs
+    triples = np.empty((n_pairs.sum(), 3), dtype=np.int32)
     for c in np.unique(n_candidates):
         rows = np.flatnonzero(n_candidates == c)
         ci, cj = np.triu_indices(c, 1)
-        parts.append((np.repeat(rows, len(ci)), np.tile(ci, len(rows)), np.tile(cj, len(rows))))
-    pix, i, j = (np.concatenate(part) for part in zip(*parts))
-    order = np.argsort(pix, kind="stable")
-    pix, i, j = pix[order], i[order], j[order]
-    triples = np.stack([pix, candidates[pix, i], candidates[pix, j]], axis=1).astype(np.int32)
+        at = (offsets[rows, None] + np.arange(len(ci))).ravel()
+        triples[at, 0] = np.repeat(rows, len(ci))
+        triples[at, 1] = candidates[rows][:, ci].ravel()
+        triples[at, 2] = candidates[rows][:, cj].ravel()
 
     pix, pos = np.nonzero(np.arange(C) < n_candidates[:, None])
     singles = np.stack([pix, candidates[pix, pos]], axis=1).astype(np.int32)
@@ -385,7 +385,6 @@ def _classify_pixels(
     pair_scores: np.ndarray,
     singlet_scores: np.ndarray,
     candidates: np.ndarray,
-    n_candidates: np.ndarray,
     type_class: np.ndarray,
     config: RCTDConfig,
 ) -> tuple[np.ndarray, ...]:
@@ -395,14 +394,14 @@ def _classify_pixels(
         triples: (M, 3) scored (pixel, type1, type2) pairs, ordered by pixel
         pair_scores: (M,) their negative log-likelihoods (lower is better)
         singlet_scores: (N, K) singlet score of each pixel's candidate types
-        candidates, n_candidates: from ``_select_candidates``
+        candidates: (N, C) candidate types, from ``_select_candidates``
         type_class: (K,) class index of each type
 
     Returns:
         ``(spot_class, first_type, second_type, first_class, second_class, min_score,
         singlet_score)``, each of shape (N,).
     """
-    N = len(n_candidates)
+    N = len(candidates)
     rows = np.arange(N)
     pix, t1, t2 = triples.T
 
@@ -416,8 +415,9 @@ def _classify_pixels(
     best_t1[best_pix] = t1[is_min[first]]
     best_t2[best_pix] = t2[is_min[first]]
 
-    # Pairs within CONFIDENCE_THRESHOLD of the best one
+    # Only pairs within CONFIDENCE_THRESHOLD of the best one matter from here on
     near = pair_scores < min_score[pix] + config.CONFIDENCE_THRESHOLD
+    pix, t1, t2 = pix[near], t1[near], t2[near]
 
     def none_per_pixel(mask):
         return np.bincount(pix[mask], minlength=N) == 0
@@ -433,19 +433,20 @@ def _classify_pixels(
         m = my_type[pix]
         same1 = type_class[t1] == type_class[m]
         same2 = type_class[t2] == type_class[m]
-        all_pairs = none_per_pixel(near & (t1 != m) & (t2 != m))
-        all_pairs_class = none_per_pixel(near & ~same1 & ~same2)
+        all_pairs = none_per_pixel((t1 != m) & (t2 != m))
+        all_pairs_class = none_per_pixel(~same1 & ~same2)
 
-        other1 = near & same1 & (t1 != m)
-        other2 = near & same2 & (t2 != m)
+        # Other types of my_type's class in near pairs. A pixel with all_pairs_class but not
+        # all_pairs always has one: some near pair misses my_type but holds its class.
+        other1 = same1 & (t1 != m)
+        other2 = same2 & (t2 != m)
         other_pix = np.concatenate([pix[other1], pix[other2]])
         other_scores = singlet_scores[other_pix, np.concatenate([t1[other1], t2[other2]])]
-        other_min = np.full(N, _INF, dtype=singlet_scores.dtype)
+        other_min = np.full(N, np.inf, dtype=singlet_scores.dtype)
         np.fmin.at(other_min, other_pix, other_scores)
-        has_other = np.bincount(other_pix, minlength=N) > 0
 
         singlet_score = singlet_scores[rows, my_type]
-        better = all_pairs_class & ~all_pairs & has_other & (other_min < singlet_score)
+        better = all_pairs_class & ~all_pairs & (other_min < singlet_score)
         return all_pairs, all_pairs_class, np.where(better, other_min, singlet_score)
 
     type1_all_pairs, type1_all_class, type1_sing = check_pairs_type(best_t1)

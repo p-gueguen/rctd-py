@@ -116,7 +116,7 @@ def test_classify_pixels_matches_per_pixel_loop():
         for conf, dbl in ((5.0, 20.0), (2.0, 6.0), (8.0, 3.0)):
             config = RCTDConfig(CONFIDENCE_THRESHOLD=conf, DOUBLET_THRESHOLD=dbl)
             got = _classify_pixels(
-                triples, pair_scores, singlet_scores, candidates, n, type_class, config
+                triples, pair_scores, singlet_scores, candidates, type_class, config
             )
             for i in range(N):
                 rows = triples[:, 0] == i
