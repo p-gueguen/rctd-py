@@ -3,6 +3,7 @@ from typing import Literal, Union
 
 import anndata
 import numpy as np
+import scipy.sparse as sp
 import torch
 
 from rctd._doublet import run_doublet_mode
@@ -88,9 +89,10 @@ class RCTD:
 
         The nUMI is **never recomputed** after gene restriction — this matches
         R's ``restrict_counts()`` which preserves the original ``puck@nUMI``.
-        """
-        import scipy.sparse as sp
 
+        Sparse counts stay sparse until ``fit_platform_effects`` restricts them to the
+        DE genes, so the matrix over all common genes is never densified.
+        """
         # ── Total nUMI from ALL spatial genes (R: colSums(counts)) ──
         full_X = self.spatial.X
         if sp.issparse(full_X):
@@ -124,8 +126,9 @@ class RCTD:
         spatial_gene_idx = [self.spatial.var_names.get_loc(g) for g in self.common_genes]
         counts_sub = self.spatial.X[np.where(umi_mask)[0]][:, spatial_gene_idx]
         if sp.issparse(counts_sub):
-            counts_sub = counts_sub.toarray()
-        self.counts = np.array(counts_sub, dtype=np.float32)
+            self.counts = sp.csr_matrix(counts_sub, dtype=np.float32)
+        else:
+            self.counts = np.array(counts_sub, dtype=np.float32)
 
         # Restrict reference profiles to common genes
         self.base_profiles = self.reference.get_profiles_for_genes(self.common_genes)
@@ -152,7 +155,7 @@ class RCTD:
         # spatial_bulk must be indexed by ALL reference genes (not just common)
         # so that get_de_genes gene indices align with the reference profile matrix
         common_gene_to_idx = {g: i for i, g in enumerate(self.common_genes)}
-        spatial_bulk_common = self.counts.sum(axis=0)  # (G_common,)
+        spatial_bulk_common = np.asarray(self.counts.sum(axis=0)).ravel()  # (G_common,)
         spatial_bulk_full = np.zeros(self.reference.n_genes, dtype=np.float32)
         for g in self.common_genes:
             ref_idx = self.reference.gene_names.index(g)
@@ -202,7 +205,7 @@ class RCTD:
         bulk_counts = self.counts[:, bulk_gene_idx]
 
         if self.config.counts_MIN > 0:
-            counts_in_bulk = bulk_counts.sum(axis=1)
+            counts_in_bulk = np.asarray(bulk_counts.sum(axis=1)).ravel()
             counts_mask = counts_in_bulk >= self.config.counts_MIN
             n_before = len(counts_mask)
             n_removed = int((~counts_mask).sum())
@@ -226,10 +229,12 @@ class RCTD:
 
         bulk_profiles = self.reference.get_profiles_for_genes(gene_list_bulk)
 
+        # Keep full spatial data in CPU RAM; fit_bulk sums sparse counts without densifying.
+        if not sp.issparse(bulk_counts):
+            bulk_counts = torch.as_tensor(bulk_counts)
         bulk_weights, norm_prof_bulk = fit_bulk(
             cell_type_profiles=torch.as_tensor(bulk_profiles, device=device),
-            # Keep full spatial data in CPU RAM.
-            spatial_counts=torch.as_tensor(bulk_counts),
+            spatial_counts=bulk_counts,
             spatial_nUMI=torch.as_tensor(self.nUMI),
             min_change=self.config.MIN_CHANGE_BULK,
         )
@@ -244,6 +249,8 @@ class RCTD:
 
         reg_gene_idx = [self.common_genes.index(g) for g in gene_list_reg]
         self.counts = self.counts[:, reg_gene_idx]
+        if sp.issparse(self.counts):
+            self.counts = self.counts.toarray()
         # NOTE: self.nUMI stays as total nUMI from ALL spatial genes.
         # R's puck@nUMI is never recomputed after gene restriction.
 

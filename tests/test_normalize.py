@@ -1,7 +1,12 @@
 import numpy as np
+import pytest
+import scipy.sparse as sp
 import torch
 
 from rctd._normalize import fit_bulk
+from rctd._rctd import RCTD
+from rctd._reference import Reference
+from rctd._types import RCTDConfig
 
 
 def test_fit_bulk_runs(synthetic_data):
@@ -63,3 +68,42 @@ def test_fit_bulk_drops_genes_below_min_obs(synthetic_data):
 
     np.testing.assert_allclose(w_all.numpy(), w_obs.numpy(), rtol=1e-10, atol=1e-12)
     assert norm_all.shape == (G + 10, K)  # renormalised profiles still cover every gene
+
+
+def test_fit_bulk_sparse_counts_match_dense(synthetic_data):
+    profiles = torch.tensor(synthetic_data["profiles"])
+    counts = np.asarray(synthetic_data["spatial"].X, dtype=np.float32)
+    numi = torch.tensor(counts.sum(axis=1))
+
+    w_dense, norm_dense = fit_bulk(profiles, torch.tensor(counts), numi)
+    w_sparse, norm_sparse = fit_bulk(profiles, sp.csr_matrix(counts), numi)
+
+    assert torch.equal(w_dense, w_sparse)
+    assert torch.equal(norm_dense, norm_sparse)
+
+
+@pytest.mark.parametrize("counts_min", [0, 1500])
+def test_platform_effects_sparse_spatial_match_dense(synthetic_data, counts_min):
+    """Sparse spatial counts stay sparse until the DE genes, with identical results."""
+    reference = Reference(synthetic_data["reference"])
+    config = RCTDConfig(UMI_min=100, counts_MIN=counts_min)
+    dense = synthetic_data["spatial"]
+    sparse = dense.copy()
+    sparse.X = sp.csr_matrix(dense.X)
+
+    fits = []
+    for spatial in (dense, sparse):
+        rctd = RCTD(spatial, reference, config)
+        assert sp.issparse(rctd.counts) == (spatial is sparse)
+        rctd.fit_platform_effects()
+        fits.append(rctd)
+
+    a, b = fits
+    assert isinstance(b.counts, np.ndarray) and b.counts.dtype == a.counts.dtype
+    if counts_min:
+        assert 0 < a.counts.shape[0] < dense.n_obs  # the counts_MIN filter removed pixels
+    np.testing.assert_array_equal(a.counts, b.counts)
+    np.testing.assert_array_equal(a.nUMI, b.nUMI)
+    np.testing.assert_array_equal(a._pixel_mask, b._pixel_mask)
+    np.testing.assert_array_equal(a.norm_profiles, b.norm_profiles)
+    assert a.sigma == b.sigma
