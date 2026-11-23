@@ -66,7 +66,7 @@ def run_doublet_mode(
         bad_vals = [
             k
             for k, v in user_class_df.items()
-            if v is None or (isinstance(v, float) and np.isnan(v))
+            if v is None or (isinstance(v, (float, np.floating)) and np.isnan(v))
         ]
         if bad_vals:
             raise ValueError(f"class_df has None/NaN class values for keys: {bad_vals}")
@@ -342,7 +342,7 @@ def _select_candidates(
     one = n_passing == 1
     appended_first = one & ~passing[:, 0]
     passing[one, 0] = True
-    passing[one & ~appended_first, 1] = True
+    passing[one & ~appended_first, min(1, K - 1)] = True
 
     n_candidates = passing.sum(axis=1)
     rows, types = np.nonzero(passing)
@@ -405,10 +405,10 @@ def _classify_pixels(
     rows = np.arange(N)
     pix, t1, t2 = triples.T
 
-    # The lowest-scoring pair (the first one on ties), as R's strict `<` scan finds it
+    # The lowest-scoring pair (the first one on ties), as R's strict `<` scan from _INF finds it
     min_score = np.full(N, _INF, dtype=pair_scores.dtype)
     np.fmin.at(min_score, pix, pair_scores)
-    is_min = np.flatnonzero(pair_scores == min_score[pix])
+    is_min = np.flatnonzero((pair_scores == min_score[pix]) & (pair_scores < _INF))
     best_pix, first = np.unique(pix[is_min], return_index=True)
     # A pixel without a pair score below _INF keeps R's start: its first two candidates
     best_t1, best_t2 = candidates[:, 0].copy(), candidates[:, 1].copy()

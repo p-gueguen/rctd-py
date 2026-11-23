@@ -66,9 +66,15 @@ def test_select_candidates_follows_r_order():
     assert singles.tolist() == [[i, t] for i, c in enumerate(lists) for t in c]
 
 
+def test_select_candidates_single_type():
+    # K = 1 (no candidate passes): the type pairs with itself, as on main
+    candidates, n = _select_candidates(np.zeros((2, 1)))
+    assert candidates.tolist() == [[0, 0], [0, 0]] and n.tolist() == [1, 1]
+
+
 def _classify_one_pixel(cands, pair_score, sing, cls, conf, dbl):
     """R's process_bead_doublet for one pixel, as the earlier per-pixel loop computed it."""
-    min_p, best = np.inf, (cands[0], cands[1])
+    min_p, best = 1e18, (cands[0], cands[1])
     for t1, t2 in combinations(cands, 2):
         if pair_score[(t1, t2)] < min_p:
             min_p, best = pair_score[(t1, t2)], (t1, t2)
@@ -99,7 +105,7 @@ def _classify_one_pixel(cands, pair_score, sing, cls, conf, dbl):
         out = [2, t1, t2, not a1, not a2, s1]
     if out[5] - min_p < dbl:
         out[0] = 1
-    return out[:5] + [min_p, out[5]]
+    return out[:5] + [np.float32(min_p), np.float32(out[5])]
 
 
 def test_classify_pixels_matches_per_pixel_loop():
@@ -110,6 +116,10 @@ def test_classify_pixels_matches_per_pixel_loop():
     triples, singles = _candidate_pairs(candidates, n)
     # Integer scores make ties, between pairs and between singlets, common
     pair_scores = rng.integers(0, 12, len(triples)).astype(np.float32)
+    # Failed fits: a pixel whose pairs are all NaN, inf or the 1e18 "missing" score keeps its
+    # first two candidates
+    for bad in (np.nan, np.inf, 1e18):
+        pair_scores[rng.choice(len(triples), len(triples) // 10, replace=False)] = bad
     singlet_scores = np.full((N, K), 1e18, dtype=np.float32)
     singlet_scores[singles[:, 0], singles[:, 1]] = rng.integers(0, 30, len(singles))
     for type_class in (np.arange(K), np.array([0, 0, 1, 1, 1, 2, 2])):
@@ -126,3 +136,24 @@ def test_classify_pixels_matches_per_pixel_loop():
                     cands, score, singlet_scores[i], type_class, conf, dbl
                 )
                 assert [g[i] for g in got] == expected, (i, conf, dbl)
+
+
+def test_classify_pixels_failed_pairs_keep_first_candidates():
+    # No pair scores below the 1e18 "missing" score: R's scan keeps the first two candidates
+    candidates, n = np.array([[0, 1, 2]]), np.array([3])
+    triples, _ = _candidate_pairs(candidates, n)
+    pair_scores = np.array([np.nan, 1e18, np.inf])
+    singlet_scores = np.array([[5.0, 10.0, 15.0]])
+    got = _classify_pixels(
+        triples, pair_scores, singlet_scores, candidates, np.arange(3), RCTDConfig()
+    )
+    expected = _classify_one_pixel(
+        [0, 1, 2],
+        dict(zip([(0, 1), (0, 2), (1, 2)], pair_scores)),
+        singlet_scores[0],
+        np.arange(3),
+        5.0,
+        20.0,
+    )
+    assert [g[0] for g in got] == expected
+    assert (got[1][0], got[2][0]) == (0, 1)
