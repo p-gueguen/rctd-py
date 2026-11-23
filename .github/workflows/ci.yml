@@ -62,7 +62,7 @@ jobs:
             --pattern q_matrices.npz --dir ~/.cache/rctd
 
       - name: Install dependencies
-        run: uv pip install --system ".[dev]"
+        run: uv pip install --system ".[dev,cpu]"
 
       - name: Run unit tests
         run: pytest tests/ -v -m "not slow"

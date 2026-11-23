@@ -16,6 +16,8 @@ import torch
 from scipy.special import gammaln
 from scipy.stats import norm as normal_dist
 
+from rctd import _numba_kernels
+
 # torch>=2.10 fails inductor codegen for some reductions on certain platforms
 # (e.g. Apple Silicon CPU): it logs a large recoverable dump then silently falls
 # back to eager for every new shape -- noisy and slow (issue #27). The existing
@@ -326,6 +328,15 @@ def compute_spline_coefficients(Q_mat: np.ndarray, x_vals: np.ndarray) -> np.nda
     return SQ_mat
 
 
+def _spline_interval(l: torch.Tensor) -> torch.Tensor:
+    """Spline interval m of the lambda grid for l = floor(sqrt(lambda / 1e-6))."""
+    # R: m <- pmin(l - 9, 40) + pmax(ceiling(sqrt(pmax(l - 48.7499, 0) * 4)) - 2, 0)
+    return torch.clamp(l - 9, max=40) + torch.clamp(
+        torch.ceil(torch.sqrt(torch.clamp(l.float() - 48.7499, min=0.0) * 4.0)).long() - 2,
+        min=0,
+    )
+
+
 def _calc_q_all_impl(
     Y: torch.Tensor,
     lam: torch.Tensor,
@@ -362,11 +373,7 @@ def _calc_q_all_impl(
 
     delta = 1e-6
     l = torch.floor(torch.sqrt(lam / delta)).long()
-    # R: m <- pmin(l - 9, 40) + pmax(ceiling(sqrt(pmax(l - 48.7499, 0) * 4)) - 2, 0)
-    m = torch.clamp(l - 9, max=40) + torch.clamp(
-        torch.ceil(torch.sqrt(torch.clamp(l.float() - 48.7499, min=0.0) * 4.0)).long() - 2,
-        min=0,
-    )
+    m = _spline_interval(l)
 
     # R is 1-indexed: ti1 <- X_vals[m]; ti <- X_vals[m+1]
     # Python 0-indexed: x_vals[m-1] and x_vals[m]
@@ -396,8 +403,20 @@ def _calc_q_all_impl(
     return d0_vec, d1_vec, d2_vec
 
 
-# Eager version for sigma estimation (small batches, compilation not amortized)
-calc_q_all_eager = _calc_q_all_impl
+def calc_q_all_eager(
+    Y: torch.Tensor,
+    lam: torch.Tensor,
+    Q_mat: torch.Tensor,
+    SQ_mat: torch.Tensor,
+    x_vals: torch.Tensor,
+    K_val: int = -1,
+) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """``calc_q_all`` without torch.compile, for sigma estimation (small batches, compilation not
+    amortized); the numba kernel on CPU."""
+    if _numba_kernels.use_numba(lam):
+        return _numba_kernels.calc_q_all(Y, lam, Q_mat, SQ_mat, x_vals, K_val)
+    return _calc_q_all_impl(Y, lam, Q_mat, SQ_mat, x_vals, K_val)
+
 
 # Lazy-compile state: None = not yet attempted, True/False = cached result
 _CALC_Q_USE_COMPILE: bool | None = None
@@ -418,8 +437,11 @@ def calc_q_all(
 ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """Compute Q derivatives, using torch.compile when available.
 
-    Auto-detects compilation failures on first call and falls back to eager.
+    Auto-detects compilation failures on first call and falls back to eager. On CPU it runs the
+    numba kernel instead (see ``_numba_kernels``).
     """
+    if _numba_kernels.use_numba(lam):
+        return _numba_kernels.calc_q_all(Y, lam, Q_mat, SQ_mat, x_vals, K_val)
     global _CALC_Q_USE_COMPILE
     if _CALC_Q_USE_COMPILE is False or _calc_q_all_compiled is None:
         return _calc_q_all_impl(Y, lam, Q_mat, SQ_mat, x_vals, K_val)
