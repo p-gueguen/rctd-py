@@ -6,6 +6,9 @@ import torch
 
 from rctd._irwls import solve_irwls
 
+# Rows per longdouble chunk in _longdouble_sum: bounds the temporary copy of a sparse matrix
+_SPARSE_SUM_ROWS = 65536
+
 
 def _longdouble_sum(t: torch.Tensor | sp.spmatrix, dim: int) -> torch.Tensor:
     """Sum a tensor along a dimension using longdouble accumulation.
@@ -15,11 +18,18 @@ def _longdouble_sum(t: torch.Tensor | sp.spmatrix, dim: int) -> torch.Tensor:
     This eliminates BLAS-order-dependent floating-point divergence between
     R and Python for large reductions (e.g. summing 135k spatial pixels).
 
-    A scipy sparse matrix is summed over its stored entries, without densifying it. On
-    integer counts, both sums are exact, so they are equal.
+    A scipy sparse (N, G) matrix is summed over its rows without densifying it, in row
+    chunks cast to longdouble (scipy's ``sum(dtype=...)`` sets only the output type and still
+    accumulates in the input dtype). On integer counts, both sums are exact, so they are equal.
     """
     if sp.issparse(t):
-        result = np.asarray(t.sum(axis=dim, dtype=np.longdouble)).ravel()
+        if dim != 0:
+            raise ValueError("a sparse matrix is summed over its rows only (dim=0)")
+        t = sp.csr_matrix(t)
+        result = np.zeros(t.shape[1], dtype=np.longdouble)
+        for start in range(0, t.shape[0], _SPARSE_SUM_ROWS):
+            chunk = t[start : start + _SPARSE_SUM_ROWS].astype(np.longdouble)
+            result += np.asarray(chunk.sum(axis=0)).ravel()
         return torch.as_tensor(result.astype(np.float64).astype(t.dtype))
     arr = t.detach().cpu().numpy()
     # Accumulate in longdouble without first materializing an entire

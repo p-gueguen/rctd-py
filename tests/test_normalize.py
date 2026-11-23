@@ -3,7 +3,7 @@ import pytest
 import scipy.sparse as sp
 import torch
 
-from rctd._normalize import fit_bulk
+from rctd._normalize import _longdouble_sum, fit_bulk
 from rctd._rctd import RCTD
 from rctd._reference import Reference
 from rctd._types import RCTDConfig
@@ -80,6 +80,17 @@ def test_fit_bulk_sparse_counts_match_dense(synthetic_data):
 
     assert torch.equal(w_dense, w_sparse)
     assert torch.equal(norm_dense, norm_sparse)
+
+
+def test_longdouble_sum_sparse_exact_above_float32_range():
+    """Gene totals above 2**24 are not exact in float32; the sparse sum must still match."""
+    counts = np.zeros((1_000_000, 2), dtype=np.float32)
+    counts[:, 0] = 25  # total 25,000,000 > 2**24
+    counts[::3, 1] = np.random.default_rng(0).poisson(40, len(counts[::3]))
+    dense = _longdouble_sum(torch.tensor(counts), dim=0)
+    for sparse in (sp.csr_matrix(counts), sp.csc_array(counts)):
+        assert torch.equal(_longdouble_sum(sparse, dim=0), dense)
+    assert dense[0].item() == 25_000_000
 
 
 @pytest.mark.parametrize("counts_min", [0, 1500])
