@@ -28,7 +28,11 @@ _COMPILE_DISABLED_BY_CONFIG = False
 
 
 class RCTD:
-    """Robust Cell Type Decomposition (RCTD)."""
+    """Robust Cell Type Decomposition (RCTD).
+
+    ``counts`` holds the spatial counts of the common genes: a CSR matrix if ``spatial.X`` is
+    sparse, until ``fit_platform_effects`` restricts them to the DE genes as a dense array.
+    """
 
     def __init__(
         self,
@@ -126,7 +130,11 @@ class RCTD:
         spatial_gene_idx = [self.spatial.var_names.get_loc(g) for g in self.common_genes]
         counts_sub = self.spatial.X[np.where(umi_mask)[0]][:, spatial_gene_idx]
         if sp.issparse(counts_sub):
-            self.counts = sp.csr_matrix(counts_sub, dtype=np.float32)
+            # Duplicate entries add up in the input dtype before the float32 cast, as densifying
+            # does (counts_sub is a fresh copy, so this leaves spatial.X untouched)
+            counts_sub = sp.csr_matrix(counts_sub)
+            counts_sub.sum_duplicates()
+            self.counts = counts_sub.astype(np.float32)
         else:
             self.counts = np.array(counts_sub, dtype=np.float32)
 

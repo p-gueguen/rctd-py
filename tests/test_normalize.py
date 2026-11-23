@@ -116,5 +116,32 @@ def test_platform_effects_sparse_spatial_match_dense(synthetic_data, counts_min)
     np.testing.assert_array_equal(a.counts, b.counts)
     np.testing.assert_array_equal(a.nUMI, b.nUMI)
     np.testing.assert_array_equal(a._pixel_mask, b._pixel_mask)
+    assert a._gene_list_bulk == b._gene_list_bulk
+    assert a._gene_list_reg == b._gene_list_reg
     np.testing.assert_array_equal(a.norm_profiles, b.norm_profiles)
     assert a.sigma == b.sigma
+
+
+def test_sparse_duplicate_entries_add_up_before_float32(synthetic_data):
+    """Duplicate coordinates sum in the input dtype, as densifying the matrix does."""
+    reference = Reference(synthetic_data["reference"])
+    X = sp.csr_matrix(np.asarray(synthetic_data["spatial"].X, dtype=np.float64))
+    # Store every nonzero as two entries, 0.1 and 0.6: in float64 they add up to float32 0.7,
+    # cast first they give 0.70000005. Built from indptr, so scipy keeps the duplicates.
+    dup = sp.csr_matrix(
+        (
+            np.tile([0.1, 0.6], X.nnz),
+            np.repeat(X.indices, 2),
+            2 * X.indptr,
+        ),
+        shape=X.shape,
+    )
+    assert not dup.has_canonical_format
+    dense = synthetic_data["spatial"].copy()
+    dense.X = dup.toarray()
+    sparse = dense.copy()
+    sparse.X = dup
+
+    config = RCTDConfig(UMI_min=100)
+    expected = RCTD(dense, reference, config).counts
+    np.testing.assert_array_equal(RCTD(sparse, reference, config).counts.toarray(), expected)
