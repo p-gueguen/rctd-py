@@ -7,10 +7,13 @@ arithmetic in a single pass over the genes, in parallel over pixels:
 
 - ``calc_q_all``: ``_calc_q_all_impl`` elementwise (bitwise equal to it in float64);
 - ``irwls_derivatives``: prediction, likelihood derivatives, gradient and Hessian of one
-  ``solve_irwls_batch`` iteration, skipping the pixels that have already converged.
+  ``solve_irwls_batch`` iteration, skipping the pixels that have already converged;
+- ``box_qp_sweeps``: the Gauss-Seidel sweeps of the box QP (K != 2), per pixel. torch.compile
+  would otherwise spend ~50 s compiling them in every new process.
 
 They compute in float64 whatever the fit's dtype, and round their outputs to it. The PSD
-projection and the box QP stay in torch, shared with the GPU path.
+projection (its eigendecompositions spread over the same threads) and the box QP's exact finish
+stay in torch, shared with the GPU path.
 
 The kernels release the GIL and run on chunks of rows in a thread pool of their own, not on
 numba's parallel threading layer: its OpenMP layer competes with torch's OpenMP threads (a 2-10x
@@ -120,6 +123,28 @@ if numba is not None:
                     hess[n, i, j] = h_acc[i, j]
                     hess[n, j, i] = h_acc[i, j]
 
+    @numba.njit(inline="always")
+    def _maximum(a, b):
+        """torch.maximum: NaN if either is."""
+        if a != a or b != b:
+            return a + b
+        return a if a > b else b
+
+    # error_model="numpy": a zero diagonal gives inf/NaN as in torch, not ZeroDivisionError
+    @numba.njit(nogil=True, cache=True, error_model="numpy")
+    def _box_qp_kernel(start, end, D, d, lb, x, n_sweeps):
+        K = d.shape[1]
+        for r in range(start, end):
+            for i in range(K):
+                x[r, i] = _maximum(d[r, i] / D[r, i, i], lb[r, i])
+            for _ in range(n_sweeps):
+                for i in range(K):
+                    acc = 0.0
+                    for j in range(K):
+                        acc += D[r, i, j] * x[r, j]
+                    resid = d[r, i] - acc + D[r, i, i] * x[r, i]
+                    x[r, i] = _maximum(resid / D[r, i, i], lb[r, i])
+
 
 _pool: ThreadPoolExecutor | None = None
 _pool_threads = 0
@@ -135,20 +160,25 @@ def num_threads() -> int:
     return max(1, min(torch.get_num_threads(), numba.config.NUMBA_NUM_THREADS))
 
 
-def _run(kernel, n: int, min_chunk: int, *args) -> None:
-    """``kernel(start, end, *args)`` over rows [0, n), in one chunk per thread."""
+def parallel_rows(fn, n: int, min_chunk: int, *args, threads: int | None = None, align: int = 1):
+    """``fn(start, end, *args)`` over rows [0, n) on the thread pool, in one chunk per thread
+    (``fn`` must release the GIL to run in parallel: a numba kernel, a LAPACK call).
+
+    ``threads`` defaults to ``num_threads()``; every chunk starts at a multiple of ``align``.
+    """
     global _pool, _pool_threads
-    threads = num_threads()
+    threads = threads or num_threads()
     chunk = max(min_chunk, -(-n // threads))
+    chunk = -(-chunk // align) * align
     if n <= chunk:
-        kernel(0, n, *args)
+        fn(0, n, *args)
         return
     if _pool_threads != threads:  # a new pool when torch's thread count changes
         if _pool is not None:
             _pool.shutdown(wait=False)
         _pool = ThreadPoolExecutor(threads, thread_name_prefix="rctd-numba")
         _pool_threads = threads
-    for f in [_pool.submit(kernel, s, min(s + chunk, n), *args) for s in range(0, n, chunk)]:
+    for f in [_pool.submit(fn, s, min(s + chunk, n), *args) for s in range(0, n, chunk)]:
         f.result()
 
 
@@ -173,7 +203,7 @@ def _tables(Q_mat, SQ_mat, x_vals, K_val):
 def calc_q_all(Y, lam, Q_mat, SQ_mat, x_vals, K_val=-1):
     """``_calc_q_all_impl`` on CPU tensors."""
     out = [torch.empty(lam.shape, dtype=lam.dtype) for _ in range(3)]
-    _run(
+    parallel_rows(
         _calc_q_kernel,
         lam.numel(),
         1 << 14,
@@ -194,7 +224,7 @@ def irwls_derivatives(S, Y, w, threshold, active, Q_mat, SQ_mat, x_vals):
     N, _, K = S.shape
     grad = torch.zeros(N, K, dtype=S.dtype)
     hess = torch.zeros(N, K, K, dtype=S.dtype)
-    _run(
+    parallel_rows(
         _derivatives_kernel,
         N,
         16,
@@ -208,3 +238,25 @@ def irwls_derivatives(S, Y, w, threshold, active, Q_mat, SQ_mat, x_vals):
         hess.numpy(),
     )
     return grad, hess
+
+
+def box_qp_sweeps(D, d, lower_bound, n_sweeps=50):
+    """The Gauss-Seidel sweeps of ``_solve_box_qp_batch`` (min 0.5 x'Dx - d'x, x >= lb).
+
+    All ``n_sweeps`` of them, as the compiled ``_solve_box_qp_batch_impl`` does (the TorchScript
+    fallback stops once the whole batch has converged, which makes a pixel's result depend on its
+    batch). Stopping each pixel on its own instead was as exact in float64 after
+    ``_finish_box_qp``, but in float32, whose finish tolerance is far looser, it moved weights.
+    """
+    x = torch.empty_like(d)
+    parallel_rows(
+        _box_qp_kernel,
+        d.shape[0],
+        16,
+        D.contiguous().numpy(),
+        d.contiguous().numpy(),
+        lower_bound.contiguous().numpy(),
+        x.numpy(),
+        n_sweeps,
+    )
+    return x

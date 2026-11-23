@@ -331,6 +331,54 @@ def _cuda_eigh_threshold(device: torch.device) -> int:
     return 128 if major >= 9 else 16
 
 
+def _eigh_or_jitter(H: torch.Tensor, epsilon: float) -> tuple[torch.Tensor, torch.Tensor]:
+    """torch.linalg.eigh on CPU, retrying with a diagonal jitter where LAPACK fails."""
+    try:
+        return torch.linalg.eigh(H)
+    except torch._C._LinAlgError:
+        # Add a tiny diagonal jitter and retry. Jitter << epsilon clamp
+        # (1e-3), so well-conditioned batch elements are unaffected after
+        # the clamp below.
+        I_K = torch.eye(H.shape[-1], dtype=H.dtype)
+        for jitter in (1e-6, 1e-4):
+            try:
+                return torch.linalg.eigh(H + jitter * I_K)
+            except torch._C._LinAlgError:
+                continue
+        # Last resort: replace these matrices with epsilon*I. The IRWLS
+        # outer loop handles the resulting near-zero delta_w gracefully
+        # (same contract as the GPU NaN path above).
+        return torch.linalg.eigh((epsilon * I_K).expand_as(H).contiguous())
+
+
+def _eigh_chunked(
+    H: torch.Tensor, epsilon: float, threads: int
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """``_eigh_or_jitter`` over row chunks of H on the numba kernels' thread pool.
+
+    Bitwise equal to one call over the batch: LAPACK's result for a matrix depends on the memory
+    alignment of its copy, which torch makes per call, so every chunk starts at a multiple of 64
+    rows (a matrix keeps its offset modulo 64 bytes, for K odd too). The eigenvectors keep the
+    column-major layout eigh returns, which the matmuls that follow see.
+    """
+    eigenvalues = torch.empty(H.shape[:-1], dtype=H.dtype)
+    eigenvectors = torch.empty_like(H).mT
+
+    def rows(start, end):
+        # torch's thread count is per thread, and a pool thread keeps the one it had when it first
+        # ran torch code: set 1 here, as the caller does, or each chunk's eigh may run multithreaded
+        # (oversubscribed, and not bitwise equal to the one-call result).
+        prev = torch.get_num_threads()
+        torch.set_num_threads(1)
+        try:
+            eigenvalues[start:end], eigenvectors[start:end] = _eigh_or_jitter(H[start:end], epsilon)
+        finally:
+            torch.set_num_threads(prev)
+
+    _numba_kernels.parallel_rows(rows, H.shape[0], 64, threads=threads, align=64)
+    return eigenvalues, eigenvectors
+
+
 def _psd_batch(H: torch.Tensor, epsilon: float = 1e-3) -> tuple[torch.Tensor, torch.Tensor]:
     """Batched PSD projection. H: (N, K, K) → (H_psd (N, K, K), max_eig (N,)).
 
@@ -388,28 +436,18 @@ def _psd_batch(H: torch.Tensor, epsilon: float = 1e-3) -> tuple[torch.Tensor, to
         # routes through the same OMP layer OpenBLAS uses, so the effect is
         # equivalent — confirmed locally: 1-thread eigh on (5000, 38, 38) is
         # 64% faster than 32-thread on a 64-core host.
+        # A CPU fit with the numba kernels splits the independent matrices across the kernels'
+        # threads, in chunks: each matrix is still a single-threaded LAPACK call, with the same
+        # result as one call over the batch (see _eigh_chunked). Otherwise, one call.
+        threaded = _numba_kernels.use_numba(H)
+        threads = _numba_kernels.num_threads() if threaded else 1
         prev_threads = torch.get_num_threads()
         torch.set_num_threads(1)
         try:
-            try:
-                eigenvalues, eigenvectors = torch.linalg.eigh(H_cpu)
-            except torch._C._LinAlgError:
-                # Add a tiny diagonal jitter and retry. Jitter << epsilon clamp
-                # (1e-3), so well-conditioned batch elements are unaffected after
-                # the clamp below.
-                I_K = torch.eye(K, dtype=H_cpu.dtype)
-                for jitter in (1e-6, 1e-4):
-                    try:
-                        eigenvalues, eigenvectors = torch.linalg.eigh(H_cpu + jitter * I_K)
-                        break
-                    except torch._C._LinAlgError:
-                        continue
-                else:
-                    # Last resort: replace the whole batch with epsilon*I. The IRWLS
-                    # outer loop handles the resulting near-zero delta_w gracefully
-                    # (same contract as the GPU NaN path above).
-                    H_safe = (epsilon * I_K).expand_as(H_cpu).contiguous()
-                    eigenvalues, eigenvectors = torch.linalg.eigh(H_safe)
+            if threaded:
+                eigenvalues, eigenvectors = _eigh_chunked(H_cpu, epsilon, threads)
+            else:
+                eigenvalues, eigenvectors = _eigh_or_jitter(H_cpu, epsilon)
         finally:
             torch.set_num_threads(prev_threads)
 
@@ -608,7 +646,10 @@ def _solve_box_qp_batch(
     lower_bound: torch.Tensor,
     n_sweeps: int = 50,
 ) -> torch.Tensor:
-    x = _solve_box_qp_batch_fixed(D, d, lower_bound, n_sweeps)
+    if d.shape[1] != 2 and _numba_kernels.use_numba(d):
+        x = _numba_kernels.box_qp_sweeps(D, d, lower_bound, n_sweeps)
+    else:
+        x = _solve_box_qp_batch_fixed(D, d, lower_bound, n_sweeps)
     return x if d.shape[1] <= 2 else _finish_box_qp(D, d, lower_bound, x)
 
 
