@@ -321,3 +321,61 @@ def test_dropped_cell_types_warn():
     with pytest.warns(UserWarning, match="rare"):
         ref = Reference(_labelled_reference(labels), cell_type_col="cell_type")
     assert "rare" not in list(ref.cell_type_names)
+
+
+@pytest.mark.parametrize("matrix_kind", ["dense", "sparse_implicit", "sparse_explicit_zero"])
+def test_zero_umi_cells_dropped_even_with_min_umi_zero(matrix_kind):
+    """Zero-UMI cells (e.g., after subsetting to a small spatial panel) must be dropped even when
+    min_UMI=0, rather than poisoning profiles with NaN (dense / explicit zero) or diluting
+    sparse profiles via len(ct_nUMI)."""
+    import anndata
+    from scipy import sparse
+
+    labels = ["Type_A"] * 35 + ["Type_B"] * 35
+    adata_clean = _labelled_reference(labels)
+    # Zero out 5 cells of Type_A (leaving 30 >= cell_min=25)
+    zero_rows = [0, 1, 2, 3, 4]
+    X_with_zeros = adata_clean.X.copy()
+    X_with_zeros[zero_rows, :] = 0.0
+
+    adata_nz = adata_clean[[i for i in range(adata_clean.n_obs) if i not in zero_rows]].copy()
+    ref_expected = Reference(adata_nz, cell_type_col="cell_type", cell_min=25, min_UMI=1)
+
+    if matrix_kind == "dense":
+        X_in = X_with_zeros
+    elif matrix_kind == "sparse_implicit":
+        X_in = sparse.csr_matrix(X_with_zeros)
+        X_in.eliminate_zeros()
+    else:
+        X_tmp = X_with_zeros.copy()
+        X_tmp[zero_rows, 0] = 1.0
+        X_in = sparse.csr_matrix(X_tmp)
+        # Overwrite the stored 1.0 entries with explicit 0.0 without eliminate_zeros()
+        X_in.data[X_in.indptr[zero_rows]] = 0.0
+        assert X_in[zero_rows, 0].nnz == len(zero_rows)
+
+    adata_zero = anndata.AnnData(
+        X=X_in,
+        obs=adata_clean.obs.copy(),
+        var=adata_clean.var.copy(),
+    )
+    ref_got = Reference(adata_zero, cell_type_col="cell_type", cell_min=25, min_UMI=0)
+
+    assert np.all(np.isfinite(ref_got.profiles))
+    np.testing.assert_allclose(ref_got.profiles, ref_expected.profiles, rtol=1e-12)
+    de_genes = ref_got.get_de_genes(fc_thresh=0.5, expr_thresh=1e-4)
+    assert len(de_genes) > 0
+
+
+def test_all_zero_umi_cells_raises_even_with_min_umi_zero():
+    """If every cell has zero UMI, Reference must raise ValueError even when min_UMI=0."""
+    import anndata
+
+    labels = ["Type_A"] * 30 + ["Type_B"] * 30
+    adata = anndata.AnnData(
+        X=np.zeros((60, 20), dtype=np.float32),
+        obs={"cell_type": labels},
+    )
+    adata.var_names = [f"g{i}" for i in range(20)]
+    with pytest.raises(ValueError, match="No cells remain"):
+        Reference(adata, cell_type_col="cell_type", cell_min=25, min_UMI=0)

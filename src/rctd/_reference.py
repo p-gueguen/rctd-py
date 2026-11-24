@@ -54,7 +54,8 @@ class Reference:
         cell_min: Cell types with fewer cells are dropped (R's ``CELL_MIN_INSTANCE``,
             where R stops instead). Raises ``ValueError`` if fewer than 2 types remain.
         n_max_cells: Cells kept per type, sampled at random (seed 42) above this.
-        min_UMI: Cells with fewer total UMIs are dropped.
+        min_UMI: Cells with fewer total UMIs are dropped. Zero-UMI cells (``nUMI == 0``)
+            are always dropped to avoid division by zero in profile normalization.
     """
 
     def __init__(
@@ -117,7 +118,7 @@ class Reference:
         else:
             nUMI = np.asarray(X.sum(axis=1)).ravel()
 
-        keep_umi_mask = nUMI >= min_UMI
+        keep_umi_mask = (nUMI > 0) & (nUMI >= min_UMI)
         keep = keep_type_mask & keep_umi_mask
 
         if keep.sum() == 0:
