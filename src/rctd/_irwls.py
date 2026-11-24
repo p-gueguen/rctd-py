@@ -439,7 +439,7 @@ def _psd_batch(H: torch.Tensor, epsilon: float = 1e-3) -> tuple[torch.Tensor, to
         # A CPU fit with the numba kernels splits the independent matrices across the kernels'
         # threads, in chunks: each matrix is still a single-threaded LAPACK call, with the same
         # result as one call over the batch (see _eigh_chunked). Otherwise, one call.
-        threaded = _numba_kernels.use_numba(H)
+        threaded = _numba_kernels.ENABLED and (H.device.type == "cpu" or H_cpu.shape[0] >= 128)
         threads = _numba_kernels.num_threads() if threaded else 1
         prev_threads = torch.get_num_threads()
         torch.set_num_threads(1)
@@ -451,9 +451,14 @@ def _psd_batch(H: torch.Tensor, epsilon: float = 1e-3) -> tuple[torch.Tensor, to
         finally:
             torch.set_num_threads(prev_threads)
 
-        eigenvalues = torch.clamp(eigenvalues, min=epsilon)
-        H_psd = eigenvectors @ torch.diag_embed(eigenvalues) @ eigenvectors.transpose(-1, -2)
-        max_eig = eigenvalues[:, -1]
+        any_clamped = (eigenvalues < epsilon).any(dim=-1)
+        H_psd = H_cpu.clone()
+        if any_clamped.any():
+            eig_sub = torch.clamp(eigenvalues[any_clamped], min=epsilon)
+            vec_sub = eigenvectors[any_clamped]
+            scaled = vec_sub * eig_sub.sqrt().unsqueeze(-2)
+            H_psd[any_clamped] = scaled @ scaled.transpose(-1, -2)
+        max_eig = torch.clamp(eigenvalues[:, -1], min=epsilon)
         if H.device.type == "cpu":
             return H_psd, max_eig
         return H_psd.to(device=orig_device, dtype=orig_dtype), max_eig.to(
@@ -646,11 +651,20 @@ def _solve_box_qp_batch(
     lower_bound: torch.Tensor,
     n_sweeps: int = 50,
 ) -> torch.Tensor:
-    if d.shape[1] != 2 and _numba_kernels.use_numba(d):
-        x = _numba_kernels.box_qp_sweeps(D, d, lower_bound, n_sweeps)
-    else:
-        x = _solve_box_qp_batch_fixed(D, d, lower_bound, n_sweeps)
-    return x if d.shape[1] <= 2 else _finish_box_qp(D, d, lower_bound, x)
+    K = d.shape[1]
+    if K == 1:
+        return torch.maximum(d / D[:, 0, 0:1], lower_bound)
+    if K != 2 and _numba_kernels.use_numba(d):
+        x, done = _numba_kernels.solve_box_qp_cpu(
+            D, d, lower_bound, n_sweeps, kkt_tol=min(_kkt_tol(D.dtype), 1e-8)
+        )
+        if not bool(done.all()):
+            idx = torch.nonzero(~done).squeeze(1)
+            x_gs = _numba_kernels.box_qp_sweeps(D[idx], d[idx], lower_bound[idx], n_sweeps)
+            x[idx] = _finish_box_qp(D[idx], d[idx], lower_bound[idx], x_gs)
+        return x
+    x = _solve_box_qp_batch_fixed(D, d, lower_bound, n_sweeps)
+    return x if K <= 2 else _finish_box_qp(D, d, lower_bound, x)
 
 
 def _solve_box_qp_batch_fixed(
@@ -864,7 +878,14 @@ def solve_irwls_batch_shared(
     dtype = P.dtype
     device = P.device
 
-    if not bulk_mode:
+    use_numba_shared = (not bulk_mode) and (_calc_q_fn is None) and _numba_kernels.use_numba(P)
+
+    if use_numba_shared:
+        poly, k_of_l, x_of_l, k_val, lam_max = _numba_kernels.build_poly_table(
+            Q_mat, SQ_mat, x_vals
+        )
+        Y_act_int = _numba_kernels.prepare_y_int(Y_batch, k_val)
+    elif not bulk_mode:
         k_val = Q_mat.shape[0] - 3
         Y_batch = torch.clamp(Y_batch, max=k_val)
 
@@ -874,7 +895,8 @@ def solve_irwls_batch_shared(
 
     # Precompute frequently used derived matrices
     P_T = P.T.contiguous()  # (K, G) — avoids repeated non-contiguous transpose
-    P_outer = (P[:, :, None] * P[:, None, :]).reshape(G, K * K)
+    tri_idx = torch.triu_indices(K, K, device=device)
+    P_sym = (P[:, tri_idx[0]] * P[:, tri_idx[1]]).contiguous()
 
     threshold = torch.clamp(nUMI_batch * 1e-7, min=1e-4)
 
@@ -897,36 +919,63 @@ def solve_irwls_batch_shared(
         prediction = torch.abs(nUMI_act.unsqueeze(1) * (solution @ P_T))
         prediction = torch.clamp(prediction, min=thresh_act.unsqueeze(1))
 
-        # Derivatives
-        if bulk_mode:
-            d1_vec = -2.0 * (torch.log(prediction) - torch.log(Y_act + 1e-10)) / prediction
-            d2_vec = -2.0 * (1.0 - torch.log(prediction) + torch.log(Y_act + 1e-10)) / prediction**2
-            del prediction
-        else:
-            _, d1_flat, d2_flat = _q_fn(
-                Y_act.reshape(-1), prediction.reshape(-1), Q_mat, SQ_mat, x_vals
+        # Derivatives, gradient, and packed symmetric Hessian
+        if use_numba_shared:
+            d1_vec, d2_vec = _numba_kernels.irwls_shared_d1_d2(
+                Y_act_int,
+                prediction,
+                nUMI_act,
+                poly,
+                k_of_l,
+                x_of_l,
+                lam_max,
+                d1_dtype=dtype,
+                d2_dtype=dtype,
             )
-            del _, prediction
-            d1_vec = d1_flat.reshape(n_act, G)
-            del d1_flat
-            d2_vec = d2_flat.reshape(n_act, G)
-            del d2_flat
+            del prediction
+            grad = d1_vec @ P
+            del d1_vec
+            grad.neg_()
 
-        # Gradient: matmul replaces bmm
-        # grad = -(d1 @ S) = -(d1 * nUMI) @ P
-        d1_vec.mul_(nUMI_act.unsqueeze(1))
+            H_tri = d2_vec @ P_sym
+            del d2_vec
+            hess = _numba_kernels.unpack_sym_hess(H_tri, K)
+            del H_tri
+        else:
+            if bulk_mode:
+                d1_vec = -2.0 * (torch.log(prediction) - torch.log(Y_act + 1e-10)) / prediction
+                d2_vec = (
+                    -2.0 * (1.0 - torch.log(prediction) + torch.log(Y_act + 1e-10)) / prediction**2
+                )
+                del prediction
+            else:
+                _, d1_flat, d2_flat = _q_fn(
+                    Y_act.reshape(-1), prediction.reshape(-1), Q_mat, SQ_mat, x_vals
+                )
+                del _, prediction
+                d1_vec = d1_flat.reshape(n_act, G)
+                del d1_flat
+                d2_vec = d2_flat.reshape(n_act, G)
+                del d2_flat
 
-        grad = d1_vec @ P
-        del d1_vec
-        grad.neg_()
+            # Gradient: matmul replaces bmm
+            # grad = -(d1 @ S) = -(d1 * nUMI) @ P
+            d1_vec.mul_(nUMI_act.unsqueeze(1))
 
-        # Hessian via P outer product: matmul replaces bmm
-        # H[n,i,j] = nUMI[n]^2 * sum_g (-d2[n,g]) * P[g,i] * P[g,j]
-        d2_vec.neg_()
-        d2_vec.mul_(nUMI_act.square().unsqueeze(1))
-        hess = (d2_vec @ P_outer).reshape(n_act, K, K)
+            grad = d1_vec @ P
+            del d1_vec
+            grad.neg_()
 
-        del d2_vec
+            # Hessian via packed symmetric P outer product: matmul replaces bmm
+            # H[n,i,j] = nUMI[n]^2 * sum_g (-d2[n,g]) * P[g,i] * P[g,j]
+            d2_vec.neg_()
+            d2_vec.mul_(nUMI_act.square().unsqueeze(1))
+            H_tri = d2_vec @ P_sym
+            del d2_vec
+            hess = torch.empty((n_act, K, K), dtype=dtype, device=device)
+            hess[:, tri_idx[0], tri_idx[1]] = H_tri
+            hess[:, tri_idx[1], tri_idx[0]] = H_tri
+            del H_tri
 
         hess, norm_factor = _psd_batch(hess)
         norm_factor = torch.clamp(norm_factor, min=1e-10)
@@ -955,7 +1004,10 @@ def solve_irwls_batch_shared(
         if newly_converged.any():
             active_idx = active_idx[still_active]
             w_act = w_act[still_active]
-            Y_act = Y_act[still_active]
+            if use_numba_shared:
+                Y_act_int = Y_act_int[still_active.numpy()]
+            else:
+                Y_act = Y_act[still_active]
             nUMI_act = nUMI_act[still_active]
             thresh_act = thresh_act[still_active]
 

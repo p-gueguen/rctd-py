@@ -403,6 +403,45 @@ def _calc_q_all_impl(
     return d0_vec, d1_vec, d2_vec
 
 
+def _calc_q_d0_impl(
+    Y: torch.Tensor,
+    lam: torch.Tensor,
+    Q_mat: torch.Tensor,
+    SQ_mat: torch.Tensor,
+    x_vals: torch.Tensor,
+    K_val: int = -1,
+) -> torch.Tensor:
+    """Evaluate only log-likelihood values d0 from the cubic spline (for sigma search)."""
+    if K_val < 0:
+        K_val = Q_mat.shape[0] - 3
+    Y = torch.clamp(Y, max=K_val)
+    epsilon = 1e-4
+    X_max = x_vals[-1]
+    lam = torch.clamp(lam, min=epsilon, max=X_max - epsilon)
+
+    l = torch.floor(torch.sqrt(lam / 1e-6)).long()
+    m = _spline_interval(l)
+
+    ti1 = x_vals[m - 1]
+    ti = x_vals[m]
+    hi = ti - ti1
+
+    Y_idx = Y.long()
+    fti1 = Q_mat[Y_idx, m - 1]
+    fti = Q_mat[Y_idx, m]
+    zi1 = SQ_mat[Y_idx, m - 1]
+    zi = SQ_mat[Y_idx, m]
+
+    diff1 = lam - ti1
+    diff2 = ti - lam
+    diff3 = fti / hi - zi * hi / 6.0
+    diff4 = fti1 / hi - zi1 * hi / 6.0
+    zdi = zi / hi
+    zdi1 = zi1 / hi
+
+    return zdi * diff1**3 / 6.0 + zdi1 * diff2**3 / 6.0 + diff3 * diff1 + diff4 * diff2
+
+
 def calc_q_all_eager(
     Y: torch.Tensor,
     lam: torch.Tensor,
@@ -416,6 +455,21 @@ def calc_q_all_eager(
     if _numba_kernels.use_numba(lam):
         return _numba_kernels.calc_q_all(Y, lam, Q_mat, SQ_mat, x_vals, K_val)
     return _calc_q_all_impl(Y, lam, Q_mat, SQ_mat, x_vals, K_val)
+
+
+def calc_q_d0_eager(
+    Y: torch.Tensor,
+    lam: torch.Tensor,
+    Q_mat: torch.Tensor,
+    SQ_mat: torch.Tensor,
+    x_vals: torch.Tensor,
+    K_val: int = -1,
+) -> torch.Tensor:
+    """``d0``-only ``calc_q_all`` without torch.compile (used by GPU sigma search)."""
+    if _numba_kernels.use_numba(lam):
+        d0, _, _ = _numba_kernels.calc_q_all(Y, lam, Q_mat, SQ_mat, x_vals, K_val)
+        return d0
+    return _calc_q_d0_impl(Y, lam, Q_mat, SQ_mat, x_vals, K_val)
 
 
 # Lazy-compile state: None = not yet attempted, True/False = cached result

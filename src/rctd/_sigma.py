@@ -3,6 +3,7 @@ from typing import Dict
 import numpy as np
 import torch
 
+from rctd import _likelihood, _numba_kernels
 from rctd._irwls import solve_irwls_batch_shared
 from rctd._likelihood import calc_q_all_eager as _calc_q_all_eager
 
@@ -63,11 +64,19 @@ def choose_sigma(
     n_samples = min(n_fit, len(valid_idx))
     fit_idx = rng.choice(valid_idx, size=n_samples, replace=False)
 
-    # ── Precompute all SQ_mats at startup ──
+    # Lazily compute SQ_mats only for sigma keys visited during search.
+    # If the caller supplied a non-empty sq_matrices dict, keep candidate filtering
+    # restricted to its keys for compatibility with tests and partial table dicts.
+    restrict_to_sq = sq_matrices is not None and len(sq_matrices) > 0
     if sq_matrices is None:
         sq_matrices = {}
-        for key, q_mat in q_matrices.items():
-            sq_matrices[key] = compute_spline_coefficients(q_mat, np.array(x_vals))
+
+    x_vals_np = np.asarray(x_vals, dtype=np.float64)
+
+    def ensure_sq(key: str) -> np.ndarray:
+        if key not in sq_matrices:
+            sq_matrices[key] = compute_spline_coefficients(q_matrices[key], x_vals_np)
+        return sq_matrices[key]
 
     # ── Pre-convert arrays to torch tensors ──
     x_j = torch.tensor(x_vals, device=device)
@@ -76,13 +85,15 @@ def choose_sigma(
     fit_numi = torch.as_tensor(spatial_numi[fit_idx], device=device)
 
     sigma = sigma_init
+    use_fast_sigma = _calc_q_all_eager is _likelihood.calc_q_all_eager
+    poly_cache: dict[str, tuple[np.ndarray, np.ndarray, np.ndarray, int, float]] = {}
 
     def stage_sigma_tables(sigma):
         # Keep only the current Q/SQ pair on the compute device.
         key = str(sigma)
 
         Q = torch.as_tensor(q_matrices[key], device=device)
-        SQ = torch.as_tensor(sq_matrices[key], device=device)
+        SQ = torch.as_tensor(ensure_sq(key), device=device)
 
         return Q, SQ
 
@@ -93,6 +104,11 @@ def choose_sigma(
             sigma = int(SIGMA_ALL[np.argmin(diffs)])
 
         Q_cur, SQ_cur = stage_sigma_tables(sigma)
+        step1_q_fn = (
+            None
+            if (use_fast_sigma and _numba_kernels.ENABLED and device.type == "cpu")
+            else _calc_q_all_eager
+        )
 
         weights, _ = solve_irwls_batch_shared(
             P=P_gpu,
@@ -105,7 +121,7 @@ def choose_sigma(
             min_change=0.001,
             constrain=False,
             bulk_mode=False,
-            _calc_q_fn=_calc_q_all_eager,
+            _calc_q_fn=step1_q_fn,
         )
         weights = torch.clamp(weights, min=0.0)
         del Q_cur, SQ_cur
@@ -140,23 +156,70 @@ def choose_sigma(
         mult_fac_vec = torch.arange(8, 13, dtype=X.dtype, device=device) / 10.0
 
         # Filter to available sigma candidates
-        valid_cands = [s for s in sigma_cands if (str(s) in q_matrices and str(s) in sq_matrices)]
+        if restrict_to_sq:
+            valid_cands = [
+                s for s in sigma_cands if (str(s) in q_matrices and str(s) in sq_matrices)
+            ]
+        else:
+            valid_cands = [s for s in sigma_cands if str(s) in q_matrices]
         if not valid_cands:
             break
 
         # Evaluate each sigma candidate: pick best scale factor per sigma
-        scores = torch.zeros(len(valid_cands), device=device)
-        for sig_idx, s in enumerate(valid_cands):
-            Q_s, SQ_s = stage_sigma_tables(s)
-            fac_scores = torch.zeros(len(mult_fac_vec), device=device)
-            for fac_idx in range(len(mult_fac_vec)):
-                X_fac = X * mult_fac_vec[fac_idx]
-                d0, _, _ = _calc_q_all_eager(Y, X_fac, Q_s, SQ_s, x_j, k_val)
-                fac_scores[fac_idx] = -torch.sum(d0)
-            scores[sig_idx] = fac_scores.min()
-            del Q_s, SQ_s
+        if use_fast_sigma and _numba_kernels.ENABLED and device.type == "cpu":
+            X_np = np.ascontiguousarray(X.detach().cpu().numpy(), dtype=np.float64).reshape(-1)
+            Y_flat = Y.reshape(-1)
+            k_eff_0 = min(k_val, q_matrices[str(valid_cands[0])].shape[0] - 3)
+            Y_int_0 = _numba_kernels.prepare_y_int(Y_flat, k_eff_0)
 
-        best_idx = int(torch.argmin(scores).item())
+            for s in valid_cands:
+                key = str(s)
+                if key not in poly_cache:
+                    q_s = q_matrices[key]
+                    sq_s = ensure_sq(key)
+                    k_s = min(k_val, q_s.shape[0] - 3)
+                    poly, k_of_l, x_of_l, _, lam_max = _numba_kernels.build_poly_table(
+                        q_s, sq_s, x_vals_np, K_val=k_s
+                    )
+                    poly_cache[key] = (poly, k_of_l, x_of_l, k_s, lam_max)
+
+            cand_scores = np.empty(len(valid_cands), dtype=np.float64)
+
+            def _score_cand_range(start: int, end: int) -> None:
+                for idx in range(start, end):
+                    poly, k_of_l, x_of_l, k_s, lam_max = poly_cache[str(valid_cands[idx])]
+                    y_arr = Y_int_0 if k_s == k_eff_0 else _numba_kernels.prepare_y_int(Y_flat, k_s)
+                    cand_scores[idx] = _numba_kernels.score_sigma_5_factors_cpu(
+                        X_np, y_arr, poly, k_of_l, x_of_l, lam_max
+                    )
+
+            _numba_kernels.parallel_rows(_score_cand_range, len(valid_cands), 1)
+            best_idx = int(np.argmin(cand_scores))
+        elif use_fast_sigma and device.type == "cuda":
+            scores = torch.zeros(len(valid_cands), device=device)
+            for sig_idx, s in enumerate(valid_cands):
+                Q_s, SQ_s = stage_sigma_tables(s)
+                fac_scores = torch.zeros(len(mult_fac_vec), device=device)
+                for fac_idx in range(len(mult_fac_vec)):
+                    X_fac = X * mult_fac_vec[fac_idx]
+                    d0 = _likelihood.calc_q_d0_eager(Y, X_fac, Q_s, SQ_s, x_j, k_val)
+                    fac_scores[fac_idx] = -torch.sum(d0)
+                scores[sig_idx] = fac_scores.min()
+                del Q_s, SQ_s
+            best_idx = int(torch.argmin(scores).item())
+        else:
+            scores = torch.zeros(len(valid_cands), device=device)
+            for sig_idx, s in enumerate(valid_cands):
+                Q_s, SQ_s = stage_sigma_tables(s)
+                fac_scores = torch.zeros(len(mult_fac_vec), device=device)
+                for fac_idx in range(len(mult_fac_vec)):
+                    X_fac = X * mult_fac_vec[fac_idx]
+                    d0, _, _ = _calc_q_all_eager(Y, X_fac, Q_s, SQ_s, x_j, k_val)
+                    fac_scores[fac_idx] = -torch.sum(d0)
+                scores[sig_idx] = fac_scores.min()
+                del Q_s, SQ_s
+            best_idx = int(torch.argmin(scores).item())
+
         best_sigma = valid_cands[best_idx]
 
         sigma_prev = sigma

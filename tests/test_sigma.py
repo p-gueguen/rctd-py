@@ -108,3 +108,55 @@ def test_choose_sigma_stages_only_tables_in_the_candidate_window(monkeypatch):
         ("sq", "102"),
     ]
     assert all(ref() is None for ref in references)
+
+
+def test_choose_sigma_lazy_sq_computes_only_visited(synthetic_data, monkeypatch):
+    """Lazy sq_matrices computes splines only for visited sigma keys (< 126 total)."""
+    from rctd import _likelihood
+
+    cache = load_cached_q_matrices()
+    x_vals = cache.pop("X_vals")
+    q_matrices = {k.replace("Q_", ""): v for k, v in cache.items()}
+    sq_eager = {
+        k: _likelihood.compute_spline_coefficients(v, x_vals) for k, v in q_matrices.items()
+    }
+
+    profiles = synthetic_data["profiles"]
+    spatial_counts = synthetic_data["spatial"].X
+    spatial_numi = np.array(spatial_counts.sum(axis=1)).flatten()
+
+    calls = []
+    real_compute = _likelihood.compute_spline_coefficients
+
+    def spy_compute(q_mat, xv):
+        calls.append(q_mat.shape)
+        return real_compute(q_mat, xv)
+
+    monkeypatch.setattr(_likelihood, "compute_spline_coefficients", spy_compute)
+
+    sigma_lazy = choose_sigma(
+        spatial_counts=spatial_counts,
+        spatial_numi=spatial_numi,
+        norm_profiles=profiles,
+        q_matrices=q_matrices,
+        x_vals=x_vals,
+        sigma_init=100,
+        min_umi=50,
+        n_fit=5,
+        n_epoch=2,
+        sq_matrices=None,
+    )
+    sigma_ref = choose_sigma(
+        spatial_counts=spatial_counts,
+        spatial_numi=spatial_numi,
+        norm_profiles=profiles,
+        q_matrices=q_matrices,
+        x_vals=x_vals,
+        sigma_init=100,
+        min_umi=50,
+        n_fit=5,
+        n_epoch=2,
+        sq_matrices=sq_eager,
+    )
+    assert sigma_lazy == sigma_ref
+    assert 0 < len(calls) < len(q_matrices)
