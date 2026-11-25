@@ -31,13 +31,14 @@ Deconvolve spatial transcriptomics spots (Visium, Xenium, MERFISH, Slide-seq, �
 | ⚡ **10–57x faster than R spacexr** | Doublet mode on 19 datasets, one GPU vs 8 R cores. Xenium Prime 5K, 503k cells fitted: **34 min** vs 31 hours in R |
 | 🎯 **Matches R spacexr** | Same calls as R wherever both pick the same sigma (11 of 19 datasets); 99.0–99.9% of spot classes on the rest, where sigma differs by 0.01–0.02, as it does between two R runs ([details](https://rctd-py.readthedocs.io/en/stable/r_spacexr.html)) |
 | 🔧 **Familiar to spacexr users** | Same algorithm and, with a few exceptions, the same parameter names ([mapping](https://rctd-py.readthedocs.io/en/stable/r_spacexr.html)) |
-| 📦 **`pip install rctd-py`** | Pure Python, works on CPU out of the box (3.7–14x faster than R in doublet mode), uses a GPU when there is one |
+| 📦 **`pip install rctd-py`** | Pure Python, works on CPU out of the box (install `rctd-py[cpu]` for Numba CPU kernels; 3.7–14x faster than R in doublet mode on v0.4.0, faster since v0.4.5), uses a GPU when there is one |
 | 🧬 **Whole-transcriptome ready** | 10x **Atera** WTA (18,028-gene panel): 714k cells deconvolved in 9 min on GPU (doublet mode, 7 cell types) |
 
 ## Installation
 
 ```bash
-uv pip install rctd-py   # or: pip install rctd-py
+uv pip install rctd-py          # or: pip install rctd-py
+uv pip install "rctd-py[cpu]"   # recommended on CPU: adds Numba kernels
 ```
 
 GPU builds of PyTorch, older NVIDIA drivers and offline / HPC installs (the 404 MB Q-matrices
@@ -96,6 +97,8 @@ All options and the output layout: [command line reference](https://rctd-py.read
 
 rctd-py on one NVIDIA L40S or 8 CPU threads, R spacexr 2.2.1 on 8 cores; rctd-py points are the
 median of 3 runs. Full and multi mode, per-dataset tables and memory: [benchmarks](https://rctd-py.readthedocs.io/en/stable/benchmarks.html).
+
+The plots above were measured on v0.4.0. Subsequent releases sped up CPU runs substantially (6-10x in v0.4.5 with Numba kernels and array bookkeeping, plus another 1.61x total / 2.16x mode geomean speedup in v0.4.6 across `full`, `doublet`, and `multi`) as well as large-`K` GPU runs (1.38x total geomean on L40S in v0.4.6, reaching 2.02x at `K=78` and up to 2.74x total / 4.33x mode).
 
 ## Citation
 

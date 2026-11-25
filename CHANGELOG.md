@@ -3,6 +3,25 @@
 All notable changes to rctd-py are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.6] — 2026-11-25
+
+rctd-py 0.4.6 accelerates CPU and GPU IRWLS solving, `choose_sigma`, and `doublet`/`multi` mode on top of 0.4.5 (`1.61x` geomean total / `2.16x` mode speedup on 8 CPU threads and `1.38x` total / `1.49x` mode on an NVIDIA L40S, reaching `2.02x` total at `K=78` and up to `2.74x` total / `4.33x` mode, across a 48-case sweep covering `full`, `doublet`, `multi`, `K=8..78`, `N=484..49,826`), and ensures `Reference` always drops zero-UMI cells when `min_UMI=0`. In `float64`, calls are identical to 0.4.5 (`0` flips across all 37 `float64` cases and all 24 L40S cases; `0` NaNs across all 48 cases). `rctd run` CLI interface is unchanged.
+
+### Changed
+- **Faster CPU and GPU solvers, `choose_sigma`, and doublet/multi decomposition** ([#58](https://github.com/p-gueguen/rctd-py/pull/58)):
+  - Precomputed per-call Horner cubic-spline tables and fused parallel CPU IRWLS derivatives (`build_poly_table`, `prepare_y_int`, `irwls_shared_d1_d2`), avoiding intermediate `(N*G)` spline temporaries.
+  - Packed upper-triangle symmetric Hessian `P_sym` on CPU and GPU (halving Hessian GEMM FLOPs and `P_outer` memory), skip-when-PSD eigenvalue check, positive Gram (`scaled @ scaled.T`) reconstruction in `_psd_batch` (`float32`-safe), and threaded chunked CPU `eigh` for GPU-offloaded batches (`N >= 128`).
+  - Closed-form `K=1` box-QP fast path on CPU and GPU plus fused residual-maintained CPU box-QP coordinate descent with active-set polish (`solve_box_qp_cpu`, falling back to `_finish_box_qp` for unconverged/degenerate rows).
+  - Zero-skipping fused CPU subset IRWLS + NLL kernels for doublet pairs (`K=2`), singles (`K=1`), and multi-mode subsets (`K_sub >= 1`), plus Step 6 converged pair-weight reuse from Step 3 on both CPU and GPU.
+  - Lazy on-demand spline coefficient precomputation in `choose_sigma`, GPU `d0`-only `calc_q_d0_eager`, and single-pass parallel 5-factor CPU sigma scoring.
+  - Measured vs 0.4.5 across 48 cases (`full`/`doublet`/`multi`, `K=8..78`, `N=484..49,826`, `float64`/`float32`, `compile=False` on GPU): 8-CPU geomean `1.61x` total (`2.16x` mode, `1.33x` prep; `1.86x` total / `2.91x` mode in doublet, up to `3.11x` total on 50k cells); NVIDIA L40S geomean `1.38x` total (`1.49x` mode, `1.32x` prep; `2.02x` total at `K=78`, up to `2.74x` total / `4.33x` mode). `0` NaNs across all 48 cases; `0` flips across all 24 L40S cases and all 37 `float64` cases; `2/19,249` (`99.9896%`) dominant-type flips on `visiumhd_k78_20k` `full` `float32` CPU.
+
+### Fixed
+- **`Reference` now always drops zero-UMI cells (`nUMI == 0`) even when `min_UMI=0`** (`f74d847`), avoiding division by zero during profile normalization.
+
+### Documentation
+- **`README.md`** now documents `rctd-py[cpu]` for the Numba CPU kernels and notes the `0.4.5`/`0.4.6` speedups relative to the `0.4.0` benchmark plots.
+
 ## [0.4.5] — 2026-11-23
 
 rctd-py 0.4.5 makes CPU runs several times faster and lighter, contributed by @marcovarrone ([#52](https://github.com/p-gueguen/rctd-py/issues/52)), and makes `batch_size="auto"` account for the GPU eigh workspace, so the automatic batch size also fits on Hopper and Blackwell GPUs and for references with up to 16 cell types on older GPUs (reported with measurements on an RTX 5070 by @Bowen-Man in [#50](https://github.com/p-gueguen/rctd-py/pull/50#issuecomment-6894781631)). In float64, the default, calls are identical to 0.4.4. **It needs NumPy 2 and SciPy 1.13 or later.** `rctd run` is unchanged.
