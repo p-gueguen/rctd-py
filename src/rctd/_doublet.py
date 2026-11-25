@@ -3,6 +3,7 @@ from typing import List
 import numpy as np
 import torch
 
+from rctd import _numba_kernels
 from rctd._full import run_full_mode
 from rctd._irwls import solve_irwls_batch
 from rctd._likelihood import calc_log_likelihood_batch
@@ -18,6 +19,48 @@ from rctd._types import (
 
 # Score of a missing pair or singlet; R's check_pairs_type never reads one for K >= 2
 _INF = 1e18
+
+
+def _lookup_converged_pair_weights(
+    triples_arr: np.ndarray,
+    pair_weights_all: np.ndarray,
+    pair_conv_all: np.ndarray,
+    final_t1: np.ndarray,
+    final_t2: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Reuse converged Step 3 pair weights (with pair swap handling) for Step 6."""
+    N = len(final_t1)
+    out_dtype = pair_weights_all.dtype if len(pair_weights_all) else np.float64
+    reused = np.empty((N, 2), dtype=out_dtype)
+    reused_mask = np.zeros(N, dtype=bool)
+    if len(triples_arr) == 0 or len(pair_conv_all) == 0:
+        return reused, reused_mask
+
+    valid = pair_conv_all & np.isfinite(pair_weights_all).all(axis=1)
+    if not np.any(valid):
+        return reused, reused_mask
+
+    pix = triples_arr[valid, 0]
+    t1 = triples_arr[valid, 1]
+    t2 = triples_arr[valid, 2]
+    w = pair_weights_all[valid]
+    ft1 = final_t1[pix]
+    ft2 = final_t2[pix]
+
+    fwd = (t1 == ft1) & (t2 == ft2)
+    if np.any(fwd):
+        p_f = pix[fwd]
+        reused[p_f] = w[fwd]
+        reused_mask[p_f] = True
+
+    rev = (~fwd) & (t1 == ft2) & (t2 == ft1)
+    if np.any(rev):
+        p_r = pix[rev]
+        reused[p_r, 0] = w[rev, 1]
+        reused[p_r, 1] = w[rev, 0]
+        reused_mask[p_r] = True
+
+    return reused, reused_mask
 
 
 def run_doublet_mode(
@@ -99,74 +142,104 @@ def run_doublet_mode(
     candidates, n_candidates = _select_candidates(W_full)
     triples_arr, singles_arr = _candidate_pairs(candidates, n_candidates)
 
-    # 3. Pairwise scoring (GPU, batched)
+    use_numba_cpu = _numba_kernels.ENABLED and device.type == "cpu"
+
+    # 3. Pairwise scoring
     print(f"  [doublet] Step 3: pairwise scoring ({len(triples_arr)} triples)...")
     _t3 = _time.time()
 
-    P_gpu = torch.tensor(norm_profiles, device=device)
-    Q_gpu = torch.tensor(q_mat, device=device)
-    SQ_gpu = torch.tensor(sq_mat, device=device)
-    X_gpu = torch.tensor(x_vals, device=device)
-
-    # Pre-stage spatial data on the device once instead of re-uploading
-    # spatial_counts[pix_idx] / spatial_numi[pix_idx] per batch in steps 3/4/6.
-    # A pixel appears in every triple/single it contributes to (often dozens of
-    # times), so per-batch H2D was gathering+copying the same counts repeatedly.
-    Y_full_gpu = torch.tensor(spatial_counts, device=device)
-    nUMI_full_gpu = torch.tensor(spatial_numi, device=device)
-
     pair_scores = np.zeros(0, dtype=norm_profiles.dtype)
-    if len(triples_arr):
-        M_total = len(triples_arr)
+    pair_weights_all = np.zeros((0, 2), dtype=np.float64 if use_numba_cpu else norm_profiles.dtype)
+    pair_conv_all = np.zeros(0, dtype=bool)
 
-        all_scores_t = []
+    if use_numba_cpu:
+        poly, k_of_l, x_of_l, k_val, lam_max = _numba_kernels.build_poly_table(
+            q_mat, sq_mat, x_vals
+        )
+        Y_int = _numba_kernels.prepare_y_int(spatial_counts, k_val)
+        nUMI_np = np.ascontiguousarray(spatial_numi, dtype=np.float64)
+        P_KT = np.ascontiguousarray(norm_profiles.T, dtype=np.float64)
 
-        for start in range(0, M_total, batch_size):
-            end = min(start + batch_size, M_total)
-            tr = triples_arr[start:end]
-
-            pix_idx = tr[:, 0]
-            t1_idx = tr[:, 1]
-            t2_idx = tr[:, 2]
-
-            pix_idx_t = torch.as_tensor(pix_idx, dtype=torch.long, device=device)
-            nUMI_tr = nUMI_full_gpu[pix_idx_t]
-            B_tr = Y_full_gpu[pix_idx_t]
-
-            # P_pair: (bs, G, 2)
-            # P_gpu: (G, K)
-            # P_gpu[:, t1_idx]: (G, bs) -> .T: (bs, G)
-            t1_t = torch.tensor(t1_idx, dtype=torch.long, device=device)
-            t2_t = torch.tensor(t2_idx, dtype=torch.long, device=device)
-            P1 = P_gpu[:, t1_t].T
-            P2 = P_gpu[:, t2_t].T
-            P_pair = torch.stack([P1, P2], dim=-1)  # (bs, G, 2)
-
-            S_pair = nUMI_tr[:, None, None] * P_pair
-
-            weights_batch, conv_batch = solve_irwls_batch(
-                S_batch=S_pair,
-                Y_batch=B_tr,
-                nUMI_batch=nUMI_tr,
-                Q_mat=Q_gpu,
-                SQ_mat=SQ_gpu,
-                x_vals=X_gpu,
-                max_iter=25,
-                min_change=0.001,
-                constrain=False,
-                bulk_mode=False,
+        if len(triples_arr):
+            pair_weights_all, pair_scores_f64, pair_conv_all = (
+                _numba_kernels.fit_and_score_pairs_cpu(
+                    triples_arr,
+                    Y_int,
+                    nUMI_np,
+                    P_KT,
+                    poly,
+                    k_of_l,
+                    x_of_l,
+                    lam_max,
+                    max_iter=25,
+                )
             )
+            pair_scores = pair_scores_f64.astype(norm_profiles.dtype, copy=False)
+    else:
+        P_gpu = torch.tensor(norm_profiles, device=device)
+        Q_gpu = torch.tensor(q_mat, device=device)
+        SQ_gpu = torch.tensor(sq_mat, device=device)
+        X_gpu = torch.tensor(x_vals, device=device)
 
-            # Score logic: R's calc_log_l_vec returns positive NLL (lower=better)
-            expected_tr = torch.sum(S_pair * weights_batch[:, None, :], dim=-1)  # (bs, G)
-            expected_tr = torch.clamp(expected_tr, min=1e-4)
+        # Pre-stage spatial data on the device once instead of re-uploading
+        # spatial_counts[pix_idx] / spatial_numi[pix_idx] per batch in steps 3/4/6.
+        Y_full_gpu = torch.tensor(spatial_counts, device=device)
+        nUMI_full_gpu = torch.tensor(spatial_numi, device=device)
 
-            scores_batch = calc_log_likelihood_batch(B_tr, expected_tr, Q_gpu, SQ_gpu, X_gpu)
+        if len(triples_arr):
+            M_total = len(triples_arr)
 
-            all_scores_t.append(scores_batch)
+            all_scores_t = []
+            all_weights_t = []
+            all_conv_t = []
 
-        # Transfer all results to CPU at once
-        pair_scores = torch.cat(all_scores_t).cpu().numpy()
+            for start in range(0, M_total, batch_size):
+                end = min(start + batch_size, M_total)
+                tr = triples_arr[start:end]
+
+                pix_idx = tr[:, 0]
+                t1_idx = tr[:, 1]
+                t2_idx = tr[:, 2]
+
+                pix_idx_t = torch.as_tensor(pix_idx, dtype=torch.long, device=device)
+                nUMI_tr = nUMI_full_gpu[pix_idx_t]
+                B_tr = Y_full_gpu[pix_idx_t]
+
+                t1_t = torch.tensor(t1_idx, dtype=torch.long, device=device)
+                t2_t = torch.tensor(t2_idx, dtype=torch.long, device=device)
+                P1 = P_gpu[:, t1_t].T
+                P2 = P_gpu[:, t2_t].T
+                P_pair = torch.stack([P1, P2], dim=-1)  # (bs, G, 2)
+
+                S_pair = nUMI_tr[:, None, None] * P_pair
+
+                weights_batch, conv_batch = solve_irwls_batch(
+                    S_batch=S_pair,
+                    Y_batch=B_tr,
+                    nUMI_batch=nUMI_tr,
+                    Q_mat=Q_gpu,
+                    SQ_mat=SQ_gpu,
+                    x_vals=X_gpu,
+                    max_iter=25,
+                    min_change=0.001,
+                    constrain=False,
+                    bulk_mode=False,
+                )
+
+                # Score logic: R's calc_log_l_vec returns positive NLL (lower=better)
+                expected_tr = torch.sum(S_pair * weights_batch[:, None, :], dim=-1)  # (bs, G)
+                expected_tr = torch.clamp(expected_tr, min=1e-4)
+
+                scores_batch = calc_log_likelihood_batch(B_tr, expected_tr, Q_gpu, SQ_gpu, X_gpu)
+
+                all_scores_t.append(scores_batch)
+                all_weights_t.append(weights_batch)
+                all_conv_t.append(conv_batch)
+
+            # Transfer all results to CPU at once
+            pair_scores = torch.cat(all_scores_t).cpu().numpy()
+            pair_weights_all = torch.cat(all_weights_t).cpu().numpy()
+            pair_conv_all = torch.cat(all_conv_t).cpu().numpy()
 
     print(f"  [doublet] Step 3 done ({_time.time() - _t3:.1f}s)")
 
@@ -177,49 +250,65 @@ def run_doublet_mode(
     singlet_scores = np.full((N, K), _INF, dtype=pair_scores.dtype)
 
     if len(singles_arr):
-        S_total = len(singles_arr)
-
-        all_sing_scores_t = []
-
-        for start in range(0, S_total, batch_size):
-            end = min(start + batch_size, S_total)
-            sg = singles_arr[start:end]
-
-            pix_idx = sg[:, 0]
-            t_idx = sg[:, 1]
-
-            pix_idx_t = torch.as_tensor(pix_idx, dtype=torch.long, device=device)
-            nUMI_sg = nUMI_full_gpu[pix_idx_t]
-            B_sg = Y_full_gpu[pix_idx_t]
-
-            # P_sg: (bs, G, 1)
-            t_t = torch.tensor(t_idx, dtype=torch.long, device=device)
-            P_sg = P_gpu[:, t_t].T.unsqueeze(-1)
-            S_sg = nUMI_sg[:, None, None] * P_sg
-
-            weights_batch, conv_batch = solve_irwls_batch(
-                S_batch=S_sg,
-                Y_batch=B_sg,
-                nUMI_batch=nUMI_sg,
-                Q_mat=Q_gpu,
-                SQ_mat=SQ_gpu,
-                x_vals=X_gpu,
+        if use_numba_cpu:
+            sing_scores = _numba_kernels.fit_and_score_singles_cpu(
+                singles_arr,
+                Y_int,
+                nUMI_np,
+                P_KT,
+                poly,
+                k_of_l,
+                x_of_l,
+                lam_max,
                 max_iter=25,
-                min_change=0.001,
-                constrain=False,
-                bulk_mode=False,
             )
+            singlet_scores[singles_arr[:, 0], singles_arr[:, 1]] = sing_scores.astype(
+                pair_scores.dtype, copy=False
+            )
+        else:
+            S_total = len(singles_arr)
 
-            expected_sg = torch.sum(S_sg * weights_batch[:, None, :], dim=-1)
-            expected_sg = torch.clamp(expected_sg, min=1e-4)
+            all_sing_scores_t = []
 
-            scores_batch = calc_log_likelihood_batch(B_sg, expected_sg, Q_gpu, SQ_gpu, X_gpu)
-            all_sing_scores_t.append(scores_batch)
+            for start in range(0, S_total, batch_size):
+                end = min(start + batch_size, S_total)
+                sg = singles_arr[start:end]
 
-        # Transfer all results to CPU at once
-        singlet_scores[singles_arr[:, 0], singles_arr[:, 1]] = (
-            torch.cat(all_sing_scores_t).cpu().numpy()
-        )
+                pix_idx = sg[:, 0]
+                t_idx = sg[:, 1]
+
+                pix_idx_t = torch.as_tensor(pix_idx, dtype=torch.long, device=device)
+                nUMI_sg = nUMI_full_gpu[pix_idx_t]
+                B_sg = Y_full_gpu[pix_idx_t]
+
+                # P_sg: (bs, G, 1)
+                t_t = torch.tensor(t_idx, dtype=torch.long, device=device)
+                P_sg = P_gpu[:, t_t].T.unsqueeze(-1)
+                S_sg = nUMI_sg[:, None, None] * P_sg
+
+                weights_batch, conv_batch = solve_irwls_batch(
+                    S_batch=S_sg,
+                    Y_batch=B_sg,
+                    nUMI_batch=nUMI_sg,
+                    Q_mat=Q_gpu,
+                    SQ_mat=SQ_gpu,
+                    x_vals=X_gpu,
+                    max_iter=25,
+                    min_change=0.001,
+                    constrain=False,
+                    bulk_mode=False,
+                )
+
+                expected_sg = torch.sum(S_sg * weights_batch[:, None, :], dim=-1)
+                expected_sg = torch.clamp(expected_sg, min=1e-4)
+
+                scores_batch = calc_log_likelihood_batch(B_sg, expected_sg, Q_gpu, SQ_gpu, X_gpu)
+                all_sing_scores_t.append(scores_batch)
+
+            # Transfer all results to CPU at once
+            singlet_scores[singles_arr[:, 0], singles_arr[:, 1]] = (
+                torch.cat(all_sing_scores_t).cpu().numpy()
+            )
 
     print(f"  [doublet] Step 4 done ({_time.time() - _t4:.1f}s)")
 
@@ -248,46 +337,67 @@ def run_doublet_mode(
     # 6. Final doublet decomposition — matches R's line 134 in process_bead_doublet
     # R runs a FRESH decompose_sparse(first_type, second_type, score_mode=FALSE)
     # with n.iter=50, constrain=FALSE, then normalizes weights to sum=1.
-    # This gives the final doublet weights for ALL pixels (including singlets/rejects).
+    # Pairs that already converged within Step 3 (min_change=0.001, max_iter=25)
+    # follow the same trajectory from (0.5, 0.5) and can be reused directly.
     print(f"  [doublet] Step 6: final decomposition ({N} pixels)...")
     _t6 = _time.time()
     final_t1 = first_type  # (N,) int
     final_t2 = second_type  # (N,) int
 
-    all_final_weights_t = []
+    w_all_np, reused_mask = _lookup_converged_pair_weights(
+        triples_arr, pair_weights_all, pair_conv_all, final_t1, final_t2
+    )
+    rem_pix = np.flatnonzero(~reused_mask)
 
-    for start in range(0, N, batch_size):
-        end = min(start + batch_size, N)
+    if len(rem_pix):
+        if use_numba_cpu:
+            rem_types = np.column_stack([final_t1[rem_pix], final_t2[rem_pix]])
+            w_rem = _numba_kernels.fit_subsets_weights_cpu(
+                rem_pix,
+                rem_types,
+                Y_int,
+                nUMI_np,
+                P_KT,
+                poly,
+                k_of_l,
+                x_of_l,
+                lam_max,
+                max_iter=50,
+            )
+            w_all_np[rem_pix] = w_rem.astype(w_all_np.dtype, copy=False)
+        else:
+            all_rem_weights_t = []
+            for start in range(0, len(rem_pix), batch_size):
+                end = min(start + batch_size, len(rem_pix))
+                pix_idx = rem_pix[start:end]
+                pix_idx_t = torch.as_tensor(pix_idx, dtype=torch.long, device=device)
+                nUMI_f = nUMI_full_gpu[pix_idx_t]
+                B_f = Y_full_gpu[pix_idx_t]
 
-        pix_idx = np.arange(start, end)
-        pix_idx_t = torch.as_tensor(pix_idx, dtype=torch.long, device=device)
-        nUMI_f = nUMI_full_gpu[pix_idx_t]
-        B_f = Y_full_gpu[pix_idx_t]
+                ft1_t = torch.tensor(final_t1[pix_idx], dtype=torch.long, device=device)
+                ft2_t = torch.tensor(final_t2[pix_idx], dtype=torch.long, device=device)
+                P1 = P_gpu[:, ft1_t].T
+                P2 = P_gpu[:, ft2_t].T
+                P_pair = torch.stack([P1, P2], dim=-1)  # (bs, G, 2)
+                S_pair = nUMI_f[:, None, None] * P_pair
 
-        ft1_t = torch.tensor(final_t1[pix_idx], dtype=torch.long, device=device)
-        ft2_t = torch.tensor(final_t2[pix_idx], dtype=torch.long, device=device)
-        P1 = P_gpu[:, ft1_t].T
-        P2 = P_gpu[:, ft2_t].T
-        P_pair = torch.stack([P1, P2], dim=-1)  # (bs, G, 2)
-        S_pair = nUMI_f[:, None, None] * P_pair
+                w_final, _ = solve_irwls_batch(
+                    S_batch=S_pair,
+                    Y_batch=B_f,
+                    nUMI_batch=nUMI_f,
+                    Q_mat=Q_gpu,
+                    SQ_mat=SQ_gpu,
+                    x_vals=X_gpu,
+                    max_iter=50,
+                    min_change=0.001,
+                    constrain=False,
+                    bulk_mode=False,
+                )
+                all_rem_weights_t.append(w_final)
 
-        w_final, _ = solve_irwls_batch(
-            S_batch=S_pair,
-            Y_batch=B_f,
-            nUMI_batch=nUMI_f,
-            Q_mat=Q_gpu,
-            SQ_mat=SQ_gpu,
-            x_vals=X_gpu,
-            max_iter=50,
-            min_change=0.001,
-            constrain=False,
-            bulk_mode=False,
-        )
+            w_all_np[rem_pix] = torch.cat(all_rem_weights_t).cpu().numpy()
 
-        all_final_weights_t.append(w_final)
-
-    # Transfer all results to CPU at once
-    w_all_np = torch.cat(all_final_weights_t).cpu().numpy()
+    w_all_np = w_all_np.astype(norm_profiles.dtype, copy=False)
     # R: results$weights = results$weights / sum(results$weights)
     w_sums = w_all_np.sum(axis=1, keepdims=True)
     w_sums = np.maximum(w_sums, 1e-10)

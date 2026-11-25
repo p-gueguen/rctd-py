@@ -304,3 +304,127 @@ def test_box_qp_zero_diagonal_matches_torch(torch_path):
     ref = _irwls._solve_box_qp_batch_impl(D, d, lb)
     torch.testing.assert_close(x, ref, equal_nan=True, rtol=0, atol=1e-12)
     assert not torch.isfinite(x[3]).all()
+
+
+@pytest.mark.parametrize("K", [1, 3, 4, 16, 45])
+def test_solve_box_qp_cpu_matches_torch(torch_path, K):
+    """Fused CPU box-QP matches torch KKT optimality across small/medium/large K."""
+    D, d, lb = _qp_problems(K, n=120)
+    lb = lb.double()
+    x = _irwls._solve_box_qp_batch(D, d, lb)
+
+    # Batch independence
+    if K > 1:
+        x_f, done_f = _numba_kernels.solve_box_qp_cpu(D, d, lb)
+        x_p, done_p = zip(
+            *[
+                _numba_kernels.solve_box_qp_cpu(D[i : i + 17], d[i : i + 17], lb[i : i + 17])
+                for i in range(0, 120, 17)
+            ]
+        )
+        assert torch.equal(x_f, torch.cat(list(x_p)))
+        assert torch.equal(done_f, torch.cat(list(done_p)))
+
+    # KKT check
+    g = torch.bmm(D, x.unsqueeze(2)).squeeze(2) - d
+    viol = torch.where(x > lb, g.abs(), torch.clamp(-g, min=0.0)).amax(1)
+    assert viol.max() < 1e-8
+
+    # Zero-diag row falls back cleanly via done=False and matches torch path
+    x_z = None
+    if K >= 2:
+        D_z = D[:16].clone()
+        D_z[2, 1, 1] = 0.0
+        _, done_z = _numba_kernels.solve_box_qp_cpu(D_z, d[:16], lb[:16])
+        assert not bool(done_z[2])
+        x_z = _irwls._solve_box_qp_batch(D_z, d[:16], lb[:16])
+
+    torch_path()
+    x_ref = _irwls._solve_box_qp_batch(D, d, lb)
+    torch.testing.assert_close(x, x_ref, rtol=0, atol=1e-7)
+    if x_z is not None:
+        x_z_ref = _irwls._solve_box_qp_batch(D_z, d[:16], lb[:16])
+        torch.testing.assert_close(x_z, x_z_ref, equal_nan=True, rtol=0, atol=1e-7)
+
+
+@pytest.mark.parametrize("k_sub", [1, 2, 3, 5, 6])
+def test_fused_subset_kernels_match_torch(tables, torch_path, k_sub):
+    """Fused CPU pair/singlet/subset kernels match torch IRWLS + NLL up to MAX_MULTI_TYPES=6."""
+    q_mat, sq_mat, x_vals = tables
+    rng = np.random.default_rng(7 + k_sub)
+    N, G, K = 40, 60, 10
+    P = rng.dirichlet(np.ones(G), size=K).T  # (G, K)
+    numi = rng.integers(500, 3000, size=N).astype(np.float64)
+    counts = rng.poisson((rng.dirichlet(np.ones(K), size=N) @ P.T) * numi[:, None]).astype(
+        np.float64
+    )
+
+    poly, k_of_l, x_of_l, k_val, lam_max = _numba_kernels.build_poly_table(q_mat, sq_mat, x_vals)
+    Y_int = _numba_kernels.prepare_y_int(counts, k_val)
+    P_KT = np.ascontiguousarray(P.T, dtype=np.float64)
+
+    pix_idx = np.repeat(np.arange(N, dtype=np.int64), 2)
+    type_mat = np.array([rng.choice(K, size=k_sub, replace=False) for _ in range(len(pix_idx))])
+
+    scores_cpu = _numba_kernels.fit_and_score_subsets_cpu(
+        pix_idx, type_mat, Y_int, numi, P_KT, poly, k_of_l, x_of_l, lam_max, max_iter=25
+    )
+    weights_cpu = _numba_kernels.fit_subsets_weights_cpu(
+        pix_idx, type_mat, Y_int, numi, P_KT, poly, k_of_l, x_of_l, lam_max, max_iter=50
+    )
+
+    # Also test specialized k_sub=1 (singles) and k_sub=2 (pairs) kernels
+    if k_sub == 1:
+        singles = np.column_stack([pix_idx, type_mat[:, 0]])
+        s_scores = _numba_kernels.fit_and_score_singles_cpu(
+            singles, Y_int, numi, P_KT, poly, k_of_l, x_of_l, lam_max, max_iter=25
+        )
+        np.testing.assert_allclose(s_scores, scores_cpu, rtol=0, atol=1e-11)
+    elif k_sub == 2:
+        triples = np.column_stack([pix_idx, type_mat])
+        p_weights, p_scores, _ = _numba_kernels.fit_and_score_pairs_cpu(
+            triples, Y_int, numi, P_KT, poly, k_of_l, x_of_l, lam_max, max_iter=25
+        )
+        np.testing.assert_allclose(p_scores, scores_cpu, rtol=0, atol=1e-11)
+
+    torch_path()
+    P_t = torch.tensor(P, dtype=torch.float64)
+    Q_t, SQ_t, X_t = _t(tables, torch.float64)
+    B_t = torch.tensor(counts[pix_idx], dtype=torch.float64)
+    n_t = torch.tensor(numi[pix_idx], dtype=torch.float64)
+    type_t = torch.tensor(type_mat, dtype=torch.long)
+    S_t = n_t[:, None, None] * P_t[:, type_t].permute(1, 0, 2)
+
+    w25, _ = _irwls.solve_irwls_batch(
+        S_t, B_t, n_t, Q_t, SQ_t, X_t, max_iter=25, min_change=0.001, constrain=False
+    )
+    pred = torch.clamp(torch.sum(S_t * w25[:, None, :], dim=-1), min=1e-4)
+    ref_scores = _likelihood.calc_log_likelihood_batch(B_t, pred, Q_t, SQ_t, X_t).numpy()
+    w50, _ = _irwls.solve_irwls_batch(
+        S_t, B_t, n_t, Q_t, SQ_t, X_t, max_iter=50, min_change=0.001, constrain=False
+    )
+
+    np.testing.assert_allclose(scores_cpu, ref_scores, rtol=0, atol=1e-8)
+    np.testing.assert_allclose(weights_cpu, w50.numpy(), rtol=0, atol=1e-8)
+
+
+def test_doublet_step6_reuse_matches_full_refit(synthetic_data, tables, monkeypatch):
+    """Reusing converged Step 3 pair weights produces identical Step 6 weights."""
+    from rctd import _doublet
+
+    inputs = _mode_inputs(synthetic_data, tables)
+    config = RCTDConfig(compile=False)
+    res_reuse = run_doublet_mode(config=config, **inputs)
+
+    orig_lookup = _doublet._lookup_converged_pair_weights
+
+    def no_reuse(triples_arr, pair_weights_all, pair_conv_all, final_t1, final_t2):
+        reused, _ = orig_lookup(triples_arr, pair_weights_all, pair_conv_all, final_t1, final_t2)
+        return reused, np.zeros(len(final_t1), dtype=bool)
+
+    monkeypatch.setattr(_doublet, "_lookup_converged_pair_weights", no_reuse)
+    res_full = run_doublet_mode(config=config, **inputs)
+
+    np.testing.assert_allclose(
+        res_reuse.weights_doublet, res_full.weights_doublet, rtol=0, atol=1e-12
+    )

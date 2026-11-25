@@ -271,10 +271,8 @@ class RCTD:
         self.x_vals = cache.pop("X_vals")
         q_matrices = {k.replace("Q_", ""): v for k, v in cache.items()}
 
-        # Precompute all spline coefficients once (MI inverse is cached internally)
-        sq_matrices = {
-            k: compute_spline_coefficients(v, self.x_vals) for k, v in q_matrices.items()
-        }
+        # Precompute spline coefficients lazily on demand for visited sigmas only
+        sq_matrices: dict[str, np.ndarray] = {}
 
         if sigma_override is not None:
             # Bypass auto-calibration — use externally provided sigma (e.g. from R)
@@ -310,6 +308,8 @@ class RCTD:
             best_q_key = str(nearest)
 
         self.q_mat = q_matrices[best_q_key]
+        if best_q_key not in sq_matrices:
+            sq_matrices[best_q_key] = compute_spline_coefficients(self.q_mat, self.x_vals)
         self.sq_mat = sq_matrices[best_q_key]
 
         # Cast to target dtype for GPU memory efficiency

@@ -3,10 +3,31 @@ from typing import List, Tuple
 import numpy as np
 import torch
 
+from rctd import _numba_kernels
 from rctd._full import run_full_mode
 from rctd._irwls import solve_irwls_batch
 from rctd._likelihood import calc_log_likelihood_batch
 from rctd._types import MultiResult, RCTDConfig, resolve_device
+
+
+def _build_multi_numba_ctx(
+    spatial_counts,
+    spatial_numi,
+    P_gpu: torch.Tensor,
+    Q_gpu: torch.Tensor,
+    SQ_gpu: torch.Tensor,
+    X_gpu: torch.Tensor,
+):
+    poly, k_of_l, x_of_l, k_val, lam_max = _numba_kernels.build_poly_table(Q_gpu, SQ_gpu, X_gpu)
+    Y_int = _numba_kernels.prepare_y_int(spatial_counts, k_val)
+    nUMI_arr = (
+        spatial_numi.detach().cpu().numpy()
+        if isinstance(spatial_numi, torch.Tensor)
+        else spatial_numi
+    )
+    nUMI_np = np.ascontiguousarray(nUMI_arr, dtype=np.float64)
+    P_KT = np.ascontiguousarray(P_gpu.detach().cpu().numpy().T, dtype=np.float64)
+    return Y_int, nUMI_np, P_KT, poly, k_of_l, x_of_l, lam_max
 
 
 def _run_batched_scoring(
@@ -19,10 +40,35 @@ def _run_batched_scoring(
     X_gpu: torch.Tensor,
     batch_size: int,
     n_iter: int = 25,
+    numba_ctx=None,
 ) -> np.ndarray:
     """Run batched IRWLS for a set of tasks all having the SAME number of cell types K_sub."""
     if not task_triples:
         return np.array([])
+
+    if _numba_kernels.use_numba(P_gpu):
+        if numba_ctx is None:
+            numba_ctx = _build_multi_numba_ctx(
+                spatial_counts, spatial_numi, P_gpu, Q_gpu, SQ_gpu, X_gpu
+            )
+        Y_int, nUMI_np, P_KT, poly, k_of_l, x_of_l, lam_max = numba_ctx
+        pix_idx = np.fromiter((t[0] for t in task_triples), dtype=np.int64, count=len(task_triples))
+        type_matrix = np.array([t[1] for t in task_triples], dtype=np.int64)
+        scores = _numba_kernels.fit_and_score_subsets_cpu(
+            pix_idx,
+            type_matrix,
+            Y_int,
+            nUMI_np,
+            P_KT,
+            poly,
+            k_of_l,
+            x_of_l,
+            lam_max,
+            max_iter=n_iter,
+        )
+        return scores.astype(
+            P_gpu.numpy().dtype if P_gpu.dtype != torch.float64 else np.float64, copy=False
+        )
 
     M = len(task_triples)
     device = P_gpu.device
@@ -89,9 +135,32 @@ def _run_batched_weights(
     X_gpu: torch.Tensor,
     batch_size: int,
     n_iter: int = 50,
+    numba_ctx=None,
 ) -> List[np.ndarray]:
     if not task_triples:
         return []
+
+    if _numba_kernels.use_numba(P_gpu):
+        if numba_ctx is None:
+            numba_ctx = _build_multi_numba_ctx(
+                spatial_counts, spatial_numi, P_gpu, Q_gpu, SQ_gpu, X_gpu
+            )
+        Y_int, nUMI_np, P_KT, poly, k_of_l, x_of_l, lam_max = numba_ctx
+        pix_idx = np.fromiter((t[0] for t in task_triples), dtype=np.int64, count=len(task_triples))
+        type_matrix = np.array([t[1] for t in task_triples], dtype=np.int64)
+        w_res = _numba_kernels.fit_subsets_weights_cpu(
+            pix_idx,
+            type_matrix,
+            Y_int,
+            nUMI_np,
+            P_KT,
+            poly,
+            k_of_l,
+            x_of_l,
+            lam_max,
+            max_iter=n_iter,
+        )
+        return list(w_res.astype(P_gpu.numpy().dtype, copy=False))
 
     M = len(task_triples)
     device = P_gpu.device
@@ -202,6 +271,11 @@ def run_multi_mode(
     # (same fix as _doublet.py: a pixel appears in many tasks across iterations).
     spatial_counts_gpu = torch.tensor(spatial_counts, device=device)
     spatial_numi_gpu = torch.tensor(spatial_numi, device=device)
+    numba_ctx = (
+        _build_multi_numba_ctx(spatial_counts, spatial_numi, P_gpu, Q_gpu, SQ_gpu, X_gpu)
+        if _numba_kernels.use_numba(P_gpu)
+        else None
+    )
 
     INF = 1e18
     current_scores = np.full(N, INF, dtype=np.float64)
@@ -232,6 +306,7 @@ def run_multi_mode(
             SQ_gpu,
             X_gpu,
             batch_size,
+            numba_ctx=numba_ctx,
         )
 
         # Aggregate results by pixel
@@ -305,6 +380,7 @@ def run_multi_mode(
             SQ_gpu,
             X_gpu,
             batch_size,
+            numba_ctx=numba_ctx,
         )
         for i, (n, cur_list, t, newtype) in enumerate(t_list):
             if not conf_lists[n][t]:
@@ -335,6 +411,7 @@ def run_multi_mode(
             SQ_gpu,
             X_gpu,
             batch_size,
+            numba_ctx=numba_ctx,
         )
         for i, (n, _) in enumerate(t_list):
             # Normalize the weights from IRWLS
