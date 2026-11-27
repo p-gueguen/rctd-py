@@ -98,7 +98,7 @@ All options and the output layout: [command line reference](https://rctd-py.read
 rctd-py on one NVIDIA L40S or 8 CPU threads, R spacexr 2.2.1 on 8 cores; rctd-py points are the
 median of 3 runs. Full and multi mode, per-dataset tables and memory: [benchmarks](https://rctd-py.readthedocs.io/en/stable/benchmarks.html).
 
-The plots above were measured on v0.4.0. Subsequent releases sped up CPU runs substantially (6-10x in v0.4.5 with Numba kernels and array bookkeeping, plus another 1.61x total / 2.16x mode geomean speedup in v0.4.6 across `full`, `doublet`, and `multi`) as well as large-`K` GPU runs (1.38x total geomean on L40S in v0.4.6, reaching 2.02x at `K=78` and up to 2.74x total / 4.33x mode).
+The plots above were measured on v0.4.0. Subsequent releases sped up CPU runs substantially (6-10x in v0.4.5 with Numba kernels and array bookkeeping, plus another 1.61x total / 2.16x mode geomean speedup in v0.4.6 across `full`, `doublet`, and `multi`) as well as GPU runs (`1.38x` total geomean on L40S in v0.4.6, plus fused Triton GPU kernels in v0.4.7 delivering a further **2.30x total / 4.14x mode geomean speedup** on L40S across 12 cases and **4.65x total / 5.28x mode** on full 103k-bin Visium HD doublet mode, cutting runtime from 30.4 min in v0.4.6 to **6.5 min** with 0 call flips).
 
 ## Citation
 
