@@ -3,7 +3,7 @@ from typing import List
 import numpy as np
 import torch
 
-from rctd import _numba_kernels
+from rctd import _numba_kernels, _triton_kernels
 from rctd._full import run_full_mode
 from rctd._irwls import solve_irwls_batch
 from rctd._likelihood import calc_log_likelihood_batch
@@ -143,6 +143,9 @@ def run_doublet_mode(
     triples_arr, singles_arr = _candidate_pairs(candidates, n_candidates)
 
     use_numba_cpu = _numba_kernels.ENABLED and device.type == "cpu"
+    use_triton_gpu = device.type == "cuda" and _triton_kernels.use_triton(
+        torch.empty(0, device=device)
+    )
 
     # 3. Pairwise scoring
     print(f"  [doublet] Step 3: pairwise scoring ({len(triples_arr)} triples)...")
@@ -186,7 +189,29 @@ def run_doublet_mode(
         Y_full_gpu = torch.tensor(spatial_counts, device=device)
         nUMI_full_gpu = torch.tensor(spatial_numi, device=device)
 
-        if len(triples_arr):
+        if use_triton_gpu:
+            poly_gpu = _triton_kernels.build_poly_table_gpu(Q_gpu, SQ_gpu, X_gpu)
+            Y_int_gpu = _triton_kernels.prepare_y_int_gpu(Y_full_gpu, poly_gpu[6])
+            del Y_full_gpu
+            P_KT_gpu = P_gpu.T.contiguous()
+
+            if len(triples_arr):
+                tr_t = torch.as_tensor(triples_arr, dtype=torch.int64, device=device)
+                pw_t, ps_t, pc_t = _triton_kernels.fit_and_score_pairs_triton(
+                    tr_t[:, 0],
+                    tr_t[:, 1],
+                    tr_t[:, 2],
+                    Y_int_gpu,
+                    nUMI_full_gpu,
+                    P_KT_gpu,
+                    poly_gpu,
+                    max_iter=25,
+                    compute_score=True,
+                )
+                pair_scores = ps_t.cpu().numpy()
+                pair_weights_all = pw_t.cpu().numpy()
+                pair_conv_all = pc_t.cpu().numpy()
+        elif len(triples_arr):
             M_total = len(triples_arr)
 
             all_scores_t = []
@@ -265,6 +290,20 @@ def run_doublet_mode(
             singlet_scores[singles_arr[:, 0], singles_arr[:, 1]] = sing_scores.astype(
                 pair_scores.dtype, copy=False
             )
+        elif use_triton_gpu:
+            sg_t = torch.as_tensor(singles_arr, dtype=torch.int64, device=device)
+            _, sing_scores_t = _triton_kernels.fit_and_score_singles_triton(
+                sg_t[:, 0],
+                sg_t[:, 1],
+                Y_int_gpu,
+                nUMI_full_gpu,
+                P_KT_gpu,
+                poly_gpu,
+                max_iter=25,
+                write_weights=False,
+                compute_score=True,
+            )
+            singlet_scores[singles_arr[:, 0], singles_arr[:, 1]] = sing_scores_t.cpu().numpy()
         else:
             S_total = len(singles_arr)
 
@@ -365,6 +404,22 @@ def run_doublet_mode(
                 max_iter=50,
             )
             w_all_np[rem_pix] = w_rem.astype(w_all_np.dtype, copy=False)
+        elif use_triton_gpu:
+            rem_pix_t = torch.as_tensor(rem_pix, dtype=torch.int64, device=device)
+            ft1_t = torch.as_tensor(final_t1[rem_pix], dtype=torch.int64, device=device)
+            ft2_t = torch.as_tensor(final_t2[rem_pix], dtype=torch.int64, device=device)
+            w_rem_t, _, _ = _triton_kernels.fit_and_score_pairs_triton(
+                rem_pix_t,
+                ft1_t,
+                ft2_t,
+                Y_int_gpu,
+                nUMI_full_gpu,
+                P_KT_gpu,
+                poly_gpu,
+                max_iter=50,
+                compute_score=False,
+            )
+            w_all_np[rem_pix] = w_rem_t.cpu().numpy()
         else:
             all_rem_weights_t = []
             for start in range(0, len(rem_pix), batch_size):

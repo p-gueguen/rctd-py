@@ -3,7 +3,7 @@ from typing import List, Tuple
 import numpy as np
 import torch
 
-from rctd import _numba_kernels
+from rctd import _numba_kernels, _triton_kernels
 from rctd._full import run_full_mode
 from rctd._irwls import solve_irwls_batch
 from rctd._likelihood import calc_log_likelihood_batch
@@ -30,6 +30,20 @@ def _build_multi_numba_ctx(
     return Y_int, nUMI_np, P_KT, poly, k_of_l, x_of_l, lam_max
 
 
+def _build_multi_triton_ctx(
+    spatial_counts_gpu: torch.Tensor,
+    spatial_numi_gpu: torch.Tensor,
+    P_gpu: torch.Tensor,
+    Q_gpu: torch.Tensor,
+    SQ_gpu: torch.Tensor,
+    X_gpu: torch.Tensor,
+):
+    poly_gpu = _triton_kernels.build_poly_table_gpu(Q_gpu, SQ_gpu, X_gpu)
+    Y_int_gpu = _triton_kernels.prepare_y_int_gpu(spatial_counts_gpu, poly_gpu[6])
+    P_KT_gpu = P_gpu.T.contiguous()
+    return Y_int_gpu, spatial_numi_gpu.contiguous(), P_KT_gpu, poly_gpu
+
+
 def _run_batched_scoring(
     task_triples: List[Tuple[int, List[int]]],
     spatial_numi: np.ndarray,
@@ -41,6 +55,7 @@ def _run_batched_scoring(
     batch_size: int,
     n_iter: int = 25,
     numba_ctx=None,
+    triton_ctx=None,
 ) -> np.ndarray:
     """Run batched IRWLS for a set of tasks all having the SAME number of cell types K_sub."""
     if not task_triples:
@@ -69,6 +84,61 @@ def _run_batched_scoring(
         return scores.astype(
             P_gpu.numpy().dtype if P_gpu.dtype != torch.float64 else np.float64, copy=False
         )
+
+    if _triton_kernels.use_triton(P_gpu):
+        if triton_ctx is None:
+            sc_t = (
+                spatial_counts
+                if isinstance(spatial_counts, torch.Tensor)
+                else torch.as_tensor(spatial_counts, device=P_gpu.device)
+            )
+            sn_t = (
+                spatial_numi
+                if isinstance(spatial_numi, torch.Tensor)
+                else torch.as_tensor(spatial_numi, device=P_gpu.device)
+            )
+            triton_ctx = _build_multi_triton_ctx(sc_t, sn_t, P_gpu, Q_gpu, SQ_gpu, X_gpu)
+        Y_int_gpu, nUMI_gpu_c, P_KT_gpu, poly_gpu = triton_ctx
+        device = P_gpu.device
+        pix_idx_t = torch.tensor([t[0] for t in task_triples], dtype=torch.int64, device=device)
+        type_mat_t = torch.tensor([t[1] for t in task_triples], dtype=torch.int64, device=device)
+        k_sub = type_mat_t.shape[1]
+        if k_sub == 1:
+            _, scores_t = _triton_kernels.fit_and_score_singles_triton(
+                pix_idx_t,
+                type_mat_t[:, 0],
+                Y_int_gpu,
+                nUMI_gpu_c,
+                P_KT_gpu,
+                poly_gpu,
+                max_iter=n_iter,
+                write_weights=False,
+                compute_score=True,
+            )
+        elif k_sub == 2:
+            _, scores_t, _ = _triton_kernels.fit_and_score_pairs_triton(
+                pix_idx_t,
+                type_mat_t[:, 0],
+                type_mat_t[:, 1],
+                Y_int_gpu,
+                nUMI_gpu_c,
+                P_KT_gpu,
+                poly_gpu,
+                max_iter=n_iter,
+                compute_score=True,
+            )
+        else:
+            _, scores_t = _triton_kernels.fit_subsets_triton(
+                pix_idx_t,
+                type_mat_t,
+                Y_int_gpu,
+                nUMI_gpu_c,
+                P_KT_gpu,
+                poly_gpu,
+                max_iter=n_iter,
+                compute_score=True,
+            )
+        return scores_t.cpu().numpy()
 
     M = len(task_triples)
     device = P_gpu.device
@@ -136,6 +206,7 @@ def _run_batched_weights(
     batch_size: int,
     n_iter: int = 50,
     numba_ctx=None,
+    triton_ctx=None,
 ) -> List[np.ndarray]:
     if not task_triples:
         return []
@@ -161,6 +232,62 @@ def _run_batched_weights(
             max_iter=n_iter,
         )
         return list(w_res.astype(P_gpu.numpy().dtype, copy=False))
+
+    if _triton_kernels.use_triton(P_gpu):
+        if triton_ctx is None:
+            sc_t = (
+                spatial_counts
+                if isinstance(spatial_counts, torch.Tensor)
+                else torch.as_tensor(spatial_counts, device=P_gpu.device)
+            )
+            sn_t = (
+                spatial_numi
+                if isinstance(spatial_numi, torch.Tensor)
+                else torch.as_tensor(spatial_numi, device=P_gpu.device)
+            )
+            triton_ctx = _build_multi_triton_ctx(sc_t, sn_t, P_gpu, Q_gpu, SQ_gpu, X_gpu)
+        Y_int_gpu, nUMI_gpu_c, P_KT_gpu, poly_gpu = triton_ctx
+        device = P_gpu.device
+        pix_idx_t = torch.tensor([t[0] for t in task_triples], dtype=torch.int64, device=device)
+        type_mat_t = torch.tensor([t[1] for t in task_triples], dtype=torch.int64, device=device)
+        k_sub = type_mat_t.shape[1]
+        if k_sub == 1:
+            w_t, _ = _triton_kernels.fit_and_score_singles_triton(
+                pix_idx_t,
+                type_mat_t[:, 0],
+                Y_int_gpu,
+                nUMI_gpu_c,
+                P_KT_gpu,
+                poly_gpu,
+                max_iter=n_iter,
+                write_weights=True,
+                compute_score=False,
+            )
+            w_t = w_t.unsqueeze(1)
+        elif k_sub == 2:
+            w_t, _, _ = _triton_kernels.fit_and_score_pairs_triton(
+                pix_idx_t,
+                type_mat_t[:, 0],
+                type_mat_t[:, 1],
+                Y_int_gpu,
+                nUMI_gpu_c,
+                P_KT_gpu,
+                poly_gpu,
+                max_iter=n_iter,
+                compute_score=False,
+            )
+        else:
+            w_t, _ = _triton_kernels.fit_subsets_triton(
+                pix_idx_t,
+                type_mat_t,
+                Y_int_gpu,
+                nUMI_gpu_c,
+                P_KT_gpu,
+                poly_gpu,
+                max_iter=n_iter,
+                compute_score=False,
+            )
+        return list(w_t.cpu().numpy())
 
     M = len(task_triples)
     device = P_gpu.device
@@ -269,8 +396,16 @@ def run_multi_mode(
 
     # Pre-stage spatial data on the device once instead of re-uploading per batch
     # (same fix as _doublet.py: a pixel appears in many tasks across iterations).
-    spatial_counts_gpu = torch.tensor(spatial_counts, device=device)
     spatial_numi_gpu = torch.tensor(spatial_numi, device=device)
+    spatial_counts_gpu = torch.tensor(spatial_counts, device=device)
+    triton_ctx = (
+        _build_multi_triton_ctx(spatial_counts_gpu, spatial_numi_gpu, P_gpu, Q_gpu, SQ_gpu, X_gpu)
+        if _triton_kernels.use_triton(P_gpu)
+        else None
+    )
+    if triton_ctx is not None:
+        del spatial_counts_gpu
+        spatial_counts_gpu = None
     numba_ctx = (
         _build_multi_numba_ctx(spatial_counts, spatial_numi, P_gpu, Q_gpu, SQ_gpu, X_gpu)
         if _numba_kernels.use_numba(P_gpu)
@@ -307,6 +442,7 @@ def run_multi_mode(
             X_gpu,
             batch_size,
             numba_ctx=numba_ctx,
+            triton_ctx=triton_ctx,
         )
 
         # Aggregate results by pixel
@@ -381,6 +517,7 @@ def run_multi_mode(
             X_gpu,
             batch_size,
             numba_ctx=numba_ctx,
+            triton_ctx=triton_ctx,
         )
         for i, (n, cur_list, t, newtype) in enumerate(t_list):
             if not conf_lists[n][t]:
@@ -412,6 +549,7 @@ def run_multi_mode(
             X_gpu,
             batch_size,
             numba_ctx=numba_ctx,
+            triton_ctx=triton_ctx,
         )
         for i, (n, _) in enumerate(t_list):
             # Normalize the weights from IRWLS

@@ -8,7 +8,7 @@ import warnings
 
 import torch
 
-from rctd import _numba_kernels
+from rctd import _numba_kernels, _triton_kernels
 from rctd._likelihood import _pop_inductor_codegen_failed, calc_q_all
 from rctd._simplex import project_simplex, project_simplex_batch
 
@@ -663,6 +663,11 @@ def _solve_box_qp_batch(
             x_gs = _numba_kernels.box_qp_sweeps(D[idx], d[idx], lower_bound[idx], n_sweeps)
             x[idx] = _finish_box_qp(D[idx], d[idx], lower_bound[idx], x_gs)
         return x
+    if K > 2 and K <= 256 and _triton_kernels.use_triton(d):
+        x = _triton_kernels.solve_box_qp_triton(
+            D, d, lower_bound, n_sweeps, tol=_kkt_tol(D.dtype) * 0.1
+        )
+        return _finish_box_qp(D, d, lower_bound, x)
     x = _solve_box_qp_batch_fixed(D, d, lower_bound, n_sweeps)
     return x if K <= 2 else _finish_box_qp(D, d, lower_bound, x)
 
@@ -879,12 +884,16 @@ def solve_irwls_batch_shared(
     device = P.device
 
     use_numba_shared = (not bulk_mode) and (_calc_q_fn is None) and _numba_kernels.use_numba(P)
+    use_triton_shared = (not bulk_mode) and (_calc_q_fn is None) and _triton_kernels.use_triton(P)
 
     if use_numba_shared:
         poly, k_of_l, x_of_l, k_val, lam_max = _numba_kernels.build_poly_table(
             Q_mat, SQ_mat, x_vals
         )
         Y_act_int = _numba_kernels.prepare_y_int(Y_batch, k_val)
+    elif use_triton_shared:
+        poly_gpu = _triton_kernels.build_poly_table_gpu(Q_mat, SQ_mat, x_vals)
+        Y_act_int = _triton_kernels.prepare_y_int_gpu(Y_batch, poly_gpu[6])
     elif not bulk_mode:
         k_val = Q_mat.shape[0] - 3
         Y_batch = torch.clamp(Y_batch, max=k_val)
@@ -914,13 +923,32 @@ def solve_irwls_batch_shared(
 
         solution = torch.clamp(w_act, min=0.0)
 
-        # Prediction: matmul replaces bmm
-        # S @ w = (nUMI * P) @ w = nUMI * (w @ P.T)
-        prediction = torch.abs(nUMI_act.unsqueeze(1) * (solution @ P_T))
-        prediction = torch.clamp(prediction, min=thresh_act.unsqueeze(1))
-
         # Derivatives, gradient, and packed symmetric Hessian
-        if use_numba_shared:
+        if use_triton_shared:
+            pred_raw = solution @ P_T
+            d1_vec, d2_vec = _triton_kernels.irwls_shared_d1_d2_triton(
+                Y_act_int,
+                pred_raw,
+                nUMI_act,
+                thresh_act,
+                poly_gpu,
+                out_dtype=dtype,
+            )
+            del pred_raw
+            grad = d1_vec @ P
+            del d1_vec
+            grad.neg_()
+
+            H_tri = d2_vec @ P_sym
+            del d2_vec
+            hess = _triton_kernels.unpack_sym_hess_triton(H_tri, K)
+            del H_tri
+        elif use_numba_shared:
+            # Prediction: matmul replaces bmm
+            # S @ w = (nUMI * P) @ w = nUMI * (w @ P.T)
+            prediction = torch.abs(nUMI_act.unsqueeze(1) * (solution @ P_T))
+            prediction = torch.clamp(prediction, min=thresh_act.unsqueeze(1))
+
             d1_vec, d2_vec = _numba_kernels.irwls_shared_d1_d2(
                 Y_act_int,
                 prediction,
@@ -942,6 +970,9 @@ def solve_irwls_batch_shared(
             hess = _numba_kernels.unpack_sym_hess(H_tri, K)
             del H_tri
         else:
+            prediction = torch.abs(nUMI_act.unsqueeze(1) * (solution @ P_T))
+            prediction = torch.clamp(prediction, min=thresh_act.unsqueeze(1))
+
             if bulk_mode:
                 d1_vec = -2.0 * (torch.log(prediction) - torch.log(Y_act + 1e-10)) / prediction
                 d2_vec = (
@@ -1006,6 +1037,8 @@ def solve_irwls_batch_shared(
             w_act = w_act[still_active]
             if use_numba_shared:
                 Y_act_int = Y_act_int[still_active.numpy()]
+            elif use_triton_shared:
+                Y_act_int = Y_act_int[still_active]
             else:
                 Y_act = Y_act[still_active]
             nUMI_act = nUMI_act[still_active]
