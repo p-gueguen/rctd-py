@@ -3,6 +3,21 @@
 All notable changes to rctd-py are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.7] — 2026-11-27
+
+rctd-py 0.4.7 adds fused Triton GPU kernels on CUDA ([#60](https://github.com/p-gueguen/rctd-py/pull/60)) with zero new dependencies (`triton` is bundled with PyTorch CUDA wheels) and runtime opt-out via `RCTD_TRITON=0`. Across 12 L40S benchmark cases (`full`, `doublet`, `multi`, `K=8..78`, `N=966..49,857`, `float64`/`float32`, `compile=False`), Triton achieves a **4.14x** geomean mode speedup (`2.30x` total, `1.51x` `choose_sigma`) and up to **35.94x** in doublet mode / **102.6x** less peak VRAM. On the full un-subsampled Visium HD Human dataset (`102,971` bins, `K=78`, `4,041` DE genes, `float64`), `doublet` mode drops from **30.4 min** (`v0.4.6`) to **6.5 min** (**4.65x** total, **5.28x** mode, **6.66x** faster than `v0.4.5`'s `43.5 min`), with **0 call flips** (`100%` concordance) and **0 NaNs**. `rctd run` CLI interface is unchanged.
+
+### Changed
+- **Fused Triton GPU kernels for CUDA IRWLS, doublet/multi fitting, and `choose_sigma`** ([#60](https://github.com/p-gueguen/rctd-py/pull/60)):
+  - Precomputed GPU cubic-spline Horner coefficient tables (`build_poly_table_gpu`) and validated integer count staging (`prepare_y_int_gpu`), avoiding intermediate `(N, G)` spline tensors and `torch.compile` warmup overhead.
+  - Fused shared-profile derivatives and symmetric Hessian unpacking (`irwls_shared_d1_d2_triton`, `unpack_sym_hess_triton`) plus single-warp (`K <= 128`) early-exit Gauss-Seidel box-QP sweeps (`solve_box_qp_triton`) followed by `_finish_box_qp` KKT polish.
+  - Zero-skipping fused GPU kernels for doublet pairs (`fit_and_score_pairs_triton`, analytical 2x2 PSD + Cramer box-QP + NLL), doublet/multi singlets (`fit_and_score_singles_triton`), and multi-mode subsets (`fit_subsets_triton`), eliminating `(M, G, K)` design tensor materialization.
+  - Single-pass 5-factor `choose_sigma` scorer (`score_sigma_5_factors_triton`) preserving the `use_fast_sigma` guard.
+  - Measured on NVIDIA L40S (`compile=False`, `RCTD_TRITON=1` vs `RCTD_TRITON=0`):
+    - **12-case sweep:** `4.14x` geomean mode / `2.30x` total speedup (`cervical_k7_50k` doublet `35.94x` mode / `13.00x` total; `atera_k40_2k` doublet `19.46x` mode / `4.24x` total and `64.5x` less VRAM; `visiumhd_k78_2k` doublet `7.08x` mode and `35.0x` less VRAM; `visiumhd_k78_1k` multi `3.24x` mode; `visiumhd_k78_20k` full `1.14x` mode `f64` / `1.41x` mode `f32`); `0` NaNs and `0` call flips across all `float64` and `float32` cases.
+    - **Full Visium HD (`102,971` bins, `K=78`, `float64`, `batch_size=10000`):** `doublet` mode `1823.6s` (`30.4 min`) -> **`391.9s` (`6.5 min`)**, Step 3 `1339.7s -> 16.7s` (**80.2x**), Step 4 `150.9s -> 2.2s` (**68.6x**), VRAM `13.67 GB -> 7.97 GB`; `full` mode `331.3s` (`5.5 min`) -> **`268.7s` (`4.5 min`)**, VRAM `12.28 GB -> 6.65 GB`; `0` NaNs and `0/102,971` call flips in both modes.
+    - Verified GPU test suite on L40S (`47/47` passed) and `tests/test_triton_kernels.py` on NVIDIA RTX PRO 6000 Blackwell (`28/28` passed).
+
 ## [0.4.6] — 2026-11-25
 
 rctd-py 0.4.6 accelerates CPU and GPU IRWLS solving, `choose_sigma`, and `doublet`/`multi` mode on top of 0.4.5 (`1.61x` geomean total / `2.16x` mode speedup on 8 CPU threads and `1.38x` total / `1.49x` mode on an NVIDIA L40S, reaching `2.02x` total at `K=78` and up to `2.74x` total / `4.33x` mode, across a 48-case sweep covering `full`, `doublet`, `multi`, `K=8..78`, `N=484..49,826`), and ensures `Reference` always drops zero-UMI cells when `min_UMI=0`. In `float64`, calls are identical to 0.4.5 (`0` flips across all 37 `float64` cases and all 24 L40S cases; `0` NaNs across all 48 cases). `rctd run` CLI interface is unchanged.
