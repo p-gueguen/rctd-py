@@ -3,7 +3,7 @@ from typing import Dict
 import numpy as np
 import torch
 
-from rctd import _likelihood, _numba_kernels
+from rctd import _likelihood, _numba_kernels, _triton_kernels
 from rctd._irwls import solve_irwls_batch_shared
 from rctd._likelihood import calc_q_all_eager as _calc_q_all_eager
 
@@ -106,7 +106,13 @@ def choose_sigma(
         Q_cur, SQ_cur = stage_sigma_tables(sigma)
         step1_q_fn = (
             None
-            if (use_fast_sigma and _numba_kernels.ENABLED and device.type == "cpu")
+            if (
+                use_fast_sigma
+                and (
+                    (_numba_kernels.ENABLED and device.type == "cpu")
+                    or _triton_kernels.use_triton(P_gpu)
+                )
+            )
             else _calc_q_all_eager
         )
 
@@ -194,6 +200,21 @@ def choose_sigma(
                     )
 
             _numba_kernels.parallel_rows(_score_cand_range, len(valid_cands), 1)
+            best_idx = int(np.argmin(cand_scores))
+        elif use_fast_sigma and _triton_kernels.use_triton(P_gpu):
+            Y_flat = Y.reshape(-1)
+            k_eff_0 = min(k_val, q_matrices[str(valid_cands[0])].shape[0] - 3)
+            Y_int_0 = _triton_kernels.prepare_y_int_gpu(Y_flat, k_eff_0)
+            cand_scores = []
+            for s in valid_cands:
+                Q_s, SQ_s = stage_sigma_tables(s)
+                k_s = min(k_val, Q_s.shape[0] - 3)
+                y_arr = (
+                    Y_int_0 if k_s == k_eff_0 else _triton_kernels.prepare_y_int_gpu(Y_flat, k_s)
+                )
+                poly_gpu = _triton_kernels.build_poly_table_gpu(Q_s, SQ_s, x_j, K_val=k_s)
+                cand_scores.append(_triton_kernels.score_sigma_5_factors_triton(X, y_arr, poly_gpu))
+                del poly_gpu, Q_s, SQ_s
             best_idx = int(np.argmin(cand_scores))
         elif use_fast_sigma and device.type == "cuda":
             scores = torch.zeros(len(valid_cands), device=device)
