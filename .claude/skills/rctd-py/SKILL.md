@@ -5,7 +5,7 @@ description: GPU-accelerated Python RCTD cell type deconvolution for spatial tra
 
 # rctd-py: GPU-Accelerated Spatial Deconvolution
 
-Python reimplementation of RCTD (Cable et al., *Nature Biotechnology* 2022) with PyTorch GPU acceleration. 10-57× faster than R `spacexr` in doublet mode (19 datasets, one L40S vs 8 R cores) with the same calls as R `spacexr` wherever both pick the same sigma (99.0-99.9% of spot classes when sigma differs by 0.01-0.02, as between two R runs; 19 datasets, v0.4.0). Pure Python on PyTorch; runs on CPU or GPU, no R runtime required.
+Python reimplementation of RCTD (Cable et al., *Nature Biotechnology* 2022) with PyTorch GPU acceleration. 10-391× faster than R `spacexr` in doublet mode (19 datasets, one L40S vs 8 R cores: 8 re-measured with `v0.4.7` fused Triton GPU kernels, 11 at the `v0.4.0` baseline; `RCTD_TRITON=0` falls back to PyTorch) with the same calls as R `spacexr` wherever both pick the same sigma (99.0-99.9% of spot classes when sigma differs by 0.01-0.02, as between two R runs; 19 datasets, v0.4.0). Pure Python on PyTorch; runs on CPU or GPU, no R runtime required.
 
 ## When to use
 

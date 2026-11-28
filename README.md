@@ -2,7 +2,7 @@
   <img src="https://raw.githubusercontent.com/p-gueguen/rctd-py/main/docs/logo_max.png" alt="rctd-py logo" width="500">
   <h1 align="center">rctd-py</h1>
   <p align="center">
-    <strong>Spatial transcriptomics deconvolution, 10–57x faster than R spacexr on a GPU (doublet mode)</strong>
+    <strong>Spatial transcriptomics deconvolution, 10-391x faster than R spacexr on a GPU (doublet mode)</strong>
   </p>
   <p align="center">
     <a href="https://github.com/p-gueguen/rctd-py/actions/workflows/ci.yml"><img src="https://github.com/p-gueguen/rctd-py/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
@@ -28,11 +28,11 @@ Deconvolve spatial transcriptomics spots (Visium, Xenium, MERFISH, Slide-seq, �
 
 | | |
 |---|---|
-| ⚡ **10–57x faster than R spacexr** | Doublet mode on 19 datasets, one GPU vs 8 R cores. Xenium Prime 5K, 503k cells fitted: **34 min** vs 31 hours in R |
+| ⚡ **10-391x faster than R spacexr** | Doublet mode on 19 datasets, one GPU vs 8 R cores (median 32x overall; 24-391x, median 70x across the 8 datasets measured with v0.4.7). Atera WTA Cervical (714k cells): **82 s** (1.4 min) vs 8.9 h in R; Xenium Prime 5K (503k cells, v0.4.0): **34 min** vs 31 hours in R |
 | 🎯 **Matches R spacexr** | Same calls as R wherever both pick the same sigma (11 of 19 datasets); 99.0–99.9% of spot classes on the rest, where sigma differs by 0.01–0.02, as it does between two R runs ([details](https://rctd-py.readthedocs.io/en/stable/r_spacexr.html)) |
 | 🔧 **Familiar to spacexr users** | Same algorithm and, with a few exceptions, the same parameter names ([mapping](https://rctd-py.readthedocs.io/en/stable/r_spacexr.html)) |
 | 📦 **`pip install rctd-py`** | Pure Python, works on CPU out of the box (install `rctd-py[cpu]` for Numba CPU kernels; 3.7–14x faster than R in doublet mode on v0.4.0, faster since v0.4.5), uses a GPU when there is one |
-| 🧬 **Whole-transcriptome ready** | 10x **Atera** WTA (18,028-gene panel): 714k cells deconvolved in 9 min on GPU (doublet mode, 7 cell types) |
+| 🧬 **Whole-transcriptome ready** | 10x **Atera** WTA (18k-gene panel): 714k cervical cells deconvolved in **82 s** (1.4 min, 7 types) and 170k breast cells in **2.7 min** (40 types) on GPU (doublet mode, v0.4.7) |
 
 ## Installation
 
@@ -95,10 +95,17 @@ All options and the output layout: [command line reference](https://rctd-py.read
   <img src="https://raw.githubusercontent.com/p-gueguen/rctd-py/main/docs/benchmark.png" alt="Doublet mode wall time of R spacexr, rctd-py CPU and rctd-py GPU on 19 datasets" width="900">
 </p>
 
-rctd-py on one NVIDIA L40S or 8 CPU threads, R spacexr 2.2.1 on 8 cores; rctd-py points are the
-median of 3 runs. Full and multi mode, per-dataset tables and memory: [benchmarks](https://rctd-py.readthedocs.io/en/stable/benchmarks.html).
+rctd-py on one NVIDIA L40S or 8 CPU threads, R spacexr 2.2.1 on 8 cores; `*` marks the 8
+datasets re-measured on GPU with v0.4.7 (fused Triton GPU kernels, 1 run, `float64`, `batch_size=10000`),
+while the remaining 11 GPU points and all CPU points are v0.4.0 medians of 3 runs (their scratch
+inputs were archived after v0.4.0). Full and multi mode, per-dataset tables and memory:
+[benchmarks](https://rctd-py.readthedocs.io/en/stable/benchmarks.html).
 
-The plots above were measured on v0.4.0. Subsequent releases sped up CPU runs substantially (6-10x in v0.4.5 with Numba kernels and array bookkeeping, plus another 1.61x total / 2.16x mode geomean speedup in v0.4.6 across `full`, `doublet`, and `multi`) as well as GPU runs (`1.38x` total geomean on L40S in v0.4.6, plus fused Triton GPU kernels in v0.4.7 delivering a further **2.30x total / 4.14x mode geomean speedup** on L40S across 12 cases and **4.65x total / 5.28x mode** on full 103k-bin Visium HD doublet mode, cutting runtime from 30.4 min in v0.4.6 to **6.5 min** with 0 call flips).
+CPU runs also sped up substantially after v0.4.0 (6-10x in v0.4.5 with Numba kernels and array
+bookkeeping, plus another 1.61x total / 2.16x mode geomean speedup in v0.4.6 across `full`,
+`doublet`, and `multi`). On L40S GPUs, v0.4.7's fused Triton kernels cut Visium HD (103k bins, K=78)
+doublet runtime from 28.6 min (v0.4.0) and 30.4 min (v0.4.6) to **6.5 min** (`full` **4.5 min**,
+`multi` **5.2 min**) with 0 call flips.
 
 ## Citation
 
