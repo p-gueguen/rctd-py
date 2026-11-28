@@ -1,6 +1,7 @@
 from typing import Dict
 
 import numpy as np
+import scipy.sparse as sp
 import torch
 
 from rctd import _likelihood, _numba_kernels, _triton_kernels
@@ -81,8 +82,11 @@ def choose_sigma(
     # ── Pre-convert arrays to torch tensors ──
     x_j = torch.tensor(x_vals, device=device)
     P_gpu = torch.tensor(norm_profiles, device=device)
-    fit_counts = torch.as_tensor(spatial_counts[fit_idx], device=device)
-    fit_numi = torch.as_tensor(spatial_numi[fit_idx], device=device)
+    fit_raw = spatial_counts[fit_idx]
+    if sp.issparse(fit_raw):
+        fit_raw = fit_raw.toarray()
+    fit_counts = torch.as_tensor(fit_raw, dtype=P_gpu.dtype, device=device)
+    fit_numi = torch.as_tensor(spatial_numi[fit_idx], dtype=P_gpu.dtype, device=device)
 
     sigma = sigma_init
     use_fast_sigma = _calc_q_all_eager is _likelihood.calc_q_all_eager

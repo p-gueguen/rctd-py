@@ -174,6 +174,7 @@ def auto_batch_size(
     n_resident: int = 0,
     max_multi_types: int = 4,
     device: str | torch.device = "auto",
+    resident_bytes: int | None = None,
 ) -> int:
     """Calculate a batch size that fits in the free memory of the GPU the run uses.
 
@@ -181,8 +182,9 @@ def auto_batch_size(
     ``budget_fraction`` of the VRAM left free once the ``n_resident`` x ``G`` count matrix the
     mode keeps on the GPU, and the G x K^2 ``P_outer`` table of the full-mode fit every mode runs,
     are in place, plus the cuSOLVER eigh workspace when the full-mode fit runs eigh on this GPU
-    (see `_eigh_terms`). Returns ``default`` when ``device`` is not a CUDA device, CUDA info is
-    unavailable, or ``G`` or ``K`` is not positive.
+    (see `_eigh_terms`). ``resident_bytes`` overrides ``dtype_bytes`` for the resident count
+    matrix (e.g. ``2`` bytes for clamped ``int16`` counts under Triton). Returns ``default`` when
+    ``device`` is not a CUDA device, CUDA info is unavailable, or ``G`` or ``K`` is not positive.
     """
     if mode not in ("full", "doublet", "multi"):
         raise ValueError(f"Unknown mode: {mode!r} (expected 'full', 'doublet' or 'multi')")
@@ -197,7 +199,8 @@ def auto_batch_size(
         return default
 
     bytes_per_row, fixed = _batch_bytes(mode, G, K, max_multi_types, dtype_bytes, dev)
-    resident = n_resident * G * dtype_bytes + fixed  # counts + P_outer + chunked eigh
+    res_bytes = dtype_bytes if resident_bytes is None else resident_bytes
+    resident = n_resident * G * res_bytes + fixed  # counts + P_outer + chunked eigh
     if resident >= free_mem:
         warnings.warn(
             f"The count matrix, reference tables and eigh workspace ({resident / 2**30:.1f} GiB) "

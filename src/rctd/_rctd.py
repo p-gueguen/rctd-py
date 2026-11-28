@@ -6,6 +6,7 @@ import numpy as np
 import scipy.sparse as sp
 import torch
 
+from rctd import _triton_kernels
 from rctd._doublet import run_doublet_mode
 from rctd._full import run_full_mode
 from rctd._likelihood import compute_spline_coefficients, load_cached_q_matrices
@@ -30,8 +31,8 @@ _COMPILE_DISABLED_BY_CONFIG = False
 class RCTD:
     """Robust Cell Type Decomposition (RCTD).
 
-    ``counts`` holds the spatial counts of the common genes: a CSR matrix if ``spatial.X`` is
-    sparse, until ``fit_platform_effects`` restricts them to the DE genes as a dense array.
+    ``counts`` holds the spatial counts of the common genes, staying a CSR matrix if ``spatial.X``
+    is sparse through ``fit_platform_effects`` and ``run_rctd`` to avoid dense host copies.
     """
 
     def __init__(
@@ -257,8 +258,6 @@ class RCTD:
 
         reg_gene_idx = [self.common_genes.index(g) for g in gene_list_reg]
         self.counts = self.counts[:, reg_gene_idx]
-        if sp.issparse(self.counts):
-            self.counts = self.counts.toarray()
         # NOTE: self.nUMI stays as total nUMI from ALL spatial genes.
         # R's puck@nUMI is never recomputed after gene restriction.
 
@@ -318,7 +317,6 @@ class RCTD:
         self.q_mat = self.q_mat.astype(target_dtype)
         self.sq_mat = self.sq_mat.astype(target_dtype)
         self.x_vals = self.x_vals.astype(target_dtype)
-        self.counts = self.counts.astype(target_dtype)
 
         self.is_normalized = True
 
@@ -368,8 +366,18 @@ def run_rctd(
     dtype_bytes = 8 if rctd.config.dtype == "float64" else 4
 
     if batch_size == "auto":
-        # Every mode keeps the dense (N, G) counts on the GPU, except full mode with stream_gpu.
+        # Every mode keeps (N, G) counts on the GPU, except full mode with stream_gpu.
         n_resident = 0 if (mode == "full" and stream_gpu) else rctd.counts.shape[0]
+        dev_resolved = resolve_device(rctd.config.device)
+        use_triton_gpu = dev_resolved.type == "cuda" and _triton_kernels.use_triton(
+            torch.empty(0, device=dev_resolved)
+        )
+        auto_kwargs = {}
+        if use_triton_gpu:
+            k_val = int(rctd.q_mat.shape[0] - 3)
+            auto_kwargs["resident_bytes"] = torch.empty(
+                0, dtype=_triton_kernels._int_count_dtype(k_val)[0]
+            ).element_size()
         batch_size = auto_batch_size(
             G,
             K,
@@ -378,6 +386,7 @@ def run_rctd(
             n_resident=n_resident,
             max_multi_types=rctd.config.MAX_MULTI_TYPES,
             device=rctd.config.device,
+            **auto_kwargs,
         )
         print(f"Auto batch size: {batch_size}")
 

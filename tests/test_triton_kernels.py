@@ -2,9 +2,19 @@
 
 import numpy as np
 import pytest
+import scipy.sparse as sp
 import torch
 
-from rctd import _doublet, _full, _irwls, _likelihood, _multi, _sigma, _triton_kernels
+from rctd import (
+    _doublet,
+    _full,
+    _irwls,
+    _likelihood,
+    _multi,
+    _numba_kernels,
+    _sigma,
+    _triton_kernels,
+)
 from rctd._types import RCTDConfig
 
 CUDA_TRITON = pytest.mark.skipif(
@@ -553,3 +563,42 @@ def test_multi_triton_chunked_batch_size_parity(monkeypatch):
     assert np.allclose(res_big.sub_weights, res_ref.sub_weights, atol=1e-10, rtol=1e-10)
     assert np.allclose(res_small.weights, res_ref.weights, atol=1e-10, rtol=1e-10)
     assert np.allclose(res_big.weights, res_ref.weights, atol=1e-10, rtol=1e-10)
+
+
+def test_sparse_staging_matches_dense():
+    """Chunked sparse CPU->device and Numba preparation match dense counts."""
+    dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    rng = np.random.default_rng(12)
+    dense = rng.poisson(1.5, size=(11, 7)).astype(np.float32)
+    dense[0, 0] = 200.0
+    csr = sp.csr_matrix(dense)
+    csc = sp.csc_matrix(dense)
+
+    y_dense = _triton_kernels.prepare_y_int_from_cpu(dense, 100, dev, chunk_rows=3)
+    y_csr = _triton_kernels.prepare_y_int_from_cpu(csr, 100, dev, chunk_rows=3)
+    y_csc = _triton_kernels.prepare_y_int_from_cpu(csc, 100, dev, chunk_rows=3)
+    assert y_csr.dtype == torch.int16
+    assert torch.equal(y_csr, y_dense)
+    assert torch.equal(y_csc, y_dense)
+
+    for dt in (torch.float32, torch.float64):
+        f_dense = _triton_kernels.stage_counts_float_to_device(dense, dt, dev, chunk_rows=3)
+        f_csr = _triton_kernels.stage_counts_float_to_device(csr, dt, dev, chunk_rows=3)
+        f_csc = _triton_kernels.stage_counts_float_to_device(csc, dt, dev, chunk_rows=3)
+        assert f_csr.dtype == dt
+        assert torch.equal(f_csr, f_dense)
+        assert torch.equal(f_csc, f_dense)
+
+    n_dense = _numba_kernels.prepare_y_int(dense, 100, chunk_rows=3)
+    n_csr = _numba_kernels.prepare_y_int(csr, 100, chunk_rows=3)
+    n_csc = _numba_kernels.prepare_y_int(csc, 100, chunk_rows=3)
+    assert n_csr.dtype == np.int32
+    np.testing.assert_array_equal(n_csr, n_dense)
+    np.testing.assert_array_equal(n_csc, n_dense)
+
+    bad_neg = csr.copy()
+    bad_neg.data[0] = -1.0
+    with pytest.raises(ValueError, match="non-negative"):
+        _triton_kernels.prepare_y_int_from_cpu(bad_neg, 100, dev)
+    with pytest.raises(ValueError, match="non-negative"):
+        _numba_kernels.prepare_y_int(bad_neg, 100)

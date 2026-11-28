@@ -184,7 +184,7 @@ def run_doublet_mode(
         SQ_gpu = torch.tensor(sq_mat, device=device)
         X_gpu = torch.tensor(x_vals, device=device)
 
-        nUMI_full_gpu = torch.tensor(spatial_numi, device=device)
+        nUMI_full_gpu = torch.as_tensor(spatial_numi, dtype=P_gpu.dtype, device=device)
         triton_slab = min(_triton_kernels._MAX_PAIR_SLAB, max(int(batch_size) * 8, 65_536))
 
         if use_triton_gpu:
@@ -216,7 +216,9 @@ def run_doublet_mode(
                     pair_conv_all[start:end] = pc_t.cpu().numpy()
                     del tr_t, pw_t, ps_t, pc_t
         elif len(triples_arr):
-            Y_full_gpu = torch.tensor(spatial_counts, device=device)
+            Y_full_gpu = _triton_kernels.stage_counts_float_to_device(
+                spatial_counts, P_gpu.dtype, device
+            )
             M_total = len(triples_arr)
 
             all_scores_t = []
@@ -272,7 +274,9 @@ def run_doublet_mode(
             pair_conv_all = torch.cat(all_conv_t).cpu().numpy()
         else:
             # No triples needed scoring; keep Y_full_gpu ready for Steps 4/6 on non-Triton GPUs.
-            Y_full_gpu = torch.tensor(spatial_counts, device=device)
+            Y_full_gpu = _triton_kernels.stage_counts_float_to_device(
+                spatial_counts, P_gpu.dtype, device
+            )
 
     print(f"  [doublet] Step 3 done ({_time.time() - _t3:.1f}s)")
 

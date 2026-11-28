@@ -30,6 +30,7 @@ import os
 from concurrent.futures import ThreadPoolExecutor
 
 import numpy as np
+import scipy.sparse as sp
 import torch
 
 try:
@@ -1278,8 +1279,26 @@ def box_qp_sweeps(D, d, lower_bound, n_sweeps=50):
     return x
 
 
-def prepare_y_int(Y, k_val: int) -> np.ndarray:
+def prepare_y_int(Y, k_val: int, chunk_rows: int = 32_768) -> np.ndarray:
     """Validate non-negative finite counts and clip to ``[0, k_val]`` as ``int32``."""
+    if sp.issparse(Y):
+        src = Y if isinstance(Y, sp.csr_matrix) else Y.tocsr()
+        out = np.empty(src.shape, dtype=np.int32)
+        if src.shape[0] == 0 or src.shape[1] == 0:
+            return out
+        is_float = np.issubdtype(src.dtype, np.floating)
+        row_bytes = max(src.shape[1] * max(np.dtype(src.dtype).itemsize, 1), 1)
+        step = max(1, min(chunk_rows, (256 * 1024 * 1024) // row_bytes))
+        n_rows = src.shape[0]
+        for start in range(0, n_rows, step):
+            end = min(start + step, n_rows)
+            chunk = src[start:end].toarray()
+            if is_float and not np.isfinite(chunk).all():
+                raise ValueError("counts must be finite")
+            if (chunk < 0).any():
+                raise ValueError("counts must be non-negative")
+            out[start:end] = np.clip(chunk, 0, k_val).astype(np.int32, copy=False)
+        return out
     Y_np = Y.detach().cpu().numpy() if isinstance(Y, torch.Tensor) else np.asarray(Y)
     if np.issubdtype(Y_np.dtype, np.floating) and not np.isfinite(Y_np).all():
         raise ValueError("counts must be finite")

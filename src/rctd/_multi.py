@@ -1,6 +1,7 @@
 from typing import List, Tuple
 
 import numpy as np
+import scipy.sparse as sp
 import torch
 
 from rctd import _numba_kernels, _triton_kernels
@@ -187,8 +188,11 @@ def _run_batched_scoring(
             nUMI_tr = spatial_numi[pix_idx_t]
             B_tr = spatial_counts[pix_idx_t]
         else:
-            nUMI_tr = torch.tensor(spatial_numi[pix_idx], device=device)
-            B_tr = torch.tensor(spatial_counts[pix_idx], device=device)
+            nUMI_tr = torch.as_tensor(spatial_numi[pix_idx], dtype=P_gpu.dtype, device=device)
+            raw_tr = spatial_counts[pix_idx]
+            if sp.issparse(raw_tr):
+                raw_tr = raw_tr.toarray()
+            B_tr = torch.as_tensor(raw_tr, dtype=P_gpu.dtype, device=device)
 
         # P_gpu is (G, K). We need (bs, G, K_sub)
         # type_idx is (bs, K_sub) -> convert to long tensor for indexing
@@ -291,8 +295,11 @@ def _run_batched_weights(
             nUMI_tr = spatial_numi[pix_idx_t]
             B_tr = spatial_counts[pix_idx_t]
         else:
-            nUMI_tr = torch.tensor(spatial_numi[pix_idx], device=device)
-            B_tr = torch.tensor(spatial_counts[pix_idx], device=device)
+            nUMI_tr = torch.as_tensor(spatial_numi[pix_idx], dtype=P_gpu.dtype, device=device)
+            raw_tr = spatial_counts[pix_idx]
+            if sp.issparse(raw_tr):
+                raw_tr = raw_tr.toarray()
+            B_tr = torch.as_tensor(raw_tr, dtype=P_gpu.dtype, device=device)
 
         type_idx_t = torch.tensor(type_idx, dtype=torch.long, device=device)
         P_sub = P_gpu[:, type_idx_t].permute(1, 0, 2)
@@ -379,17 +386,19 @@ def run_multi_mode(
     # Under Triton, convert CPU counts straight to compact int16/int32 on GPU.
     use_triton_gpu = _triton_kernels.use_triton(P_gpu)
     use_numba_cpu = _numba_kernels.use_numba(P_gpu)
-    spatial_numi_gpu = torch.tensor(spatial_numi, device=device)
+    spatial_numi_gpu = torch.as_tensor(spatial_numi, dtype=P_gpu.dtype, device=device)
     if use_triton_gpu:
         spatial_counts_gpu = None
         triton_ctx = _build_multi_triton_ctx(
             spatial_counts, spatial_numi_gpu, P_gpu, Q_gpu, SQ_gpu, X_gpu
         )
     elif use_numba_cpu:
-        spatial_counts_gpu = torch.tensor(spatial_counts, device=device)
+        spatial_counts_gpu = None
         triton_ctx = None
     else:
-        spatial_counts_gpu = torch.tensor(spatial_counts, device=device)
+        spatial_counts_gpu = _triton_kernels.stage_counts_float_to_device(
+            spatial_counts, P_gpu.dtype, device
+        )
         triton_ctx = None
     numba_ctx = (
         _build_multi_numba_ctx(spatial_counts, spatial_numi, P_gpu, Q_gpu, SQ_gpu, X_gpu)
