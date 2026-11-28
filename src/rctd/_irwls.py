@@ -848,6 +848,7 @@ def solve_irwls_batch_shared(
     constrain: bool = True,
     bulk_mode: bool = False,
     _calc_q_fn=None,
+    _y_clamped_int: bool = False,
 ) -> tuple[torch.Tensor, torch.Tensor]:
     """Optimized IRWLS for shared reference profiles.
 
@@ -893,7 +894,10 @@ def solve_irwls_batch_shared(
         Y_act_int = _numba_kernels.prepare_y_int(Y_batch, k_val)
     elif use_triton_shared:
         poly_gpu = _triton_kernels.build_poly_table_gpu(Q_mat, SQ_mat, x_vals)
-        Y_act_int = _triton_kernels.prepare_y_int_gpu(Y_batch, poly_gpu[6])
+        if _y_clamped_int and Y_batch.dtype in (torch.int16, torch.int32):
+            Y_act_int = Y_batch.contiguous()
+        else:
+            Y_act_int = _triton_kernels.prepare_y_int_gpu(Y_batch, poly_gpu[6])
     elif not bulk_mode:
         k_val = Q_mat.shape[0] - 3
         Y_batch = torch.clamp(Y_batch, max=k_val)
@@ -911,7 +915,7 @@ def solve_irwls_batch_shared(
 
     # Active pixel state — start with all pixels
     active_idx = torch.arange(N, device=device)
-    Y_act = Y_batch
+    Y_act = None if (use_triton_shared or use_numba_shared) else Y_batch
     nUMI_act = nUMI_batch
     thresh_act = threshold
     w_act = w.clone()

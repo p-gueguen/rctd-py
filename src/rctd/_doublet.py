@@ -184,34 +184,39 @@ def run_doublet_mode(
         SQ_gpu = torch.tensor(sq_mat, device=device)
         X_gpu = torch.tensor(x_vals, device=device)
 
-        # Pre-stage spatial data on the device once instead of re-uploading
-        # spatial_counts[pix_idx] / spatial_numi[pix_idx] per batch in steps 3/4/6.
-        Y_full_gpu = torch.tensor(spatial_counts, device=device)
         nUMI_full_gpu = torch.tensor(spatial_numi, device=device)
+        triton_slab = min(_triton_kernels._MAX_PAIR_SLAB, max(int(batch_size) * 8, 65_536))
 
         if use_triton_gpu:
             poly_gpu = _triton_kernels.build_poly_table_gpu(Q_gpu, SQ_gpu, X_gpu)
-            Y_int_gpu = _triton_kernels.prepare_y_int_gpu(Y_full_gpu, poly_gpu[6])
-            del Y_full_gpu
+            Y_int_gpu = _triton_kernels.prepare_y_int_to_device(spatial_counts, poly_gpu[6], device)
             P_KT_gpu = P_gpu.T.contiguous()
 
-            if len(triples_arr):
-                tr_t = torch.as_tensor(triples_arr, dtype=torch.int64, device=device)
-                pw_t, ps_t, pc_t = _triton_kernels.fit_and_score_pairs_triton(
-                    tr_t[:, 0],
-                    tr_t[:, 1],
-                    tr_t[:, 2],
-                    Y_int_gpu,
-                    nUMI_full_gpu,
-                    P_KT_gpu,
-                    poly_gpu,
-                    max_iter=25,
-                    compute_score=True,
-                )
-                pair_scores = ps_t.cpu().numpy()
-                pair_weights_all = pw_t.cpu().numpy()
-                pair_conv_all = pc_t.cpu().numpy()
+            M_total = len(triples_arr)
+            if M_total:
+                pair_scores = np.empty(M_total, dtype=norm_profiles.dtype)
+                pair_weights_all = np.empty((M_total, 2), dtype=norm_profiles.dtype)
+                pair_conv_all = np.empty(M_total, dtype=bool)
+                for start in range(0, M_total, triton_slab):
+                    end = min(start + triton_slab, M_total)
+                    tr_t = torch.as_tensor(triples_arr[start:end], dtype=torch.int64, device=device)
+                    pw_t, ps_t, pc_t = _triton_kernels.fit_and_score_pairs_triton(
+                        tr_t[:, 0],
+                        tr_t[:, 1],
+                        tr_t[:, 2],
+                        Y_int_gpu,
+                        nUMI_full_gpu,
+                        P_KT_gpu,
+                        poly_gpu,
+                        max_iter=25,
+                        compute_score=True,
+                    )
+                    pair_scores[start:end] = ps_t.cpu().numpy()
+                    pair_weights_all[start:end] = pw_t.cpu().numpy()
+                    pair_conv_all[start:end] = pc_t.cpu().numpy()
+                    del tr_t, pw_t, ps_t, pc_t
         elif len(triples_arr):
+            Y_full_gpu = torch.tensor(spatial_counts, device=device)
             M_total = len(triples_arr)
 
             all_scores_t = []
@@ -265,6 +270,9 @@ def run_doublet_mode(
             pair_scores = torch.cat(all_scores_t).cpu().numpy()
             pair_weights_all = torch.cat(all_weights_t).cpu().numpy()
             pair_conv_all = torch.cat(all_conv_t).cpu().numpy()
+        else:
+            # No triples needed scoring; keep Y_full_gpu ready for Steps 4/6 on non-Triton GPUs.
+            Y_full_gpu = torch.tensor(spatial_counts, device=device)
 
     print(f"  [doublet] Step 3 done ({_time.time() - _t3:.1f}s)")
 
@@ -291,19 +299,25 @@ def run_doublet_mode(
                 pair_scores.dtype, copy=False
             )
         elif use_triton_gpu:
-            sg_t = torch.as_tensor(singles_arr, dtype=torch.int64, device=device)
-            _, sing_scores_t = _triton_kernels.fit_and_score_singles_triton(
-                sg_t[:, 0],
-                sg_t[:, 1],
-                Y_int_gpu,
-                nUMI_full_gpu,
-                P_KT_gpu,
-                poly_gpu,
-                max_iter=25,
-                write_weights=False,
-                compute_score=True,
-            )
-            singlet_scores[singles_arr[:, 0], singles_arr[:, 1]] = sing_scores_t.cpu().numpy()
+            S_total = len(singles_arr)
+            sing_scores_np = np.empty(S_total, dtype=pair_scores.dtype)
+            for start in range(0, S_total, triton_slab):
+                end = min(start + triton_slab, S_total)
+                sg_t = torch.as_tensor(singles_arr[start:end], dtype=torch.int64, device=device)
+                _, sing_scores_t = _triton_kernels.fit_and_score_singles_triton(
+                    sg_t[:, 0],
+                    sg_t[:, 1],
+                    Y_int_gpu,
+                    nUMI_full_gpu,
+                    P_KT_gpu,
+                    poly_gpu,
+                    max_iter=25,
+                    write_weights=False,
+                    compute_score=True,
+                )
+                sing_scores_np[start:end] = sing_scores_t.cpu().numpy()
+                del sg_t, sing_scores_t
+            singlet_scores[singles_arr[:, 0], singles_arr[:, 1]] = sing_scores_np
         else:
             S_total = len(singles_arr)
 
@@ -405,21 +419,26 @@ def run_doublet_mode(
             )
             w_all_np[rem_pix] = w_rem.astype(w_all_np.dtype, copy=False)
         elif use_triton_gpu:
-            rem_pix_t = torch.as_tensor(rem_pix, dtype=torch.int64, device=device)
-            ft1_t = torch.as_tensor(final_t1[rem_pix], dtype=torch.int64, device=device)
-            ft2_t = torch.as_tensor(final_t2[rem_pix], dtype=torch.int64, device=device)
-            w_rem_t, _, _ = _triton_kernels.fit_and_score_pairs_triton(
-                rem_pix_t,
-                ft1_t,
-                ft2_t,
-                Y_int_gpu,
-                nUMI_full_gpu,
-                P_KT_gpu,
-                poly_gpu,
-                max_iter=50,
-                compute_score=False,
-            )
-            w_all_np[rem_pix] = w_rem_t.cpu().numpy()
+            R_total = len(rem_pix)
+            for start in range(0, R_total, triton_slab):
+                end = min(start + triton_slab, R_total)
+                sub = rem_pix[start:end]
+                rem_pix_t = torch.as_tensor(sub, dtype=torch.int64, device=device)
+                ft1_t = torch.as_tensor(final_t1[sub], dtype=torch.int64, device=device)
+                ft2_t = torch.as_tensor(final_t2[sub], dtype=torch.int64, device=device)
+                w_rem_t, _, _ = _triton_kernels.fit_and_score_pairs_triton(
+                    rem_pix_t,
+                    ft1_t,
+                    ft2_t,
+                    Y_int_gpu,
+                    nUMI_full_gpu,
+                    P_KT_gpu,
+                    poly_gpu,
+                    max_iter=50,
+                    compute_score=False,
+                )
+                w_all_np[sub] = w_rem_t.cpu().numpy()
+                del rem_pix_t, ft1_t, ft2_t, w_rem_t
         else:
             all_rem_weights_t = []
             for start in range(0, len(rem_pix), batch_size):

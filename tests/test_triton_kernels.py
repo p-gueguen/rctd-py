@@ -31,13 +31,69 @@ def test_prepare_y_int_gpu_validation_cpu_or_cuda():
     dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     y = torch.tensor([[0.0, 5.0, 200.0]], device=dev)
     y_int = _triton_kernels.prepare_y_int_gpu(y, 100)
-    assert y_int.dtype == torch.int32
+    assert y_int.dtype == torch.int16
     assert y_int.tolist() == [[0, 5, 100]]
+
+    y_wide = _triton_kernels.prepare_y_int_gpu(torch.tensor([[0.0, 40_000.0]], device=dev), 40_000)
+    assert y_wide.dtype == torch.int32
+    assert y_wide.tolist() == [[0, 40_000]]
 
     with pytest.raises(ValueError, match="finite"):
         _triton_kernels.prepare_y_int_gpu(torch.tensor([float("nan")], device=dev), 100)
     with pytest.raises(ValueError, match="non-negative"):
         _triton_kernels.prepare_y_int_gpu(torch.tensor([-1.0], device=dev), 100)
+
+
+def test_prepare_y_int_from_cpu_chunked_and_validation():
+    dev = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    arr = np.array([[0.0, 3.0, 150.0], [10.0, 99.0, 100.0]], dtype=np.float64)
+    y16 = _triton_kernels.prepare_y_int_from_cpu(arr, 100, dev, chunk_rows=1)
+    assert y16.dtype == torch.int16
+    assert y16.tolist() == [[0, 3, 100], [10, 99, 100]]
+
+    y32 = _triton_kernels.prepare_y_int_from_cpu(
+        np.array([[0.0, 50_000.0]], dtype=np.float32), 40_000, dev, chunk_rows=1
+    )
+    assert y32.dtype == torch.int32
+    assert y32.tolist() == [[0, 40_000]]
+
+    with pytest.raises(ValueError, match="finite"):
+        _triton_kernels.prepare_y_int_from_cpu(
+            np.array([[1.0, float("nan")]], dtype=np.float32), 100, dev
+        )
+    with pytest.raises(ValueError, match="non-negative"):
+        _triton_kernels.prepare_y_int_from_cpu(np.array([[-1.0, 2.0]], dtype=np.float32), 100, dev)
+
+
+def test_use_triton_rejects_sm_below_70(monkeypatch):
+    if not _triton_kernels.ENABLED:
+        pytest.skip("triton not installed")
+    _triton_kernels._cuda_triton_supported.cache_clear()
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda _idx: (6, 1))
+    monkeypatch.setattr(_triton_kernels, "_RUNTIME_DISABLED", False)
+    try:
+        assert _triton_kernels._cuda_triton_supported(0) is False
+    finally:
+        _triton_kernels._cuda_triton_supported.cache_clear()
+
+
+def test_use_triton_runtime_probe_failure_warns_and_disables(monkeypatch):
+    if not _triton_kernels.ENABLED:
+        pytest.skip("triton not installed")
+    _triton_kernels._cuda_triton_supported.cache_clear()
+    monkeypatch.setattr(torch.cuda, "get_device_capability", lambda _idx: (8, 9))
+    monkeypatch.setattr(_triton_kernels, "_RUNTIME_DISABLED", False)
+
+    def _boom(_idx: int) -> None:
+        raise RuntimeError("missing cuda.h")
+
+    monkeypatch.setattr(_triton_kernels, "_run_triton_probe", _boom)
+    try:
+        with pytest.warns(RuntimeWarning, match="falling back to PyTorch GPU kernels"):
+            assert _triton_kernels._cuda_triton_supported(0) is False
+        assert _triton_kernels._RUNTIME_DISABLED is True
+    finally:
+        _triton_kernels._cuda_triton_supported.cache_clear()
 
 
 @CUDA_TRITON
@@ -465,3 +521,35 @@ def test_triton_solve_box_qp_early_exit_kkt(dtype, monkeypatch):
     x_tri = _irwls._solve_box_qp_batch(D.clone(), d, lb, n_sweeps=50)
     atol = 1e-10 if dtype == torch.float64 else 1e-4
     assert torch.allclose(x_tri, x_ref, atol=atol, rtol=atol)
+
+
+@CUDA_TRITON
+def test_multi_triton_chunked_batch_size_parity(monkeypatch):
+    """Chunking multi-mode Triton calls by batch_size preserves exact results."""
+    q_mat, sq_mat, x_vals = _synthetic_tables()
+    rng = np.random.default_rng(777)
+    N, G, K = 24, 180, 6
+    P = rng.dirichlet(np.ones(K), size=G).astype(np.float64)
+    Y = rng.poisson(2.0, size=(N, G)).astype(np.float64)
+    nUMI = np.maximum(Y.sum(axis=1), 100.0)
+    names = [f"T{i}" for i in range(K)]
+    cfg = RCTDConfig(device="cuda", dtype="float64", MAX_MULTI_TYPES=4, compile=False)
+
+    monkeypatch.setenv("RCTD_TRITON", "0")
+    res_ref = _multi.run_multi_mode(
+        Y, nUMI, P, names, q_mat, sq_mat, x_vals, cfg, batch_size=10000, device="cuda"
+    )
+    monkeypatch.setenv("RCTD_TRITON", "1")
+    res_small = _multi.run_multi_mode(
+        Y, nUMI, P, names, q_mat, sq_mat, x_vals, cfg, batch_size=3, device="cuda"
+    )
+    res_big = _multi.run_multi_mode(
+        Y, nUMI, P, names, q_mat, sq_mat, x_vals, cfg, batch_size=10000, device="cuda"
+    )
+
+    assert np.array_equal(res_small.cell_type_indices, res_ref.cell_type_indices)
+    assert np.array_equal(res_big.cell_type_indices, res_ref.cell_type_indices)
+    assert np.allclose(res_small.sub_weights, res_ref.sub_weights, atol=1e-10, rtol=1e-10)
+    assert np.allclose(res_big.sub_weights, res_ref.sub_weights, atol=1e-10, rtol=1e-10)
+    assert np.allclose(res_small.weights, res_ref.weights, atol=1e-10, rtol=1e-10)
+    assert np.allclose(res_big.weights, res_ref.weights, atol=1e-10, rtol=1e-10)

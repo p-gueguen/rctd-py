@@ -31,7 +31,7 @@ def _build_multi_numba_ctx(
 
 
 def _build_multi_triton_ctx(
-    spatial_counts_gpu: torch.Tensor,
+    spatial_counts: np.ndarray | torch.Tensor,
     spatial_numi_gpu: torch.Tensor,
     P_gpu: torch.Tensor,
     Q_gpu: torch.Tensor,
@@ -39,9 +39,80 @@ def _build_multi_triton_ctx(
     X_gpu: torch.Tensor,
 ):
     poly_gpu = _triton_kernels.build_poly_table_gpu(Q_gpu, SQ_gpu, X_gpu)
-    Y_int_gpu = _triton_kernels.prepare_y_int_gpu(spatial_counts_gpu, poly_gpu[6])
+    Y_int_gpu = _triton_kernels.prepare_y_int_to_device(spatial_counts, poly_gpu[6], P_gpu.device)
     P_KT_gpu = P_gpu.T.contiguous()
     return Y_int_gpu, spatial_numi_gpu.contiguous(), P_KT_gpu, poly_gpu
+
+
+def _dispatch_multi_triton(
+    task_triples: List[Tuple[int, List[int]]],
+    triton_ctx,
+    P_gpu: torch.Tensor,
+    batch_size: int,
+    n_iter: int,
+    compute_score: bool,
+) -> np.ndarray:
+    """Execute multi-mode Triton fitting in bounded chunks so GPU memory respects batch_size."""
+    Y_int_gpu, nUMI_gpu_c, P_KT_gpu, poly_gpu = triton_ctx
+    device = P_gpu.device
+    out_dtype = np.float64 if P_gpu.dtype == torch.float64 else np.float32
+    M = len(task_triples)
+    k_sub = len(task_triples[0][1])
+    chunk = (
+        max(1, int(batch_size))
+        if k_sub >= 3
+        else min(_triton_kernels._MAX_PAIR_SLAB, max(int(batch_size) * 8, 65_536))
+    )
+    out = np.empty(M if compute_score else (M, k_sub), dtype=out_dtype)
+    for start in range(0, M, chunk):
+        end = min(start + chunk, M)
+        pix_idx_t = torch.tensor(
+            [t[0] for t in task_triples[start:end]], dtype=torch.int64, device=device
+        )
+        type_mat_t = torch.tensor(
+            [t[1] for t in task_triples[start:end]], dtype=torch.int64, device=device
+        )
+        if k_sub == 1:
+            w_t, s_t = _triton_kernels.fit_and_score_singles_triton(
+                pix_idx_t,
+                type_mat_t[:, 0],
+                Y_int_gpu,
+                nUMI_gpu_c,
+                P_KT_gpu,
+                poly_gpu,
+                max_iter=n_iter,
+                write_weights=not compute_score,
+                compute_score=compute_score,
+            )
+            res_t = s_t if compute_score else w_t.unsqueeze(1)
+        elif k_sub == 2:
+            w_t, s_t, _ = _triton_kernels.fit_and_score_pairs_triton(
+                pix_idx_t,
+                type_mat_t[:, 0],
+                type_mat_t[:, 1],
+                Y_int_gpu,
+                nUMI_gpu_c,
+                P_KT_gpu,
+                poly_gpu,
+                max_iter=n_iter,
+                compute_score=compute_score,
+            )
+            res_t = s_t if compute_score else w_t
+        else:
+            w_t, s_t = _triton_kernels.fit_subsets_triton(
+                pix_idx_t,
+                type_mat_t,
+                Y_int_gpu,
+                nUMI_gpu_c,
+                P_KT_gpu,
+                poly_gpu,
+                max_iter=n_iter,
+                compute_score=compute_score,
+            )
+            res_t = s_t if compute_score else w_t
+        out[start:end] = res_t.cpu().numpy()
+        del pix_idx_t, type_mat_t, res_t
+    return out
 
 
 def _run_batched_scoring(
@@ -87,58 +158,12 @@ def _run_batched_scoring(
 
     if _triton_kernels.use_triton(P_gpu):
         if triton_ctx is None:
-            sc_t = (
-                spatial_counts
-                if isinstance(spatial_counts, torch.Tensor)
-                else torch.as_tensor(spatial_counts, device=P_gpu.device)
+            triton_ctx = _build_multi_triton_ctx(
+                spatial_counts, spatial_numi, P_gpu, Q_gpu, SQ_gpu, X_gpu
             )
-            sn_t = (
-                spatial_numi
-                if isinstance(spatial_numi, torch.Tensor)
-                else torch.as_tensor(spatial_numi, device=P_gpu.device)
-            )
-            triton_ctx = _build_multi_triton_ctx(sc_t, sn_t, P_gpu, Q_gpu, SQ_gpu, X_gpu)
-        Y_int_gpu, nUMI_gpu_c, P_KT_gpu, poly_gpu = triton_ctx
-        device = P_gpu.device
-        pix_idx_t = torch.tensor([t[0] for t in task_triples], dtype=torch.int64, device=device)
-        type_mat_t = torch.tensor([t[1] for t in task_triples], dtype=torch.int64, device=device)
-        k_sub = type_mat_t.shape[1]
-        if k_sub == 1:
-            _, scores_t = _triton_kernels.fit_and_score_singles_triton(
-                pix_idx_t,
-                type_mat_t[:, 0],
-                Y_int_gpu,
-                nUMI_gpu_c,
-                P_KT_gpu,
-                poly_gpu,
-                max_iter=n_iter,
-                write_weights=False,
-                compute_score=True,
-            )
-        elif k_sub == 2:
-            _, scores_t, _ = _triton_kernels.fit_and_score_pairs_triton(
-                pix_idx_t,
-                type_mat_t[:, 0],
-                type_mat_t[:, 1],
-                Y_int_gpu,
-                nUMI_gpu_c,
-                P_KT_gpu,
-                poly_gpu,
-                max_iter=n_iter,
-                compute_score=True,
-            )
-        else:
-            _, scores_t = _triton_kernels.fit_subsets_triton(
-                pix_idx_t,
-                type_mat_t,
-                Y_int_gpu,
-                nUMI_gpu_c,
-                P_KT_gpu,
-                poly_gpu,
-                max_iter=n_iter,
-                compute_score=True,
-            )
-        return scores_t.cpu().numpy()
+        return _dispatch_multi_triton(
+            task_triples, triton_ctx, P_gpu, batch_size, n_iter, compute_score=True
+        )
 
     M = len(task_triples)
     device = P_gpu.device
@@ -235,59 +260,14 @@ def _run_batched_weights(
 
     if _triton_kernels.use_triton(P_gpu):
         if triton_ctx is None:
-            sc_t = (
-                spatial_counts
-                if isinstance(spatial_counts, torch.Tensor)
-                else torch.as_tensor(spatial_counts, device=P_gpu.device)
+            triton_ctx = _build_multi_triton_ctx(
+                spatial_counts, spatial_numi, P_gpu, Q_gpu, SQ_gpu, X_gpu
             )
-            sn_t = (
-                spatial_numi
-                if isinstance(spatial_numi, torch.Tensor)
-                else torch.as_tensor(spatial_numi, device=P_gpu.device)
+        return list(
+            _dispatch_multi_triton(
+                task_triples, triton_ctx, P_gpu, batch_size, n_iter, compute_score=False
             )
-            triton_ctx = _build_multi_triton_ctx(sc_t, sn_t, P_gpu, Q_gpu, SQ_gpu, X_gpu)
-        Y_int_gpu, nUMI_gpu_c, P_KT_gpu, poly_gpu = triton_ctx
-        device = P_gpu.device
-        pix_idx_t = torch.tensor([t[0] for t in task_triples], dtype=torch.int64, device=device)
-        type_mat_t = torch.tensor([t[1] for t in task_triples], dtype=torch.int64, device=device)
-        k_sub = type_mat_t.shape[1]
-        if k_sub == 1:
-            w_t, _ = _triton_kernels.fit_and_score_singles_triton(
-                pix_idx_t,
-                type_mat_t[:, 0],
-                Y_int_gpu,
-                nUMI_gpu_c,
-                P_KT_gpu,
-                poly_gpu,
-                max_iter=n_iter,
-                write_weights=True,
-                compute_score=False,
-            )
-            w_t = w_t.unsqueeze(1)
-        elif k_sub == 2:
-            w_t, _, _ = _triton_kernels.fit_and_score_pairs_triton(
-                pix_idx_t,
-                type_mat_t[:, 0],
-                type_mat_t[:, 1],
-                Y_int_gpu,
-                nUMI_gpu_c,
-                P_KT_gpu,
-                poly_gpu,
-                max_iter=n_iter,
-                compute_score=False,
-            )
-        else:
-            w_t, _ = _triton_kernels.fit_subsets_triton(
-                pix_idx_t,
-                type_mat_t,
-                Y_int_gpu,
-                nUMI_gpu_c,
-                P_KT_gpu,
-                poly_gpu,
-                max_iter=n_iter,
-                compute_score=False,
-            )
-        return list(w_t.cpu().numpy())
+        )
 
     M = len(task_triples)
     device = P_gpu.device
@@ -396,19 +376,24 @@ def run_multi_mode(
 
     # Pre-stage spatial data on the device once instead of re-uploading per batch
     # (same fix as _doublet.py: a pixel appears in many tasks across iterations).
+    # Under Triton, convert CPU counts straight to compact int16/int32 on GPU.
+    use_triton_gpu = _triton_kernels.use_triton(P_gpu)
+    use_numba_cpu = _numba_kernels.use_numba(P_gpu)
     spatial_numi_gpu = torch.tensor(spatial_numi, device=device)
-    spatial_counts_gpu = torch.tensor(spatial_counts, device=device)
-    triton_ctx = (
-        _build_multi_triton_ctx(spatial_counts_gpu, spatial_numi_gpu, P_gpu, Q_gpu, SQ_gpu, X_gpu)
-        if _triton_kernels.use_triton(P_gpu)
-        else None
-    )
-    if triton_ctx is not None:
-        del spatial_counts_gpu
+    if use_triton_gpu:
         spatial_counts_gpu = None
+        triton_ctx = _build_multi_triton_ctx(
+            spatial_counts, spatial_numi_gpu, P_gpu, Q_gpu, SQ_gpu, X_gpu
+        )
+    elif use_numba_cpu:
+        spatial_counts_gpu = torch.tensor(spatial_counts, device=device)
+        triton_ctx = None
+    else:
+        spatial_counts_gpu = torch.tensor(spatial_counts, device=device)
+        triton_ctx = None
     numba_ctx = (
         _build_multi_numba_ctx(spatial_counts, spatial_numi, P_gpu, Q_gpu, SQ_gpu, X_gpu)
-        if _numba_kernels.use_numba(P_gpu)
+        if use_numba_cpu
         else None
     )
 

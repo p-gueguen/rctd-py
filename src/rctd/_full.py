@@ -3,6 +3,7 @@ from typing import List
 import numpy as np
 import torch
 
+from rctd import _triton_kernels
 from rctd._irwls import solve_irwls_batch_shared
 from rctd._types import FullResult, resolve_device
 
@@ -47,12 +48,19 @@ def run_full_mode(
     Q_gpu = torch.as_tensor(q_mat, device=device)
     SQ_gpu = torch.as_tensor(sq_mat, device=device)
     X_gpu = torch.tensor(x_vals, device=device)
+    use_triton_gpu = _triton_kernels.use_triton(P_gpu)
+    k_val = int(Q_gpu.shape[0] - 3)
 
-    # The default resident path avoids per-batch NumPy-to-device copies.
+    # The default resident path avoids per-batch NumPy-to-device copies. Under Triton, store
+    # compact clamped int16/int32 counts directly without staging a full float copy.
     if stream_gpu:
         Y_gpu = nUMI_gpu = None
     else:
-        Y_gpu = torch.tensor(spatial_counts, device=device)
+        Y_gpu = (
+            _triton_kernels.prepare_y_int_to_device(spatial_counts, k_val, device)
+            if use_triton_gpu
+            else torch.tensor(spatial_counts, device=device)
+        )
         nUMI_gpu = torch.tensor(spatial_numi, device=device)
 
     all_weights = []
@@ -63,7 +71,11 @@ def run_full_mode(
 
         if stream_gpu:
             # Only current batch occupies GPU; no full spatial matrix allocation.
-            Y_batch = torch.as_tensor(spatial_counts[start:end], device=device)
+            Y_batch = (
+                _triton_kernels.prepare_y_int_to_device(spatial_counts[start:end], k_val, device)
+                if use_triton_gpu
+                else torch.as_tensor(spatial_counts[start:end], device=device)
+            )
             nUMI_batch = torch.as_tensor(spatial_numi[start:end], device=device)
         else:
             assert Y_gpu is not None and nUMI_gpu is not None
@@ -85,6 +97,7 @@ def run_full_mode(
             min_change=0.001,
             constrain=False,
             bulk_mode=False,
+            _y_clamped_int=use_triton_gpu,
         )
 
         all_weights.append(weights.cpu().numpy())
