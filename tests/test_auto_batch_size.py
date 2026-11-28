@@ -39,6 +39,19 @@ def test_resident_counts_shrink_the_budget(monkeypatch):
     assert with_res * _row_values("doublet", G, 40, 4) * 8 + resident < 44 * GIB
 
 
+def test_resident_bytes_overrides_dtype_bytes(monkeypatch):
+    """Triton int16 resident counts (2 B/elem) allow larger batches than float64 (8 B/elem)."""
+    _fake_gpu(monkeypatch, 12 * GIB)
+    G, K, n_res = 4000, 30, 200_000
+    bs_f64 = auto_batch_size(G, K, dtype_bytes=8, mode="doublet", n_resident=n_res)
+    bs_i16 = auto_batch_size(
+        G, K, dtype_bytes=8, mode="doublet", n_resident=n_res, resident_bytes=2
+    )
+    assert bs_i16 > bs_f64
+    resident = n_res * G * 2
+    assert bs_i16 * _row_values("doublet", G, K, 4) * 8 + resident < 12 * GIB
+
+
 def test_multi_cost_scales_with_max_types(monkeypatch):
     _fake_gpu(monkeypatch, 44 * GIB)
     four = auto_batch_size(18000, 40, dtype_bytes=8, mode="multi", max_multi_types=4)

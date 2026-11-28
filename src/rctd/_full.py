@@ -1,6 +1,7 @@
 from typing import List
 
 import numpy as np
+import scipy.sparse as sp
 import torch
 
 from rctd import _triton_kernels
@@ -59,9 +60,9 @@ def run_full_mode(
         Y_gpu = (
             _triton_kernels.prepare_y_int_to_device(spatial_counts, k_val, device)
             if use_triton_gpu
-            else torch.tensor(spatial_counts, device=device)
+            else _triton_kernels.stage_counts_float_to_device(spatial_counts, P_gpu.dtype, device)
         )
-        nUMI_gpu = torch.tensor(spatial_numi, device=device)
+        nUMI_gpu = torch.as_tensor(spatial_numi, dtype=P_gpu.dtype, device=device)
 
     all_weights = []
     all_converged = []
@@ -71,12 +72,16 @@ def run_full_mode(
 
         if stream_gpu:
             # Only current batch occupies GPU; no full spatial matrix allocation.
-            Y_batch = (
-                _triton_kernels.prepare_y_int_to_device(spatial_counts[start:end], k_val, device)
-                if use_triton_gpu
-                else torch.as_tensor(spatial_counts[start:end], device=device)
-            )
-            nUMI_batch = torch.as_tensor(spatial_numi[start:end], device=device)
+            if use_triton_gpu:
+                Y_batch = _triton_kernels.prepare_y_int_to_device(
+                    spatial_counts[start:end], k_val, device
+                )
+            else:
+                raw_batch = spatial_counts[start:end]
+                if sp.issparse(raw_batch):
+                    raw_batch = raw_batch.toarray()
+                Y_batch = torch.as_tensor(raw_batch, dtype=P_gpu.dtype, device=device)
+            nUMI_batch = torch.as_tensor(spatial_numi[start:end], dtype=P_gpu.dtype, device=device)
         else:
             assert Y_gpu is not None and nUMI_gpu is not None
             Y_batch = Y_gpu[start:end]

@@ -110,16 +110,48 @@ def test_platform_effects_sparse_spatial_match_dense(synthetic_data, counts_min)
         fits.append(rctd)
 
     a, b = fits
-    assert isinstance(b.counts, np.ndarray) and b.counts.dtype == a.counts.dtype
+    assert isinstance(a.counts, np.ndarray)
+    assert sp.issparse(b.counts)
+    assert b.counts.dtype == dense.X.dtype
     if counts_min:
         assert 0 < a.counts.shape[0] < dense.n_obs  # the counts_MIN filter removed pixels
-    np.testing.assert_array_equal(a.counts, b.counts)
+    np.testing.assert_array_equal(a.counts, b.counts.toarray())
     np.testing.assert_array_equal(a.nUMI, b.nUMI)
     np.testing.assert_array_equal(a._pixel_mask, b._pixel_mask)
     assert a._gene_list_bulk == b._gene_list_bulk
     assert a._gene_list_reg == b._gene_list_reg
     np.testing.assert_array_equal(a.norm_profiles, b.norm_profiles)
     assert a.sigma == b.sigma
+
+
+@pytest.mark.parametrize("mode", ["full", "doublet", "multi"])
+@pytest.mark.parametrize("dtype", ["float32", "float64"])
+def test_run_rctd_sparse_matches_dense(synthetic_data, mode, dtype):
+    """Sparse CSR spatial inputs match dense counts across all RCTD modes."""
+    from rctd import RCTDConfig, run_rctd
+
+    reference = Reference(synthetic_data["reference"])
+    dense = synthetic_data["spatial"].copy()
+    np_dt = np.float32 if dtype == "float32" else np.float64
+    dense.X = np.asarray(dense.X, dtype=np_dt)
+    sparse = dense.copy()
+    sparse.X = sp.csr_matrix(dense.X)
+
+    cfg = RCTDConfig(dtype=dtype, device="cpu", compile=False, UMI_min=100)
+    res_dense = run_rctd(dense, reference, mode=mode, config=cfg, sigma_override=62)
+    res_sparse = run_rctd(sparse, reference, mode=mode, config=cfg, sigma_override=62)
+
+    np.testing.assert_array_equal(res_sparse.weights, res_dense.weights)
+    if mode == "doublet":
+        np.testing.assert_array_equal(res_sparse.spot_class, res_dense.spot_class)
+        np.testing.assert_array_equal(res_sparse.first_type, res_dense.first_type)
+        np.testing.assert_array_equal(res_sparse.second_type, res_dense.second_type)
+    elif mode == "multi":
+        assert len(res_sparse.cell_type_indices) == len(res_dense.cell_type_indices)
+        for s_idx, d_idx in zip(res_sparse.cell_type_indices, res_dense.cell_type_indices):
+            np.testing.assert_array_equal(s_idx, d_idx)
+        for s_w, d_w in zip(res_sparse.sub_weights, res_dense.sub_weights):
+            np.testing.assert_array_equal(s_w, d_w)
 
 
 def test_sparse_duplicate_entries_add_up_before_float32(synthetic_data):

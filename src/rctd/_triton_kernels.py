@@ -14,6 +14,7 @@ import os
 import warnings
 
 import numpy as np
+import scipy.sparse as sp
 import torch
 
 try:
@@ -112,26 +113,40 @@ def prepare_y_int_gpu(Y: torch.Tensor, k_val: int) -> torch.Tensor:
     return Y.clamp(0, k_val).to(t_dtype).contiguous()
 
 
+def _stream_chunk_size(shape: tuple[int, int], itemsize: int, chunk_rows: int) -> int:
+    """Bound per-chunk staging buffers (~256 MiB) while honoring ``chunk_rows``."""
+    n_cols = max(shape[1], 1) if len(shape) > 1 else 1
+    row_bytes = max(n_cols * max(itemsize, 1), 1)
+    return max(1, min(chunk_rows, (256 * 1024 * 1024) // row_bytes))
+
+
 def prepare_y_int_from_cpu(
-    spatial_counts: np.ndarray,
+    spatial_counts: np.ndarray | sp.spmatrix,
     k_val: int,
     device: torch.device,
     chunk_rows: int = 32_768,
 ) -> torch.Tensor:
     """Validate, clamp, and stream CPU counts into a compact ``int16``/``int32`` GPU tensor.
 
-    Avoids staging the full ``float64``/``float32`` count matrix on GPU before conversion.
+    Accepts dense arrays or scipy sparse matrices without materializing a full dense copy on host
+    or staging the full float count matrix on GPU before conversion.
     """
     t_dtype, np_dtype = _int_count_dtype(k_val)
-    arr = np.asarray(spatial_counts)
-    out = torch.empty(arr.shape, dtype=t_dtype, device=device)
-    if arr.size == 0:
+    is_sparse = sp.issparse(spatial_counts)
+    src = (
+        spatial_counts.tocsr()
+        if is_sparse and not isinstance(spatial_counts, sp.csr_matrix)
+        else (spatial_counts if is_sparse else np.asarray(spatial_counts))
+    )
+    out = torch.empty(src.shape, dtype=t_dtype, device=device)
+    if src.shape[0] == 0 or (src.shape[1] == 0 if len(src.shape) > 1 else False):
         return out
-    is_float = np.issubdtype(arr.dtype, np.floating)
-    n_rows = arr.shape[0]
-    for start in range(0, n_rows, chunk_rows):
-        end = min(start + chunk_rows, n_rows)
-        chunk = arr[start:end]
+    is_float = np.issubdtype(src.dtype, np.floating)
+    n_rows = src.shape[0]
+    step = _stream_chunk_size(src.shape, np.dtype(src.dtype).itemsize, chunk_rows)
+    for start in range(0, n_rows, step):
+        end = min(start + step, n_rows)
+        chunk = src[start:end].toarray() if is_sparse else src[start:end]
         if is_float and not np.isfinite(chunk).all():
             raise ValueError("counts must be finite")
         if (chunk < 0).any():
@@ -142,7 +157,7 @@ def prepare_y_int_from_cpu(
 
 
 def prepare_y_int_to_device(
-    counts: np.ndarray | torch.Tensor,
+    counts: np.ndarray | sp.spmatrix | torch.Tensor,
     k_val: int,
     device: torch.device,
 ) -> torch.Tensor:
@@ -151,6 +166,33 @@ def prepare_y_int_to_device(
         t_dev = counts if counts.device == device else counts.to(device)
         return prepare_y_int_gpu(t_dev, k_val)
     return prepare_y_int_from_cpu(counts, k_val, device)
+
+
+def stage_counts_float_to_device(
+    spatial_counts: np.ndarray | sp.spmatrix | torch.Tensor,
+    dtype: torch.dtype,
+    device: torch.device,
+    chunk_rows: int = 32_768,
+) -> torch.Tensor:
+    """Stage dense or sparse spatial counts on ``device`` as ``dtype`` without full host densify."""
+    if isinstance(spatial_counts, torch.Tensor):
+        return spatial_counts.to(device=device, dtype=dtype)
+    is_sparse = sp.issparse(spatial_counts)
+    src = (
+        spatial_counts.tocsr()
+        if is_sparse and not isinstance(spatial_counts, sp.csr_matrix)
+        else (spatial_counts if is_sparse else np.asarray(spatial_counts))
+    )
+    out = torch.empty(src.shape, dtype=dtype, device=device)
+    if src.shape[0] == 0 or (src.shape[1] == 0 if len(src.shape) > 1 else False):
+        return out
+    n_rows = src.shape[0]
+    step = _stream_chunk_size(src.shape, torch.empty(0, dtype=dtype).element_size(), chunk_rows)
+    for start in range(0, n_rows, step):
+        end = min(start + step, n_rows)
+        chunk = src[start:end].toarray() if is_sparse else src[start:end]
+        out[start:end].copy_(torch.as_tensor(chunk, dtype=dtype), non_blocking=False)
+    return out
 
 
 def build_poly_table_gpu(
