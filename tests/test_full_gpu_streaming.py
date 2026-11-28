@@ -53,6 +53,8 @@ def test_stream_gpu_matches_resident_path(monkeypatch, device, dtype):
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA unavailable")
 def test_stream_gpu_avoids_full_counts_allocation(monkeypatch):
+    from rctd import _triton_kernels
+
     def fake_solver(*, P, Y_batch, nUMI_batch, **_):
         k = P.shape[1]
         return (
@@ -76,16 +78,32 @@ def test_stream_gpu_avoids_full_counts_allocation(monkeypatch):
         batch_size=256,
         device="cuda",
     )
-    peaks = {}
-    for stream in [False, True]:
-        torch.cuda.synchronize()
-        torch.cuda.reset_peak_memory_stats()
-        result = _full.run_full_mode(**args, stream_gpu=stream)
-        torch.cuda.synchronize()
-        peaks[stream] = torch.cuda.max_memory_allocated()
-        del result
-    # 8192 x 512 x 8 bytes = 32 MiB; streaming input is only 1 MiB.
-    assert peaks[False] - peaks[True] > 16 * 1024 * 1024, peaks
+
+    def _measure():
+        peaks = {}
+        for stream in [False, True]:
+            torch.cuda.synchronize()
+            torch.cuda.reset_peak_memory_stats()
+            result = _full.run_full_mode(**args, stream_gpu=stream)
+            torch.cuda.synchronize()
+            peaks[stream] = torch.cuda.max_memory_allocated()
+            del result
+        return peaks
+
+    # PyTorch path: 8192 x 512 x 8 bytes = 32 MiB resident vs ~1 MiB streamed.
+    monkeypatch.setenv("RCTD_TRITON", "0")
+    peaks_pytorch = _measure()
+    assert peaks_pytorch[False] - peaks_pytorch[True] > 16 * 1024 * 1024, peaks_pytorch
+
+    # Triton path: 8192 x 512 x 2 bytes = 8 MiB int16 resident vs ~256 KiB streamed.
+    monkeypatch.setenv("RCTD_TRITON", "1")
+    if _triton_kernels.use_triton(torch.empty(0, device="cuda")):
+        peaks_triton = _measure()
+        assert peaks_triton[False] - peaks_triton[True] > 4 * 1024 * 1024, peaks_triton
+        assert peaks_triton[False] < peaks_pytorch[False] - 16 * 1024 * 1024, (
+            peaks_triton,
+            peaks_pytorch,
+        )
 
 
 @pytest.mark.parametrize("device", ["cpu", "cuda"])

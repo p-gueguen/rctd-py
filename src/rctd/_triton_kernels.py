@@ -11,6 +11,7 @@ from __future__ import annotations
 import functools
 import math
 import os
+import warnings
 
 import numpy as np
 import torch
@@ -24,13 +25,69 @@ except ImportError:
 
 ENABLED = triton is not None and os.environ.get("RCTD_TRITON", "1") != "0"
 
+# Set to True if the runtime JIT probe fails (e.g. missing cuda.h/libnvrtc on a broken stack).
+_RUNTIME_DISABLED = False
+
 # Cap elements per 1D grid slab so 32-bit CUDA grid limits are never exceeded.
 _MAX_PAIR_SLAB = 524_288
 
 
+if triton is not None:
+
+    @triton.jit
+    def _triton_probe_kernel(out_ptr):
+        tl.store(out_ptr, 1)
+
+
+def _run_triton_probe(device_index: int) -> None:
+    """Compile and launch a 1-element kernel to verify the CUDA/Triton JIT stack works."""
+    dev = torch.device("cuda", device_index)
+    with torch.cuda.device(dev):
+        buf = torch.empty((1,), dtype=torch.int32, device=dev)
+        _triton_probe_kernel[(1,)](buf)
+
+
+@functools.lru_cache(maxsize=8)
+def _cuda_triton_supported(device_index: int) -> bool:
+    """Return True when the GPU is Volta+ (sm_70+) and Triton JIT compiles/launches cleanly."""
+    global _RUNTIME_DISABLED
+    if _RUNTIME_DISABLED or triton is None:
+        return False
+    try:
+        major, _ = torch.cuda.get_device_capability(device_index)
+    except Exception:
+        return False
+    if major < 7:
+        return False
+    try:
+        _run_triton_probe(device_index)
+    except Exception as exc:
+        _RUNTIME_DISABLED = True
+        warnings.warn(
+            f"Triton GPU kernel probe failed on cuda:{device_index} ({exc}); falling back to "
+            "PyTorch GPU kernels. Set RCTD_TRITON=0 to skip this check.",
+            RuntimeWarning,
+            stacklevel=2,
+        )
+        return False
+    return True
+
+
 def use_triton(t: torch.Tensor) -> bool:
-    """Return True when Triton kernels are enabled and ``t`` resides on CUDA."""
-    return ENABLED and t.device.type == "cuda" and os.environ.get("RCTD_TRITON", "1") != "0"
+    """Return True when Triton kernels are enabled, supported on ``t``'s CUDA arch, and healthy."""
+    if _RUNTIME_DISABLED or not ENABLED or t.device.type != "cuda":
+        return False
+    if os.environ.get("RCTD_TRITON", "1") == "0":
+        return False
+    idx = int(t.device.index) if t.device.index is not None else int(torch.cuda.current_device())
+    return _cuda_triton_supported(idx)
+
+
+def _int_count_dtype(k_val: int) -> tuple[torch.dtype, np.dtype]:
+    """Use compact int16 for standard Q_mat ceilings (k_val <= 32767) and int32 otherwise."""
+    if k_val <= 32_767:
+        return torch.int16, np.dtype(np.int16)
+    return torch.int32, np.dtype(np.int32)
 
 
 @functools.lru_cache(maxsize=16)
@@ -46,12 +103,54 @@ def _interval_table_cpu(x_max: float, n_x: int) -> np.ndarray:
 
 
 def prepare_y_int_gpu(Y: torch.Tensor, k_val: int) -> torch.Tensor:
-    """Validate finite non-negative counts on GPU and clamp to ``[0, k_val]`` as ``int32``."""
+    """Validate finite non-negative counts on GPU and clamp to ``[0, k_val]`` as int16/int32."""
     if Y.is_floating_point() and not torch.isfinite(Y).all():
         raise ValueError("counts must be finite")
     if Y.numel() > 0 and (Y < 0).any():
         raise ValueError("counts must be non-negative")
-    return Y.clamp(0, k_val).to(torch.int32).contiguous()
+    t_dtype, _ = _int_count_dtype(k_val)
+    return Y.clamp(0, k_val).to(t_dtype).contiguous()
+
+
+def prepare_y_int_from_cpu(
+    spatial_counts: np.ndarray,
+    k_val: int,
+    device: torch.device,
+    chunk_rows: int = 32_768,
+) -> torch.Tensor:
+    """Validate, clamp, and stream CPU counts into a compact ``int16``/``int32`` GPU tensor.
+
+    Avoids staging the full ``float64``/``float32`` count matrix on GPU before conversion.
+    """
+    t_dtype, np_dtype = _int_count_dtype(k_val)
+    arr = np.asarray(spatial_counts)
+    out = torch.empty(arr.shape, dtype=t_dtype, device=device)
+    if arr.size == 0:
+        return out
+    is_float = np.issubdtype(arr.dtype, np.floating)
+    n_rows = arr.shape[0]
+    for start in range(0, n_rows, chunk_rows):
+        end = min(start + chunk_rows, n_rows)
+        chunk = arr[start:end]
+        if is_float and not np.isfinite(chunk).all():
+            raise ValueError("counts must be finite")
+        if (chunk < 0).any():
+            raise ValueError("counts must be non-negative")
+        clamped = np.ascontiguousarray(np.clip(chunk, 0, k_val).astype(np_dtype, copy=False))
+        out[start:end].copy_(torch.from_numpy(clamped), non_blocking=False)
+    return out
+
+
+def prepare_y_int_to_device(
+    counts: np.ndarray | torch.Tensor,
+    k_val: int,
+    device: torch.device,
+) -> torch.Tensor:
+    """Validate and stage CPU or GPU counts as compact clamped ``int16``/``int32`` on ``device``."""
+    if isinstance(counts, torch.Tensor):
+        t_dev = counts if counts.device == device else counts.to(device)
+        return prepare_y_int_gpu(t_dev, k_val)
+    return prepare_y_int_from_cpu(counts, k_val, device)
 
 
 def build_poly_table_gpu(
