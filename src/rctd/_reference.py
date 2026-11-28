@@ -127,7 +127,9 @@ class Reference:
                 "Lower min_UMI or ensure cells have sufficient UMI counts."
             )
 
-        X = X[keep]
+        # For CSR, filter row indices and gather counts only when computing each profile.
+        csr_counts = X if sparse.issparse(X) and X.format == "csr" else None
+        X = np.flatnonzero(keep) if csr_counts is not None else X[keep]
         cell_types = cell_types[keep]
         nUMI = nUMI[keep]
 
@@ -169,10 +171,10 @@ class Reference:
         # Ports get_cell_type_info from R processRef.R
         # For each cell type: normalize each cell by its UMI count, then average
         profiles = np.zeros((self.n_genes, self.n_types), dtype=np.float64)
-        is_sparse = sparse.issparse(X)
+        is_sparse = csr_counts is not None or sparse.issparse(X)
         for k, ct in enumerate(unique_types):
             mask = cell_types == ct
-            ct_data = X[mask]  # (n_cells_k, G)
+            ct_data = csr_counts[X[mask]] if csr_counts is not None else X[mask]
             ct_nUMI = nUMI[mask].astype(np.float64)  # (n_cells_k,)
             if is_sparse:
                 # mean(X / nUMI) = X.T @ (1/nUMI) / n_cells
